@@ -82,6 +82,16 @@ function inferSecurityType(input = {}) {
     if (typeText.includes('fund') || typeText.includes('基金') || typeText.includes('|8') || /ETF/i.test(name)) return 'fund';
     return 'stock';
 }
+function isSupportedWatchlistSecurity(input = {}) {
+    const code = getSecurityCode(input);
+    const quoteId = getSecurityQuoteId(input);
+    if (!/^\d{6}$/.test(code)) return false;
+    if (quoteId && !/^[01]\.\d{6}$/.test(quoteId)) return false;
+
+    const isAStock = /^(?:00[0-3]|30[01]|60[0135]|68[89])\d{3}$/.test(code);
+    const isExchangeFund = /^(?:5\d{5}|1[568]\d{4})$/.test(code);
+    return isAStock || isExchangeFund;
+}
 function resolveSecuritySecid(input) {
     const cfg = typeof input === 'string' ? getIndexConfig(input) : null;
     if (cfg) return cfg.eastmoney;
@@ -1625,7 +1635,11 @@ function scheduleCachedFetchRefresh(id) {
 async function preloadCacheOnly() {
     const symbols = [...INDEX_IDS];
     if (state.watchlist && state.watchlist.length > 0) {
-        symbols.push(...state.watchlist.map(s => normalizeSecurityTarget(s).secid).filter(s => !symbols.includes(s)));
+        const watchlistSymbols = state.watchlist
+            .map(stock => normalizeSecurityTarget(stock))
+            .filter(target => isSupportedWatchlistSecurity(target))
+            .map(target => target.secid);
+        symbols.push(...watchlistSymbols.filter(id => !symbols.includes(id)));
     }
     for (const id of symbols) {
         try {

@@ -290,6 +290,15 @@ async function searchAndShowInSuggest(q) {
 function renderSuggest(container, res) {
     container.innerHTML = res.map(x => {
         const target = normalizeSecurityTarget(x);
+        const isSupported = isSupportedWatchlistSecurity(x);
+        if (!isSupported) {
+            return `
+        <div class="stock-suggest-item is-unsupported" onclick="showUnsupportedSecurityNotice()">
+            <span class="ss-name">${escapeHTML(target.name)}</span>
+            <span class="ss-meta"><span class="ss-code mono">${escapeHTML(target.code)}</span><span class="ss-support">暂不支持</span></span>
+        </div>
+    `;
+        }
         return `
         <div class="stock-suggest-item" onclick="selectSuggestItem('${escapeJSArg(target.code)}','${escapeJSArg(target.name)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')">
             <span class="ss-name">${escapeHTML(target.name)}</span>
@@ -301,6 +310,10 @@ function renderSuggest(container, res) {
     suggestActiveIdx = -1;
 }
 
+function showUnsupportedSecurityNotice() {
+    showToast('暂不支持场外基金，请添加 A 股或交易所 ETF/LOF。', 'warn', 4000);
+}
+
 function selectSuggestItem(code, name, secid = '', type = '', tencentSymbol = '') {
     closeSuggestions();
     const i = document.getElementById('stockSearchInput');
@@ -309,6 +322,10 @@ function selectSuggestItem(code, name, secid = '', type = '', tencentSymbol = ''
     
     if(i) i.value = '';
     if(!/^\d{6}$/.test(safeCode)) return;
+    if(!isSupportedWatchlistSecurity({ Code: code, QuoteID: secid, type })) {
+        showUnsupportedSecurityNotice();
+        return;
+    }
     
     const alreadyWatched = state.watchlist.some(s => s.code === safeCode);
     if(!alreadyWatched && state.watchlist.length >= SYS_CONFIG.WATCHLIST_LIMIT) {
@@ -383,6 +400,20 @@ async function saveWatchlist() {
     } catch(e) {}
 }
 
+function getSupportedWatchlistTargets() {
+    return (state.watchlist || [])
+        .map(stock => normalizeSecurityTarget(stock))
+        .filter(target => isSupportedWatchlistSecurity(target));
+}
+
+function getSupportedWatchlistFallback(startIndex = 0) {
+    const list = state.watchlist || [];
+    const supportedAtOrAfter = list.slice(startIndex).find(stock => isSupportedWatchlistSecurity(normalizeSecurityTarget(stock)));
+    if (supportedAtOrAfter) return normalizeSecurityTarget(supportedAtOrAfter);
+    const supportedBefore = list.slice(0, startIndex).reverse().find(stock => isSupportedWatchlistSecurity(normalizeSecurityTarget(stock)));
+    return supportedBefore ? normalizeSecurityTarget(supportedBefore) : null;
+}
+
 let watchlistCrossPageSyncStarted = false;
 function initWatchlistCrossPageSync() {
     if (watchlistCrossPageSyncStarted || typeof window.addEventListener !== 'function') return;
@@ -396,9 +427,10 @@ function initWatchlistCrossPageSync() {
         await loadWatchlist();
         renderWatchlist();
         if (state.mode !== 'stock' || !state.stockId) return;
-        if (state.watchlist.some(stock => stock.code === state.stockId)) return;
-        if (state.watchlist.length) {
-            const next = normalizeSecurityTarget(state.watchlist[0]);
+        const activeStock = state.watchlist.find(stock => stock.code === state.stockId);
+        if (activeStock && isSupportedWatchlistSecurity(normalizeSecurityTarget(activeStock))) return;
+        const next = getSupportedWatchlistFallback();
+        if (next) {
             selectStock(next.code, next.name, next.secid, next.type, next.tencentSymbol);
         } else {
             showEmptyWatchlistView();
@@ -649,10 +681,9 @@ function syncWatchlistSignalSnapshot(code, full) {
 }
 
 function refreshWatchlistSignalSnapshots() {
-    state.watchlist.forEach(stock => {
-        const target = normalizeSecurityTarget(stock);
+    getSupportedWatchlistTargets().forEach(target => {
         const full = state.rawData[target.secid];
-        syncWatchlistSignalSnapshotFast(stock.code, full);
+        syncWatchlistSignalSnapshotFast(target.code, full);
     });
     scheduleWatchlistRender();
 }
@@ -673,6 +704,10 @@ function resolveWatchlistRowStatus(stock, statusData, lastDate) {
 
 async function addToWatchlist(code, name, meta = {}) {
     const target = normalizeSecurityTarget({ ...meta, Code: code, Name: name });
+    if (!isSupportedWatchlistSecurity({ ...meta, Code: code })) {
+        showUnsupportedSecurityNotice();
+        return false;
+    }
     const displayName = target.name;
     const existing = state.watchlist.find(s => s.code === target.code);
     if (existing) {
@@ -682,15 +717,16 @@ async function addToWatchlist(code, name, meta = {}) {
             await saveWatchlist();
             renderWatchlist();
         }
-        return;
+        return true;
     }
     if(state.watchlist.length >= SYS_CONFIG.WATCHLIST_LIMIT) {
         await customAlert(`最多只能添加 ${SYS_CONFIG.WATCHLIST_LIMIT} 只自选股。`);
-        return;
+        return false;
     }
     state.watchlist.push(target);
     await saveWatchlist();
     renderWatchlist(); 
+    return true;
 }
 
 function focusWatchlistSearch() {
@@ -758,9 +794,8 @@ async function removeStock(code) {
         renderWatchlist();
         
         if(state.stockId === code) {
-            if (state.watchlist.length) {
-                const nextStock = state.watchlist[Math.min(removedIndex, state.watchlist.length - 1)];
-                const nextTarget = normalizeSecurityTarget(nextStock);
+            const nextTarget = getSupportedWatchlistFallback(Math.min(removedIndex, state.watchlist.length));
+            if (nextTarget) {
                 selectStock(nextTarget.code, nextTarget.name, nextTarget.secid, nextTarget.type, nextTarget.tencentSymbol);
             } else {
                 showEmptyWatchlistView();
@@ -783,7 +818,7 @@ function debounceWatchlistUpdate() {
 
 async function updateAllWatchlistData(options = {}) {
     if (!state.watchlist || !state.watchlist.length) return [];
-    const stocks = state.watchlist.map(s => normalizeSecurityTarget(s)).filter(s => s.secid !== state.id);
+    const stocks = getSupportedWatchlistTargets().filter(stock => stock.secid !== state.id);
     const results = await pLimit(stocks, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (stock) => {
         const secid = stock.secid;
         try {
@@ -830,8 +865,9 @@ async function refreshSidebarRealtime() {
     if (state.tab === 'index' || state.mode === 'index') {
         ids = [...INDEX_IDS];
     } else if (state.tab === 'stock' || state.mode === 'stock') {
-        ids = (state.watchlist || []).map(s => normalizeSecurityTarget(s).secid).filter(Boolean);
-        if (state.id) ids.push(state.id);
+        ids = getSupportedWatchlistTargets().map(stock => stock.secid);
+        const activeTarget = getActiveSecurityTarget();
+        if (state.id && activeTarget && isSupportedWatchlistSecurity(activeTarget)) ids.push(state.id);
     }
     ids = Array.from(new Set(ids));
     if (!ids.length) return;
@@ -950,11 +986,15 @@ function selectStock(code, name, secid = '', type = '', tencentSymbol = '') {
 }
 
 async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol = '') {
-    const perfTrace = PERF.start('selectStock', { code });
     const target = normalizeSecurityTarget({ Code: code, Name: name, QuoteID: secid, type, tencentSymbol });
     const safeCode = target.code;
     const safeName = target.name;
     if (!/^\d{6}$/.test(safeCode)) return;
+    if (!isSupportedWatchlistSecurity({ Code: code, QuoteID: secid, type })) {
+        showUnsupportedSecurityNotice();
+        return;
+    }
+    const perfTrace = PERF.start('selectStock', { code });
 
     const selectionSeq = ++globalSelectionSeq;
     const targetSecid = target.secid;
@@ -1143,11 +1183,11 @@ function renderWatchlist() {
             <div class="stock-suggest" id="stockSuggest"></div>
         </div>
     `;
+    const renderStickyHead = headerHtml => `<div class="watchlist-sticky-head">${headerHtml}${sHtml}</div>`;
     
     if(!state.watchlist.length) { 
         container.innerHTML = `
-            ${renderLeftListHeader(`自选股池 · 0/${SYS_CONFIG.WATCHLIST_LIMIT}`, { showRefresh: false })}
-            ${sHtml}
+            ${renderStickyHead(renderLeftListHeader(`自选股池 · 0/${SYS_CONFIG.WATCHLIST_LIMIT}`, { showRefresh: false }))}
             <div class="stock-empty"><strong>还没有自选股</strong><br/>在上方搜索并添加</div>
         `; 
         return; 
@@ -1155,21 +1195,24 @@ function renderWatchlist() {
     
     const lHtml = state.watchlist.map(s => {
         const target = normalizeSecurityTarget(s);
+        const isSupported = isSupportedWatchlistSecurity(target);
         const displayName = target.name;
         const shortName = getSecurityShortName(target);
         const id = target.secid;
         const d = getVisibleQuoteData(id);
         const statusData = getMergedLiveDailyData(id);
         const lastDate = statusData?.length ? statusData[statusData.length - 1].date : '';
-        const rowStatus = resolveWatchlistRowStatus(s, statusData, lastDate);
-        const quoteDisplay = getLeftQuoteDisplay(target);
+        const rowStatus = isSupported
+            ? resolveWatchlistRowStatus(s, statusData, lastDate)
+            : { label: '不支持', action: '暂不支持场外基金', detail: '当前仅支持 A 股或交易所 ETF/LOF', toneClass: 'tone-warn' };
+        const quoteDisplay = isSupported ? getLeftQuoteDisplay(target) : { priceText: '--', changeText: '--', cl: 'flat' };
         const statusTitle = rowStatus.detail || rowStatus.action || rowStatus.label;
         const positionChangeHtml = rowStatus.positionChange
             ? `<span class="wl-position-change">${escapeHTML(rowStatus.positionChange)}</span>`
             : '';
         
         return `
-            <div class="nav-list-item ${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${target.code}" ${s._pendingRemove ? '' : `onclick="selectStock('${escapeJSArg(target.code)}','${escapeJSArg(displayName)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')"`}>
+            <div class="nav-list-item ${isSupported ? '' : 'is-unsupported '}${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${target.code}" ${s._pendingRemove ? '' : (isSupported ? `onclick="selectStock('${escapeJSArg(target.code)}','${escapeJSArg(displayName)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')"` : 'onclick="showUnsupportedSecurityNotice()"')}>
                 <div class="nav-list-main">
                     <div class="lname-wrap">
                         <span class="lname" title="${escapeHTML(displayName)}">${escapeHTML(shortName)}</span>
@@ -1192,8 +1235,7 @@ function renderWatchlist() {
     }).join('');
     
     container.innerHTML = `
-        ${renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`)}
-        ${sHtml}
+        ${renderStickyHead(renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`))}
         <div>${lHtml}</div>
     `;
 }
@@ -1650,8 +1692,9 @@ async function init() {
                 document.getElementById('indexNavList').style.display = 'none'; 
                 document.getElementById('stockNavList').style.display = 'block'; 
                 renderWatchlist();
-                if(state.watchlist.length > 0) {
-                    selectStock(state.watchlist[0].code, state.watchlist[0].name);
+                const nextTarget = getSupportedWatchlistFallback();
+                if(nextTarget) {
+                    selectStock(nextTarget.code, nextTarget.name, nextTarget.secid, nextTarget.type, nextTarget.tencentSymbol);
                 } else { 
                     showEmptyWatchlistView();
                 }
