@@ -1552,7 +1552,26 @@ function scheduleStartupBackgroundHydration() {
     scheduleIdleTask(() => refreshWatchlistSignalSnapshots(), 900);
 }
 
+function shouldUseMobileGate() {
+    const gate = document.getElementById('mobileGate');
+    return !!gate && getComputedStyle(gate).display === 'flex';
+}
+
+function reloadWhenDesktopViewportReturns() {
+    const handleResize = () => {
+        if (shouldUseMobileGate()) return;
+        window.removeEventListener('resize', handleResize);
+        window.location.reload();
+    };
+    window.addEventListener('resize', handleResize);
+}
+
 async function init() {
+    if (shouldUseMobileGate()) {
+        reloadWhenDesktopViewportReturns();
+        return;
+    }
+
     const startupPerf = PERF.start('startup', { path: 'initial-load' });
     showLoading(); 
     await openDB(); 
