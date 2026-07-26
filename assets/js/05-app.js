@@ -311,8 +311,8 @@ function selectSuggestItem(code, name, secid = '', type = '', tencentSymbol = ''
     if(!/^\d{6}$/.test(safeCode)) return;
     
     const alreadyWatched = state.watchlist.some(s => s.code === safeCode);
-    if(!alreadyWatched && state.watchlist.length >= 10) {
-        customAlert('最多只能添加 10 只自选股。');
+    if(!alreadyWatched && state.watchlist.length >= SYS_CONFIG.WATCHLIST_LIMIT) {
+        customAlert(`最多只能添加 ${SYS_CONFIG.WATCHLIST_LIMIT} 只自选股。`);
         return;
     }
     
@@ -377,7 +377,33 @@ async function loadWatchlist() {
 }
 
 async function saveWatchlist() { 
-    await dbSet('watchlist_list', state.watchlist); 
+    await dbSet('watchlist_list', state.watchlist);
+    try {
+        localStorage.setItem(SYS_CONFIG.WATCHLIST_SYNC_KEY, JSON.stringify({ owner: PAGE_SESSION_ID, at: Date.now() }));
+    } catch(e) {}
+}
+
+let watchlistCrossPageSyncStarted = false;
+function initWatchlistCrossPageSync() {
+    if (watchlistCrossPageSyncStarted || typeof window.addEventListener !== 'function') return;
+    watchlistCrossPageSyncStarted = true;
+    window.addEventListener('storage', async event => {
+        if (event.key !== SYS_CONFIG.WATCHLIST_SYNC_KEY || !event.newValue) return;
+        try {
+            const payload = JSON.parse(event.newValue);
+            if (payload?.owner === PAGE_SESSION_ID) return;
+        } catch(e) {}
+        await loadWatchlist();
+        renderWatchlist();
+        if (state.mode !== 'stock' || !state.stockId) return;
+        if (state.watchlist.some(stock => stock.code === state.stockId)) return;
+        if (state.watchlist.length) {
+            const next = normalizeSecurityTarget(state.watchlist[0]);
+            selectStock(next.code, next.name, next.secid, next.type, next.tencentSymbol);
+        } else {
+            showEmptyWatchlistView();
+        }
+    });
 }
 
 const WATCHLIST_STATUS_META = {
@@ -658,8 +684,8 @@ async function addToWatchlist(code, name, meta = {}) {
         }
         return;
     }
-    if(state.watchlist.length >= 10) {
-        await customAlert('最多只能添加 10 只自选股。');
+    if(state.watchlist.length >= SYS_CONFIG.WATCHLIST_LIMIT) {
+        await customAlert(`最多只能添加 ${SYS_CONFIG.WATCHLIST_LIMIT} 只自选股。`);
         return;
     }
     state.watchlist.push(target);
@@ -799,6 +825,7 @@ async function updateAllWatchlistData(options = {}) {
 
 let _sidebarRefreshFailCount = 0;
 async function refreshSidebarRealtime() {
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
     let ids = [];
     if (state.tab === 'index' || state.mode === 'index') {
         ids = [...INDEX_IDS];
@@ -852,6 +879,7 @@ function startSidebarFullSync() {
     sidebarFullSyncTimer = setInterval(async () => {
         if (document.hidden) return;
         if (!isMarketOpen()) return;
+        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
         if (state.tab === 'index' || state.mode === 'index') {
             const ids = INDEX_IDS.filter(id => id !== state.id);
             let failCnt = 0;
@@ -1118,7 +1146,7 @@ function renderWatchlist() {
     
     if(!state.watchlist.length) { 
         container.innerHTML = `
-            ${renderLeftListHeader('自选股池 · 0/10', { showRefresh: false })}
+            ${renderLeftListHeader(`自选股池 · 0/${SYS_CONFIG.WATCHLIST_LIMIT}`, { showRefresh: false })}
             ${sHtml}
             <div class="stock-empty"><strong>还没有自选股</strong><br/>在上方搜索并添加</div>
         `; 
@@ -1164,7 +1192,7 @@ function renderWatchlist() {
     }).join('');
     
     container.innerHTML = `
-        ${renderLeftListHeader('自选股池')}
+        ${renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`)}
         ${sHtml}
         <div>${lHtml}</div>
     `;
@@ -1573,10 +1601,12 @@ async function init() {
     }
 
     const startupPerf = PERF.start('startup', { path: 'initial-load' });
+    initMarketRefreshLeadership();
     showLoading(); 
     await openDB(); 
     PERF.mark(startupPerf, 'open-db');
     await loadWatchlist();
+    initWatchlistCrossPageSync();
     PERF.mark(startupPerf, 'load-watchlist');
     if (typeof hydrateLiveOverlayCacheState === 'function') hydrateLiveOverlayCacheState();
     try {

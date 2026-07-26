@@ -857,6 +857,7 @@ function getDataMutationMeta(prevData, nextData) {
 const requestManager = {
     limiters: new Map(),
     async fetchRealtimeWithThrottle(id) {
+        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return null;
         const now = Date.now(), s = this.limiters.get(id) || { lastCall: 0, isFetching: false };
         if (s.isFetching) return null; if (now - s.lastCall < SYS_CONFIG.THROTTLE_MS) return null;
         s.isFetching = true; this.limiters.set(id, s);
@@ -1000,6 +1001,7 @@ function pLimit(items, concurrency, fn) {
 function batchGetRealtimePrices(ids) {
     return new Promise(resolve => {
         if (!ids || !ids.length) return resolve({});
+        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return resolve({});
         const symToId = {}, symbols = [];
         for (const id of ids) { const sym = resolveTencentSymbol(id); symToId[sym] = id; symbols.push(sym); }
         const script = document.createElement('script');
@@ -1092,6 +1094,10 @@ async function syncData(id) {
     const cached = await getCachedData(id); 
     const hasEnough = cached && cached.length >= 30; 
     const cachedLastDate = cached && cached.length ? (cached[cached.length - 1]?.date || '') : '';
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
+        if (hasEnough) tryApplyCachedLiveOverlay(id, cached);
+        return hasEnough ? cached : null;
+    }
     
     if(isMarketOpen()) { 
         if(hasEnough) { 

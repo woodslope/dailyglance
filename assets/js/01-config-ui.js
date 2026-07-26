@@ -6,7 +6,7 @@
 const rootStyle = getComputedStyle(document.documentElement);
 const getCssVar = (name) => rootStyle.getPropertyValue(name).trim();
 
-const APP_BUILD = '2026-07-26-02';
+const APP_BUILD = '2026-07-26-03';
 const SYS_CONFIG = {
     THROTTLE_MS: 30000,
     REQ_TIMEOUT: 5000,
@@ -20,9 +20,104 @@ const SYS_CONFIG = {
     HISTORY_SOURCE_FAILURE_THRESHOLD: 2,
     HISTORY_SOURCE_CIRCUIT_MS: 300000,
     SIDEBAR_SYNC_CONCURRENCY: 3,
+    WATCHLIST_LIMIT: 15,
     LIVE_OVERLAY_CACHE_TTL_MS: 45000,
-    LIVE_OVERLAY_CACHE_KEY: 'dg_live_overlay_cache_v2'
+    LIVE_OVERLAY_CACHE_KEY: 'dg_live_overlay_cache_v2',
+    MARKET_REFRESH_LEASE_KEY: 'dg_market_refresh_leader_v1',
+    MARKET_REFRESH_LEASE_MS: 12000,
+    MARKET_REFRESH_HEARTBEAT_MS: 4000,
+    WATCHLIST_SYNC_KEY: 'dg_watchlist_sync_v1'
 };
+
+const PAGE_SESSION_ID = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+let marketRefreshLeadershipStarted = false;
+let marketRefreshHeartbeatTimer = 0;
+let marketRefreshLeader = false;
+
+function readMarketRefreshLease() {
+    try {
+        const raw = localStorage.getItem(SYS_CONFIG.MARKET_REFRESH_LEASE_KEY);
+        const lease = raw ? JSON.parse(raw) : null;
+        if (!lease || typeof lease.owner !== 'string' || !Number.isFinite(Number(lease.expiresAt))) return null;
+        return { owner: lease.owner, expiresAt: Number(lease.expiresAt) };
+    } catch (e) {
+        return null;
+    }
+}
+
+function claimMarketRefreshLeadership(options = {}) {
+    const now = Date.now();
+    const current = readMarketRefreshLease();
+    if (!options.force && current && current.owner !== PAGE_SESSION_ID && current.expiresAt > now) {
+        marketRefreshLeader = false;
+        return false;
+    }
+    try {
+        localStorage.setItem(SYS_CONFIG.MARKET_REFRESH_LEASE_KEY, JSON.stringify({
+            owner: PAGE_SESSION_ID,
+            expiresAt: now + SYS_CONFIG.MARKET_REFRESH_LEASE_MS
+        }));
+        marketRefreshLeader = readMarketRefreshLease()?.owner === PAGE_SESSION_ID;
+        return marketRefreshLeader;
+    } catch (e) {
+        // Storage 不可用时保持单页原有行为。
+        marketRefreshLeader = true;
+        return true;
+    }
+}
+
+function releaseMarketRefreshLeadership() {
+    const current = readMarketRefreshLease();
+    if (current?.owner === PAGE_SESSION_ID) {
+        try { localStorage.removeItem(SYS_CONFIG.MARKET_REFRESH_LEASE_KEY); } catch (e) {}
+    }
+    marketRefreshLeader = false;
+}
+
+function canRequestMarketData() {
+    if (!marketRefreshLeadershipStarted) return true;
+    const now = Date.now();
+    const current = readMarketRefreshLease();
+    if (current?.owner === PAGE_SESSION_ID && current.expiresAt > now) {
+        marketRefreshLeader = true;
+        return true;
+    }
+    marketRefreshLeader = false;
+    if (document.hidden) return false;
+    if (!current || current.expiresAt <= now) return claimMarketRefreshLeadership();
+    return false;
+}
+
+function initMarketRefreshLeadership() {
+    if (marketRefreshLeadershipStarted) return;
+    marketRefreshLeadershipStarted = true;
+    if (!document.hidden) {
+        const hasFocus = typeof document.hasFocus !== 'function' || document.hasFocus();
+        claimMarketRefreshLeadership({ force: hasFocus });
+    }
+    marketRefreshHeartbeatTimer = window.setInterval(() => {
+        if (document.hidden) {
+            releaseMarketRefreshLeadership();
+            return;
+        }
+        const current = readMarketRefreshLease();
+        if (current?.owner === PAGE_SESSION_ID) claimMarketRefreshLeadership({ force: true });
+        else if (!current || current.expiresAt <= Date.now()) claimMarketRefreshLeadership();
+    }, SYS_CONFIG.MARKET_REFRESH_HEARTBEAT_MS);
+
+    if (typeof window.addEventListener === 'function') {
+        window.addEventListener('focus', () => claimMarketRefreshLeadership({ force: true }));
+        window.addEventListener('pagehide', releaseMarketRefreshLeadership);
+        window.addEventListener('storage', event => {
+            if (event.key !== SYS_CONFIG.MARKET_REFRESH_LEASE_KEY) return;
+            marketRefreshLeader = readMarketRefreshLease()?.owner === PAGE_SESSION_ID;
+        });
+    }
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) releaseMarketRefreshLeadership();
+        else claimMarketRefreshLeadership({ force: true });
+    });
+}
 
 const MA_OPTIONS = [5, 10, 20, 30, 60, 120, 250];
 const MA_COLORS = { 5: '#ffffff', 10: '#f5a623', 20: '#c084fc', 30: '#60a5fa', 60: '#f472b6', 120: '#4ade80', 250: '#94a3b8' };
