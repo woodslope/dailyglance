@@ -864,6 +864,260 @@ function getDataMutationMeta(prevData, nextData) {
     return { mode: 'full', startIdx: 0 };
 }
 
+// ==========================================
+// 外部环境快照：与 A 股历史、实时 overlay 和策略状态完全隔离
+// ==========================================
+const EXTERNAL_MARKET_CONFIG = {
+    CACHE_KEY: 'dg_external_market_snapshot_v1',
+    COOLDOWN_MS: 60000,
+    REQUEST_TIMEOUT_MS: 5000,
+    PRIMARY_URL: 'https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f4,f12,f13,f14,f15,f16,f17,f18,f124&secids=100.SPX,100.NDX,124.HSTECH,104.CN00Y,133.USDCNH',
+    ITEMS: {
+        spx: { code: 'SPX', name: '标普500', region: '美国', decimals: 2, fallbackSymbol: 'usINX', fallbackGlobal: 'v_usINX' },
+        ndx: { code: 'NDX', name: '纳斯达克', region: '美国', decimals: 2, fallbackSymbol: 'usIXIC', fallbackGlobal: 'v_usIXIC' },
+        hstech: { code: 'HSTECH', name: '恒生科技', region: '中国香港', decimals: 2, fallbackSymbol: 'hkHSTECH', fallbackGlobal: 'v_hkHSTECH' },
+        a50: { code: 'CN00Y', name: 'A50期指', region: '新加坡', decimals: 2 },
+        usdcnh: { code: 'USDCNH', name: '美元兑离岸人民币', region: '外汇', decimals: 4 }
+    }
+};
+
+const externalMarketState = {
+    items: {},
+    source: '',
+    fetchedAt: 0,
+    lastAttemptAt: 0,
+    status: 'idle',
+    stale: false,
+    error: '',
+    inFlight: null,
+    cacheLoaded: false
+};
+
+function sanitizeExternalMarketItem(key, item) {
+    const config = EXTERNAL_MARKET_CONFIG.ITEMS[key];
+    const value = Number(item?.value);
+    const changePct = Number(item?.changePct);
+    const change = Number(item?.change);
+    if (!config || !Number.isFinite(value) || !Number.isFinite(changePct)) return null;
+    return {
+        key,
+        code: config.code,
+        name: config.name,
+        region: config.region,
+        decimals: config.decimals,
+        value,
+        changePct,
+        change: Number.isFinite(change) ? change : 0,
+        quoteAt: Number.isFinite(Number(item?.quoteAt)) ? Number(item.quoteAt) : 0,
+        source: String(item?.source || ''),
+        stale: !!item?.stale
+    };
+}
+
+function loadExternalMarketCache() {
+    if (externalMarketState.cacheLoaded) return externalMarketState;
+    externalMarketState.cacheLoaded = true;
+    try {
+        const raw = localStorage.getItem(EXTERNAL_MARKET_CONFIG.CACHE_KEY);
+        const cached = raw ? JSON.parse(raw) : null;
+        if (!cached || typeof cached !== 'object') return externalMarketState;
+        const items = {};
+        Object.keys(EXTERNAL_MARKET_CONFIG.ITEMS).forEach(key => {
+            const item = sanitizeExternalMarketItem(key, cached.items?.[key]);
+            if (item) items[key] = { ...item, stale: true };
+        });
+        externalMarketState.items = items;
+        externalMarketState.source = String(cached.source || '本地缓存');
+        externalMarketState.fetchedAt = Number(cached.fetchedAt) || 0;
+        externalMarketState.lastAttemptAt = Number(cached.lastAttemptAt) || 0;
+        externalMarketState.status = Object.keys(items).length ? 'cached' : 'idle';
+        externalMarketState.stale = Object.keys(items).length > 0;
+    } catch (error) {}
+    return externalMarketState;
+}
+
+function saveExternalMarketCache() {
+    try {
+        localStorage.setItem(EXTERNAL_MARKET_CONFIG.CACHE_KEY, JSON.stringify({
+            version: 1,
+            items: externalMarketState.items,
+            source: externalMarketState.source,
+            fetchedAt: externalMarketState.fetchedAt,
+            lastAttemptAt: externalMarketState.lastAttemptAt
+        }));
+    } catch (error) {}
+}
+
+function getExternalMarketCooldownRemaining(now = Date.now()) {
+    loadExternalMarketCache();
+    return Math.max(0, EXTERNAL_MARKET_CONFIG.COOLDOWN_MS - (now - externalMarketState.lastAttemptAt));
+}
+
+function notifyExternalMarketState() {
+    if (state.tab !== 'external' || document.hidden) return;
+    if (typeof renderExternalMarketSnapshot === 'function') renderExternalMarketSnapshot();
+}
+
+function normalizeExternalPrimaryItem(row) {
+    const key = Object.keys(EXTERNAL_MARKET_CONFIG.ITEMS).find(itemKey => EXTERNAL_MARKET_CONFIG.ITEMS[itemKey].code === String(row?.f12 || ''));
+    if (!key) return null;
+    return sanitizeExternalMarketItem(key, {
+        value: row.f2,
+        changePct: row.f3,
+        change: row.f4,
+        quoteAt: Number(row.f124) > 0 ? Number(row.f124) * 1000 : 0,
+        source: '东方财富',
+        stale: false
+    });
+}
+
+async function fetchExternalMarketPrimary() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EXTERNAL_MARKET_CONFIG.REQUEST_TIMEOUT_MS);
+    try {
+        const response = await fetch(EXTERNAL_MARKET_CONFIG.PRIMARY_URL, {
+            method: 'GET',
+            cache: 'no-store',
+            signal: controller.signal
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (payload?.rc !== 0 || !Array.isArray(payload?.data?.diff)) throw new Error('主行情返回无效');
+        const items = {};
+        payload.data.diff.forEach(row => {
+            const item = normalizeExternalPrimaryItem(row);
+            if (item) items[item.key] = item;
+        });
+        return items;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function parseTencentExternalItem(key, raw) {
+    if (typeof raw !== 'string' || !raw) return null;
+    const parts = raw.split('~');
+    const quoteText = String(parts[30] || '').trim().replace(/-/g, '/');
+    const quoteAt = quoteText ? new Date(quoteText).getTime() : 0;
+    return sanitizeExternalMarketItem(key, {
+        value: parts[3],
+        change: parts[31],
+        changePct: parts[32],
+        quoteAt: Number.isFinite(quoteAt) ? quoteAt : 0,
+        source: '腾讯',
+        stale: false
+    });
+}
+
+function fetchExternalMarketFallback(keys) {
+    const configs = keys.map(key => ({ key, ...EXTERNAL_MARKET_CONFIG.ITEMS[key] })).filter(item => item.fallbackSymbol && item.fallbackGlobal);
+    if (!configs.length) return Promise.resolve({});
+    return new Promise(resolve => {
+        const scriptId = `dg_external_fallback_${Date.now()}`;
+        let settled = false;
+        const cleanup = () => {
+            clearTimeout(timer);
+            const script = document.getElementById(scriptId);
+            if (script) script.remove();
+            configs.forEach(config => {
+                try { delete window[config.fallbackGlobal]; } catch (error) { window[config.fallbackGlobal] = undefined; }
+            });
+        };
+        const finish = items => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(items);
+        };
+        configs.forEach(config => { window[config.fallbackGlobal] = undefined; });
+        const timer = setTimeout(() => finish({}), EXTERNAL_MARKET_CONFIG.REQUEST_TIMEOUT_MS);
+        const script = document.createElement('script');
+        script.id = scriptId;
+        script.charset = 'gbk';
+        script.src = `https://qt.gtimg.cn/q=${configs.map(config => config.fallbackSymbol).join(',')}`;
+        script.onload = () => {
+            const items = {};
+            configs.forEach(config => {
+                const item = parseTencentExternalItem(config.key, window[config.fallbackGlobal]);
+                if (item) items[config.key] = item;
+            });
+            finish(items);
+        };
+        script.onerror = () => finish({});
+        document.head.appendChild(script);
+    });
+}
+
+async function refreshExternalMarketSnapshot(options = {}) {
+    loadExternalMarketCache();
+    if (externalMarketState.inFlight) return externalMarketState.inFlight;
+    if (state.tab !== 'external' || document.hidden) return externalMarketState;
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return externalMarketState;
+    if (getExternalMarketCooldownRemaining() > 0) {
+        notifyExternalMarketState();
+        return externalMarketState;
+    }
+
+    const task = (async () => {
+        const cachedItems = { ...externalMarketState.items };
+        externalMarketState.lastAttemptAt = Date.now();
+        externalMarketState.status = 'loading';
+        externalMarketState.error = '';
+        saveExternalMarketCache();
+        notifyExternalMarketState();
+
+        let primaryItems = {};
+        let primaryError = '';
+        try {
+            primaryItems = await fetchExternalMarketPrimary();
+        } catch (error) {
+            primaryError = error?.name === 'AbortError' ? '主行情请求超时' : (error?.message || '主行情请求失败');
+        }
+
+        const allKeys = Object.keys(EXTERNAL_MARKET_CONFIG.ITEMS);
+        const missingAfterPrimary = allKeys.filter(key => !primaryItems[key]);
+        const fallbackKeys = missingAfterPrimary.filter(key => EXTERNAL_MARKET_CONFIG.ITEMS[key].fallbackSymbol);
+        let fallbackItems = {};
+        if (fallbackKeys.length) fallbackItems = await fetchExternalMarketFallback(fallbackKeys);
+
+        const freshItems = { ...primaryItems, ...fallbackItems };
+        const missingKeys = allKeys.filter(key => !freshItems[key]);
+        const nextItems = { ...freshItems };
+        missingKeys.forEach(key => {
+            const cached = sanitizeExternalMarketItem(key, cachedItems[key]);
+            if (cached) nextItems[key] = { ...cached, stale: true };
+        });
+
+        const freshCount = Object.keys(freshItems).length;
+        const availableCount = Object.keys(nextItems).length;
+        externalMarketState.items = nextItems;
+        externalMarketState.stale = missingKeys.length > 0;
+        externalMarketState.error = missingKeys.length
+            ? (primaryError || `有 ${missingKeys.length} 项行情暂未更新`)
+            : '';
+        if (freshCount === allKeys.length) externalMarketState.status = 'ready';
+        else if (freshCount > 0) externalMarketState.status = 'partial';
+        else if (availableCount > 0) externalMarketState.status = 'cached';
+        else externalMarketState.status = 'error';
+
+        if (freshCount > 0) {
+            externalMarketState.fetchedAt = Date.now();
+            const sources = Array.from(new Set(Object.values(freshItems).map(item => item.source).filter(Boolean)));
+            externalMarketState.source = sources.join(' + ');
+        } else if (!externalMarketState.source && availableCount > 0) {
+            externalMarketState.source = '本地缓存';
+        }
+        saveExternalMarketCache();
+        notifyExternalMarketState();
+        return externalMarketState;
+    })();
+
+    externalMarketState.inFlight = task.finally(() => {
+        externalMarketState.inFlight = null;
+    });
+    return externalMarketState.inFlight;
+}
+
 const requestManager = {
     limiters: new Map(),
     async fetchRealtimeWithThrottle(id) {
@@ -1408,6 +1662,7 @@ async function clearAllCache() {
     state.liveWeeklyData = {};
     state.liveOverlayCache = {};
     try { localStorage.removeItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY); } catch(e) {}
+    try { localStorage.removeItem(EXTERNAL_MARKET_CONFIG.CACHE_KEY); } catch(e) {}
     derivedIndicatorCache.clear();
     localStorage.removeItem('quant_strategy'); 
     location.reload(); 

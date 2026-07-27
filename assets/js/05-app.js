@@ -400,6 +400,107 @@ async function saveWatchlist() {
     } catch(e) {}
 }
 
+let watchlistDragCode = '';
+
+function clearWatchlistDropTargets() {
+    document.querySelectorAll('#stockNavList .nav-list-item').forEach(item => {
+        item.classList.remove('drag-before', 'drag-after');
+    });
+}
+
+function clearWatchlistDragVisuals() {
+    clearWatchlistDropTargets();
+    document.querySelectorAll('#stockNavList .nav-list-item.is-dragging').forEach(item => {
+        item.classList.remove('is-dragging');
+    });
+}
+
+function startWatchlistDrag(event, code) {
+    const stock = (state.watchlist || []).find(item => item.code === code);
+    if (!stock || stock._pendingRemove) {
+        event.preventDefault();
+        return;
+    }
+    watchlistDragCode = code;
+    clearWatchlistDragVisuals();
+    const row = event.currentTarget?.closest?.('.nav-list-item');
+    row?.classList?.add('is-dragging');
+    if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', code);
+        if (row && typeof event.dataTransfer.setDragImage === 'function') {
+            event.dataTransfer.setDragImage(row, 18, Math.max(12, row.offsetHeight / 2));
+        }
+    }
+    event.stopPropagation();
+}
+
+function updateWatchlistDragTarget(event, targetCode) {
+    if (!watchlistDragCode || watchlistDragCode === targetCode) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    clearWatchlistDropTargets();
+    const row = event.currentTarget;
+    const rect = row.getBoundingClientRect();
+    row.classList.add(event.clientY > rect.top + rect.height / 2 ? 'drag-after' : 'drag-before');
+}
+
+async function applyWatchlistOrder(nextWatchlist) {
+    const previousWatchlist = state.watchlist;
+    state.watchlist = nextWatchlist;
+    renderWatchlist();
+    try {
+        await saveWatchlist();
+    } catch(e) {
+        state.watchlist = previousWatchlist;
+        renderWatchlist();
+        showToast('排序保存失败，请重试。', 'error');
+    }
+}
+
+async function moveWatchlistItem(sourceCode, targetCode, insertAfter = false) {
+    if (!sourceCode || sourceCode === targetCode) return false;
+    const nextWatchlist = (state.watchlist || []).slice();
+    const sourceIndex = nextWatchlist.findIndex(item => item.code === sourceCode);
+    const originalTargetIndex = nextWatchlist.findIndex(item => item.code === targetCode);
+    if (sourceIndex < 0 || originalTargetIndex < 0) return false;
+    const [moved] = nextWatchlist.splice(sourceIndex, 1);
+    let targetIndex = nextWatchlist.findIndex(item => item.code === targetCode);
+    if (insertAfter) targetIndex += 1;
+    nextWatchlist.splice(targetIndex, 0, moved);
+    await applyWatchlistOrder(nextWatchlist);
+    return true;
+}
+
+async function dropWatchlistItem(event, targetCode) {
+    event.preventDefault();
+    event.stopPropagation();
+    const sourceCode = watchlistDragCode || event.dataTransfer?.getData('text/plain') || '';
+    const row = event.currentTarget;
+    const rect = row.getBoundingClientRect();
+    const insertAfter = event.clientY > rect.top + rect.height / 2;
+    watchlistDragCode = '';
+    clearWatchlistDragVisuals();
+    await moveWatchlistItem(sourceCode, targetCode, insertAfter);
+}
+
+function finishWatchlistDrag() {
+    watchlistDragCode = '';
+    clearWatchlistDragVisuals();
+}
+
+async function handleWatchlistDragKeydown(event, code) {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const sourceIndex = (state.watchlist || []).findIndex(item => item.code === code);
+    const offset = event.key === 'ArrowUp' ? -1 : 1;
+    const target = state.watchlist[sourceIndex + offset];
+    if (!target) return;
+    await moveWatchlistItem(code, target.code, offset > 0);
+    document.querySelector(`#stockNavList .wl-drag-handle[data-code="${code}"]`)?.focus?.();
+}
+
 function getSupportedWatchlistTargets() {
     return (state.watchlist || [])
         .map(stock => normalizeSecurityTarget(stock))
@@ -1210,10 +1311,17 @@ function renderWatchlist() {
         const positionChangeHtml = rowStatus.positionChange
             ? `<span class="wl-position-change">${escapeHTML(rowStatus.positionChange)}</span>`
             : '';
+        const dragTargetAttrs = s._pendingRemove
+            ? ''
+            : `ondragover="updateWatchlistDragTarget(event,'${escapeJSArg(target.code)}')" ondrop="dropWatchlistItem(event,'${escapeJSArg(target.code)}')"`;
         
         return `
-            <div class="nav-list-item ${isSupported ? '' : 'is-unsupported '}${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${target.code}" ${s._pendingRemove ? '' : (isSupported ? `onclick="selectStock('${escapeJSArg(target.code)}','${escapeJSArg(displayName)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')"` : 'onclick="showUnsupportedSecurityNotice()"')}>
+            <div class="nav-list-item watchlist-item ${isSupported ? '' : 'is-unsupported '}${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${target.code}" ${dragTargetAttrs} ${s._pendingRemove ? '' : (isSupported ? `onclick="selectStock('${escapeJSArg(target.code)}','${escapeJSArg(displayName)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')"` : 'onclick="showUnsupportedSecurityNotice()"')}>
                 <div class="nav-list-main">
+                    ${s._pendingRemove ? '' : `
+                    <button type="button" class="wl-drag-handle" data-code="${target.code}" draggable="true" title="拖动调整顺序" aria-label="拖动或使用上下方向键调整 ${escapeHTML(displayName)} 的顺序" onclick="event.stopPropagation()" ondragstart="startWatchlistDrag(event,'${escapeJSArg(target.code)}')" ondragend="finishWatchlistDrag()" onkeydown="handleWatchlistDragKeydown(event,'${escapeJSArg(target.code)}')">
+                        <svg viewBox="0 0 12 18" aria-hidden="true"><circle cx="3" cy="3" r="1.2"></circle><circle cx="9" cy="3" r="1.2"></circle><circle cx="3" cy="9" r="1.2"></circle><circle cx="9" cy="9" r="1.2"></circle><circle cx="3" cy="15" r="1.2"></circle><circle cx="9" cy="15" r="1.2"></circle></svg>
+                    </button>`}
                     <div class="lname-wrap">
                         <span class="lname" title="${escapeHTML(displayName)}">${escapeHTML(shortName)}</span>
                         <span class="wl-status ${rowStatus.toneClass}" title="${escapeHTML(statusTitle)}">${rowStatus.label}</span>
@@ -1366,6 +1474,89 @@ function toggleHelp() {
     const o = document.getElementById('helpOverlay'); 
     if(o) o.classList.toggle('show'); 
 }
+
+function isHeaderMoreMenuOpen() {
+    const menu = document.getElementById('headerMoreMenu');
+    return !!menu && !menu.hidden;
+}
+
+function closeHeaderMoreMenu(options = {}) {
+    const menu = document.getElementById('headerMoreMenu');
+    const trigger = document.getElementById('btnMore');
+    if (!menu || !trigger) return;
+    menu.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (options.restoreFocus) trigger.focus();
+}
+
+function openHeaderMoreMenu(options = {}) {
+    const menu = document.getElementById('headerMoreMenu');
+    const trigger = document.getElementById('btnMore');
+    if (!menu || !trigger) return;
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    if (options.focusFirst) menu.querySelector('[role="menuitem"]')?.focus();
+}
+
+function toggleHeaderMoreMenu(event) {
+    event?.stopPropagation();
+    if (isHeaderMoreMenuOpen()) closeHeaderMoreMenu();
+    else openHeaderMoreMenu();
+}
+
+function handleHeaderMoreTriggerKeydown(event) {
+    if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        event.stopPropagation();
+        openHeaderMoreMenu({ focusFirst: true });
+    } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeHeaderMoreMenu();
+    }
+}
+
+function handleHeaderMoreMenuKeydown(event) {
+    const menu = document.getElementById('headerMoreMenu');
+    const items = Array.from(menu?.querySelectorAll('[role="menuitem"]') || []);
+    if (!items.length) return;
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+    else if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = items.length - 1;
+    else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeHeaderMoreMenu({ restoreFocus: true });
+        return;
+    } else {
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    items[nextIndex].focus();
+}
+
+function runHeaderMoreAction(event, action) {
+    event?.stopPropagation();
+    closeHeaderMoreMenu();
+    if (action === 'performance') togglePerfPanel();
+    else if (action === 'reset') handleClearCache();
+}
+
+document.addEventListener('click', event => {
+    const wrap = document.getElementById('headerMoreWrap');
+    if (wrap && !wrap.contains(event.target)) closeHeaderMoreMenu();
+});
+
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && isHeaderMoreMenuOpen()) {
+        event.preventDefault();
+        closeHeaderMoreMenu({ restoreFocus: true });
+    }
+});
 
 function isBackgroundPerfTrace(item) {
     const label = String(item?.label || '');
@@ -1579,11 +1770,6 @@ function renderSettings() {
                 <div class="signal-config-grid">${signalConfigHtml}</div>
                 <div class="risk-note" style="margin-top:8px;">注：灰色未点亮的信号表示当前策略未将该信号纳入核心驱动模型。积分配置由当前策略动态决定，不同策略对同一信号的赋分可能不同。</div>
             </div>
-            <div class="terminal-block no-bg">
-                <button onclick="handleClearCache()" class="text-bull" style="width:100%; padding:10px; background:var(--bg-up-light); border:1px solid rgba(246, 70, 93, 0.4); border-radius:var(--radius-sm); font-size:12px; font-weight:700; cursor:pointer; transition:all .1s; outline:none;">
-                    ⚠️ 彻底重置系统数据
-                </button>
-            </div>
         </div>
     `;
 }
@@ -1596,6 +1782,227 @@ function toggleSettings() {
         } 
         o.classList.toggle('show'); 
     } 
+}
+
+function formatExternalMarketTime(timestamp, includeDate = false) {
+    if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return '--';
+    const options = includeDate
+        ? { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }
+        : { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false };
+    return new Intl.DateTimeFormat('zh-CN', options).format(new Date(Number(timestamp)));
+}
+
+function formatExternalMarketDate(timestamp) {
+    if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return '--';
+    return new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(new Date(Number(timestamp)));
+}
+
+function formatExternalSigned(value, decimals = 2, suffix = '') {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '--';
+    const normalized = Math.abs(number) < Math.pow(10, -decimals) / 2 ? 0 : number;
+    return `${normalized > 0 ? '+' : ''}${normalized.toFixed(decimals)}${suffix}`;
+}
+
+function getExternalPairSummary(keys, label, subject, dimension) {
+    const items = keys.map(key => externalMarketState.items[key]).filter(Boolean);
+    const factorText = items.length
+        ? items.map(item => `${item.name} ${formatExternalSigned(item.changePct, 2, '%')}（${formatExternalMarketDate(item.quoteAt)}）`).join(' · ')
+        : '等待行情数据';
+    if (items.length < keys.length) {
+        return { label, state: '信息不完整', tone: 'is-neutral', copy: `${subject}行情尚未完整返回，暂不判断${dimension}。`, factorText, count: `${items.length}/${keys.length} 项` };
+    }
+    if (items.every(item => item.changePct > 0)) {
+        return { label, state: '偏暖', tone: 'is-positive', copy: `${subject}最近一轮行情同向上涨，${dimension}线索相对偏暖。`, factorText, count: `${items.length}/${keys.length} 项` };
+    }
+    if (items.every(item => item.changePct < 0)) {
+        return { label, state: '偏压制', tone: 'is-negative', copy: `${subject}最近一轮行情同向下跌，${dimension}线索相对承压。`, factorText, count: `${items.length}/${keys.length} 项` };
+    }
+    return { label, state: '分化', tone: 'is-mixed', copy: `${subject}最近一轮行情方向不同，${dimension}暂未形成一致线索。`, factorText, count: `${items.length}/${keys.length} 项` };
+}
+
+function getExternalFxSummary() {
+    const item = externalMarketState.items.usdcnh;
+    if (!item) return { label: '汇率压力', state: '信息不完整', tone: 'is-neutral', copy: '离岸人民币行情尚未返回，暂不判断汇率方向。', factorText: '等待行情数据', count: '0/1 项' };
+    const factorText = `${item.name} ${formatExternalSigned(item.changePct, 2, '%')}（${formatExternalMarketDate(item.quoteAt)}）`;
+    if (item.changePct > 0.1) return { label: '汇率压力', state: '偏压制', tone: 'is-negative', copy: '最近一轮美元兑离岸人民币走高，人民币汇率环境相对承压。', factorText, count: '1/1 项' };
+    if (item.changePct < -0.1) return { label: '汇率压力', state: '偏舒缓', tone: 'is-positive', copy: '最近一轮美元兑离岸人民币走低，人民币汇率压力相对舒缓。', factorText, count: '1/1 项' };
+    return { label: '汇率压力', state: '波动有限', tone: 'is-neutral', copy: '最近一轮美元兑离岸人民币波动较小，汇率线索暂不突出。', factorText, count: '1/1 项' };
+}
+
+function renderExternalSummaryCards() {
+    const container = document.getElementById('externalEnvironmentSummary');
+    if (!container) return;
+    const summaries = [
+        getExternalPairSummary(['hstech', 'a50'], '中国资产情绪', '恒生科技与A50期指', '中国资产情绪'),
+        getExternalPairSummary(['spx', 'ndx'], '全球风险偏好', '标普500与纳斯达克', '全球风险偏好'),
+        getExternalFxSummary()
+    ];
+    container.innerHTML = summaries.map(summary => `
+        <article class="external-context-card ${summary.tone}">
+            <div class="external-context-head">
+                <div>
+                    <div class="external-context-label">${escapeHTML(summary.label)}</div>
+                    <div class="external-context-state">${escapeHTML(summary.state)}</div>
+                </div>
+                <div class="external-context-count mono">${escapeHTML(summary.count)}</div>
+            </div>
+            <div class="external-context-copy">${escapeHTML(summary.copy)}</div>
+            <div class="external-context-factors mono" title="${escapeHTML(summary.factorText)}">${escapeHTML(summary.factorText)}</div>
+        </article>
+    `).join('');
+}
+
+function renderExternalQuoteCards() {
+    const container = document.getElementById('externalMarketQuotes');
+    if (!container) return;
+    const quoteOrder = ['hstech', 'a50', 'spx', 'ndx', 'usdcnh'];
+    container.innerHTML = quoteOrder.map(key => {
+        const config = EXTERNAL_MARKET_CONFIG.ITEMS[key];
+        const item = externalMarketState.items[key];
+        if (!item) {
+            return `
+                <article class="external-quote-card">
+                    <div class="external-quote-head"><div class="external-quote-name">${escapeHTML(config.name)}</div><div class="external-quote-region">${escapeHTML(config.region)}</div></div>
+                    <div class="external-quote-value mono">--</div>
+                    <div class="external-quote-change text-dim">等待行情</div>
+                    <div class="external-quote-meta mono">行情时间 --</div>
+                </article>
+            `;
+        }
+        const changeClass = item.changePct > 0 ? 'up' : (item.changePct < 0 ? 'down' : 'flat');
+        const cacheTag = item.stale ? '<span class="external-cache-tag">缓存</span>' : '';
+        return `
+            <article class="external-quote-card">
+                <div class="external-quote-head"><div class="external-quote-name">${escapeHTML(item.name)}${cacheTag}</div><div class="external-quote-region">${escapeHTML(item.region)}</div></div>
+                <div class="external-quote-value mono">${item.value.toFixed(item.decimals)}</div>
+                <div class="external-quote-change mono ${changeClass}">${formatExternalSigned(item.changePct, 2, '%')} <span class="text-dim">${formatExternalSigned(item.change, item.decimals)}</span></div>
+                <div class="external-quote-meta mono" title="${escapeHTML(item.source || '公开行情')} · ${formatExternalMarketTime(item.quoteAt, true)}">行情 ${formatExternalMarketTime(item.quoteAt, true)} · ${escapeHTML(item.source || '公开行情')}</div>
+            </article>
+        `;
+    }).join('');
+}
+
+function renderExternalMarketSnapshot() {
+    loadExternalMarketCache();
+    renderExternalSummaryCards();
+    renderExternalQuoteCards();
+
+    const statusEl = document.getElementById('externalMarketStatus');
+    const metaEl = document.getElementById('externalSnapshotMeta');
+    const refreshBtn = document.getElementById('externalRefreshBtn');
+    const statusMap = {
+        idle: { label: '等待更新', tone: 'data-status-info', tooltip: '进入页面后将请求一批外部环境行情' },
+        loading: { label: '正在更新', tone: 'data-status-info', tooltip: '正在批量更新五项外部行情，请勿重复操作' },
+        ready: { label: '已更新', tone: 'data-status-ok', tooltip: '五项外部行情已完成本轮更新' },
+        partial: { label: '部分更新', tone: 'data-status-warn', tooltip: externalMarketState.error || '部分行情沿用最近缓存' },
+        cached: { label: '缓存快照', tone: 'data-status-warn', tooltip: externalMarketState.error || '外部接口暂不可用，当前显示最近缓存' },
+        error: { label: '暂不可用', tone: 'data-status-warn', tooltip: externalMarketState.error || '外部行情暂不可用' }
+    };
+    const status = statusMap[externalMarketState.status] || statusMap.idle;
+    if (statusEl) {
+        statusEl.classList.remove('data-status-ok', 'data-status-info', 'data-status-warn');
+        statusEl.classList.add(status.tone);
+        statusEl.dataset.tooltip = status.tooltip;
+        const label = statusEl.querySelector('.data-status-label');
+        if (label) label.textContent = status.label;
+    }
+    if (metaEl) {
+        metaEl.textContent = externalMarketState.fetchedAt
+            ? `本页更新 ${formatExternalMarketTime(externalMarketState.fetchedAt, true)} · ${externalMarketState.source || '公开行情'}`
+            : '尚无可用快照';
+    }
+    if (refreshBtn) {
+        refreshBtn.disabled = externalMarketState.status === 'loading';
+        const icon = refreshBtn.querySelector('svg');
+        const label = refreshBtn.querySelector('span');
+        if (icon) icon.classList.toggle('spin', externalMarketState.status === 'loading');
+        if (label) label.textContent = externalMarketState.status === 'loading' ? '正在更新' : '更新快照';
+    }
+}
+
+let externalReturnSelection = null;
+
+function setPrimaryWorkspace(tab) {
+    const marketWorkspace = document.getElementById('marketWorkspace');
+    const externalWorkspace = document.getElementById('externalWorkspace');
+    const isExternal = tab === 'external';
+    if (marketWorkspace) marketWorkspace.hidden = isExternal;
+    if (externalWorkspace) externalWorkspace.hidden = !isExternal;
+    document.querySelectorAll('#mainTabs .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
+    if (!isExternal) {
+        requestAnimationFrame(() => {
+            ['main', 'vol', 'macd', 'kdj'].forEach(key => state.charts[key]?.resize?.());
+        });
+    }
+}
+
+function openExternalWorkspace() {
+    if (state.tab === 'index' || state.tab === 'stock') {
+        externalReturnSelection = { tab: state.tab, mode: state.mode, id: state.id, stockId: state.stockId };
+    }
+    state.tab = 'external';
+    state.mode = 'external';
+    state.isFrozen = false;
+    setPrimaryWorkspace('external');
+    loadExternalMarketCache();
+    renderExternalMarketSnapshot();
+    refreshExternalMarketSnapshot({ reason: 'tab-enter' });
+}
+
+function openMarketWorkspace(tab) {
+    const returnSelection = externalReturnSelection;
+    state.tab = tab;
+    setPrimaryWorkspace(tab);
+    if (tab === 'index') {
+        const id = returnSelection?.tab === 'index' ? returnSelection.id : 'sh';
+        document.getElementById('indexNavList').style.display = 'block';
+        document.getElementById('stockNavList').style.display = 'none';
+        selectIndex(id || 'sh');
+    } else {
+        document.getElementById('indexNavList').style.display = 'none';
+        document.getElementById('stockNavList').style.display = 'block';
+        renderWatchlist();
+        const savedTarget = returnSelection?.tab === 'stock'
+            ? state.watchlist.find(item => item.code === returnSelection.stockId && isSupportedWatchlistSecurity(item))
+            : null;
+        const nextTarget = savedTarget || getSupportedWatchlistFallback();
+        if (nextTarget) selectStock(nextTarget.code, nextTarget.name, nextTarget.secid, nextTarget.type, nextTarget.tencentSymbol);
+        else showEmptyWatchlistView();
+    }
+    externalReturnSelection = null;
+}
+
+function switchPrimaryTab(tab) {
+    if (!['external', 'index', 'stock'].includes(tab) || tab === state.tab) return;
+    if (tab === 'external') openExternalWorkspace();
+    else openMarketWorkspace(tab);
+}
+
+async function handleExternalMarketRefresh() {
+    loadExternalMarketCache();
+    if (externalMarketState.inFlight) {
+        showToast('外部行情正在更新，已复用当前请求。', 'info', 1800);
+        return externalMarketState.inFlight;
+    }
+    const remaining = getExternalMarketCooldownRemaining();
+    if (remaining > 0) {
+        showToast(`为保护行情接口，请 ${Math.ceil(remaining / 1000)} 秒后再更新。`, 'info', 2200);
+        return externalMarketState;
+    }
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
+        showToast('另一页面正在负责行情更新，当前显示本地快照。', 'info', 2400);
+        return externalMarketState;
+    }
+    const result = await refreshExternalMarketSnapshot({ reason: 'manual' });
+    if (result.status === 'ready') showToast('外部环境快照已更新。', 'success', 1800);
+    else if (result.status === 'partial' || result.status === 'cached') showToast('部分行情暂未更新，已保留最近快照。', 'warn', 2600);
+    else if (result.status === 'error') showToast('外部行情暂不可用，请稍后重试。', 'warn', 2600);
+    return result;
 }
 
 function scheduleIdleTask(fn, timeout = 300) {
@@ -1676,29 +2083,8 @@ async function init() {
     });
 
     document.querySelectorAll('.nav-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const tab = e.target.dataset.tab; 
-            if(tab === state.tab) return;
-            
-            state.tab = tab; 
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active')); 
-            e.target.classList.add('active');
-            
-            if(tab === 'index') {
-                document.getElementById('indexNavList').style.display = 'block'; 
-                document.getElementById('stockNavList').style.display = 'none'; 
-                selectIndex('sh');
-            } else {
-                document.getElementById('indexNavList').style.display = 'none'; 
-                document.getElementById('stockNavList').style.display = 'block'; 
-                renderWatchlist();
-                const nextTarget = getSupportedWatchlistFallback();
-                if(nextTarget) {
-                    selectStock(nextTarget.code, nextTarget.name, nextTarget.secid, nextTarget.type, nextTarget.tencentSymbol);
-                } else { 
-                    showEmptyWatchlistView();
-                }
-            }
+        btn.addEventListener('click', (event) => {
+            switchPrimaryTab(event.currentTarget.dataset.tab);
         });
     });
 
@@ -1775,6 +2161,10 @@ async function init() {
     // P0-4: 后台切回前台时若在交易时段，立即刷新侧边栏 + 当前标的
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
+        if (state.tab === 'external') {
+            refreshExternalMarketSnapshot({ reason: 'visibility' });
+            return;
+        }
         if (!isMarketOpen()) return;
         refreshSidebarRealtime();
         if (state.mode === 'index') cachedFetch(state.id);

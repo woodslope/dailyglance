@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260726-04"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260727-02"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260726-04">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260727-02">
 </head>
 <body>
 
@@ -91,51 +91,52 @@
         </div>
     </div>
     <div class="header-center" id="mainTabs">
+        <button class="nav-btn" data-tab="external">外部环境</button>
         <button class="nav-btn active" data-tab="index">大盘数据</button>
         <button class="nav-btn" data-tab="stock">自选股池</button>
     </div>
     <div class="header-right">
-        <div id="liveClock" class="mono text-dim" style="font-size:13px;">00:00:00</div>
-        <button id="btnBacktest" onclick="runBacktest()" title="运行策略回测" class="icon-btn" style="display:none;">
-            <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M24 44C35.0457 44 44 35.0457 44 24C44 12.9543 35.0457 4 24 4C12.9543 4 4 12.9543 4 24C4 35.0457 12.9543 44 24 44Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
-                <path d="M20 24V17.0718L26 20.5359L32 24L26 27.4641L20 30.9282V24Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
-            </svg>
-        </button>
-        <button id="btnClearCache" onclick="handleClearCache()" title="清除缓存" class="icon-btn">
-            <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fill-rule="evenodd" clip-rule="evenodd" d="M20 5.91406H28V13.9141H43V21.9141H5V13.9141H20V5.91406Z" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M8 40H40V22H8V40Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
-                <path d="M16 39.8976V33.9141" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M24 39.8977V33.8977" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M32 39.8976V33.9141" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M12 40H36" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-        </button>
-        <button id="btnSettings" onclick="toggleSettings()" title="设置" class="icon-btn">
-            <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M34.0003 41L44 24L34.0003 7H14.0002L4 24L14.0002 41H34.0003Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
-                <path d="M24 29C26.7614 29 29 26.7614 29 24C29 21.2386 26.7614 19 24 19C21.2386 19 19 21.2386 19 24C19 26.7614 21.2386 29 24 29Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
-            </svg>
-        </button>
-        <button id="btnHelp" onclick="toggleHelp()" title="帮助" class="icon-btn">
-            <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M24 44C35.0457 44 44 35.0457 44 24C44 12.9543 35.0457 4 24 4C12.9543 4 4 12.9543 4 24C4 35.0457 12.9543 44 24 44Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
-                <path d="M24 28.6248V24.6248C27.3137 24.6248 30 21.9385 30 18.6248C30 15.3111 27.3137 12.6248 24 12.6248C20.6863 12.6248 18 15.3111 18 18.6248" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M24 35V36" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-        </button>
-        <button id="btnPerf" onclick="togglePerfPanel()" title="性能诊断" class="icon-btn">
-            <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M8 40H40" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
-                <path d="M12 34L19 26L24 30L34 18L40 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M34 18H40V24" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-        </button>
+        <div id="liveClock" class="live-clock mono text-dim">00:00:00</div>
+        <span class="header-tool-divider" aria-hidden="true"></span>
+        <div class="header-action-group" aria-label="全局工具">
+            <button id="btnSettings" onclick="closeHeaderMoreMenu();toggleSettings()" title="设置" aria-label="设置" class="icon-btn">
+                <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M34.0003 41L44 24L34.0003 7H14.0002L4 24L14.0002 41H34.0003Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+                    <path d="M24 29C26.7614 29 29 26.7614 29 24C29 21.2386 26.7614 19 24 19C21.2386 19 19 21.2386 19 24C19 26.7614 21.2386 29 24 29Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <button id="btnHelp" onclick="closeHeaderMoreMenu();toggleHelp()" title="帮助" aria-label="帮助" class="icon-btn">
+                <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M24 44C35.0457 44 44 35.0457 44 24C44 12.9543 35.0457 4 24 4C12.9543 4 4 12.9543 4 24C4 35.0457 12.9543 44 24 44Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+                    <path d="M24 28.6248V24.6248C27.3137 24.6248 30 21.9385 30 18.6248C30 15.3111 27.3137 12.6248 24 12.6248C20.6863 12.6248 18 15.3111 18 18.6248" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M24 35V36" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <div id="headerMoreWrap" class="header-more-wrap">
+                <button id="btnMore" type="button" class="icon-btn" title="更多工具" aria-label="更多工具" aria-haspopup="menu" aria-controls="headerMoreMenu" aria-expanded="false" onclick="toggleHeaderMoreMenu(event)" onkeydown="handleHeaderMoreTriggerKeydown(event)">
+                    <svg class="icon" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <circle cx="10" cy="24" r="3" fill="currentColor"></circle>
+                        <circle cx="24" cy="24" r="3" fill="currentColor"></circle>
+                        <circle cx="38" cy="24" r="3" fill="currentColor"></circle>
+                    </svg>
+                </button>
+                <div id="headerMoreMenu" class="header-more-menu" role="menu" aria-label="更多工具" onkeydown="handleHeaderMoreMenuKeydown(event)" hidden>
+                    <button type="button" class="header-more-item" role="menuitem" onclick="runHeaderMoreAction(event,'performance')">
+                        <svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M8 40H40" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M12 34L19 26L24 30L34 18L40 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M34 18H40V24" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span>性能诊断</span>
+                    </button>
+                    <div class="header-more-divider" role="separator"></div>
+                    <button type="button" class="header-more-item is-destructive" role="menuitem" onclick="runHeaderMoreAction(event,'reset')">
+                        <svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M9 14H39" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M18 8H30L32 14H16L18 8Z" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M14 14L16 41H32L34 14" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M21 21V34M27 21V34" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+                        <span>重置本地数据</span>
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 </header>
 
-<main class="main-container">
+<main id="marketWorkspace" class="main-container">
     <aside class="nav-section" id="navSection">
         <div id="indexNavList"></div>
         <div id="stockNavList" style="display: none;"></div>
@@ -156,6 +157,13 @@
                 <div class="ma-selector" id="indicatorGroup"></div>
             </div>
             <div class="toolbar-right">
+                <button id="btnBacktest" onclick="runBacktest()" title="运行策略回测" class="icon-btn icon-btn-label" style="display:none;">
+                    <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M24 44C35.0457 44 44 35.0457 44 24C44 12.9543 35.0457 4 24 4C12.9543 4 4 12.9543 4 24C4 35.0457 12.9543 44 24 44Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+                        <path d="M20 24V17.0718L26 20.5359L32 24L26 27.4641L20 30.9282V24Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+                    </svg>
+                    <span>策略回测</span>
+                </button>
                 <button id="updateDataBtn" onclick="handleUpdateData()" title="强制更新数据" class="icon-btn">
                     <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M44 31C44 36.5228 39.5228 41 34 41C32.2091 41 30.5281 40.5292 29.0741 39.7046C26.5143 38.2529 24.6579 35.7046 24.1436 32.6983C24.0492 32.1463 24 31.5789 24 31C24 28.4323 24.9678 26.0906 26.5585 24.3198C28.3892 22.2818 31.0449 21 34 21C39.5228 21 44 25.4772 44 31Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
@@ -197,11 +205,63 @@
     </aside>
 </main>
 
+<main id="externalWorkspace" class="external-workspace" hidden>
+    <div class="external-shell">
+        <div class="external-page-head">
+            <div class="external-page-copy">
+                <div class="external-kicker">GLOBAL CONTEXT</div>
+                <h1>外部环境</h1>
+                <p>观察最近一轮中国资产情绪、海外风险偏好与汇率压力，只作 A 股背景参考，不作为买卖或仓位依据。</p>
+            </div>
+            <div class="external-page-actions">
+                <div id="externalMarketStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="外部环境行情尚未加载">
+                    <span class="data-status-dot"></span>
+                    <span class="data-status-label">等待更新</span>
+                </div>
+                <button id="externalRefreshBtn" type="button" class="icon-btn icon-btn-label" onclick="handleExternalMarketRefresh()" title="更新外部环境快照">
+                    <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <path d="M41 13V5M41 5H33M41 5L34.5 11.5C31.8 8.8 28.1 7 24 7C15.7 7 9 13.7 9 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M7 35V43M7 43H15M7 43L13.5 36.5C16.2 39.2 19.9 41 24 41C32.3 41 39 34.3 39 26" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span>更新快照</span>
+                </button>
+            </div>
+        </div>
+
+        <section aria-labelledby="externalSummaryTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">背景判断</div>
+                    <h2 id="externalSummaryTitle">最近一轮外部线索</h2>
+                </div>
+                <div id="externalSnapshotMeta" class="external-snapshot-meta mono">尚无快照</div>
+            </div>
+            <div id="externalEnvironmentSummary" class="external-summary-grid" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="externalQuotesTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">行情快照</div>
+                    <h2 id="externalQuotesTitle">五项外部观察</h2>
+                </div>
+            </div>
+            <div id="externalMarketQuotes" class="external-quote-grid" aria-live="polite"></div>
+        </section>
+
+        <div class="external-boundary-note">
+            <strong>使用边界</strong>
+            <span>本页仅作外部背景观察，不参与大盘八指数、建仓门禁、仓位、B/S 或任何策略计算；公开行情接口可能延迟，缓存状态会明确标记。</span>
+        </div>
+        <div class="chart-copyright-line external-copyright">© 2026 LINPO LAB · 仅供研究观察，不构成投资建议</div>
+    </div>
+</main>
+
 <div id="toastContainer"></div>
-<script src="assets/js/01-config-ui.js?v=20260726-04"></script>
-<script src="assets/js/02-data.js?v=20260726-04"></script>
-<script src="assets/js/03-calculations.js?v=20260726-04"></script>
-<script src="assets/js/04-render.js?v=20260726-04"></script>
-<script src="assets/js/05-app.js?v=20260726-04"></script>
+<script src="assets/js/01-config-ui.js?v=20260727-02"></script>
+<script src="assets/js/02-data.js?v=20260727-02"></script>
+<script src="assets/js/03-calculations.js?v=20260727-02"></script>
+<script src="assets/js/04-render.js?v=20260727-02"></script>
+<script src="assets/js/05-app.js?v=20260727-02"></script>
 </body>
 </html>
