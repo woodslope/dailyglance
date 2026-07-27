@@ -775,7 +775,9 @@ function getSignalLifecycleTransition(meta, decision, mode = 'stock') {
     const fallbackPreviousScore = currentScore + [...hard, ...soft].reduce((sum, item) => sum + (Number(item?.score) || 0), 0);
     const fromScore = Number.isFinite(previousScore) ? previousScore : fallbackPreviousScore;
     const scoreName = mode === 'index' ? '指数动能积分' : '买入积分';
-    const scoreDelta = `${scoreName}由${fromScore}/${threshold}降至${currentScore}/${threshold}`;
+    const scoreDelta = fromScore > currentScore
+        ? `${scoreName}由${fromScore}/${threshold}降至${currentScore}/${threshold}`
+        : `${scoreName}当前为${currentScore}/${threshold}`;
     const position = Number(decision?.position) || 0;
     const previousPosition = Number(decision?.prevAdv) || 0;
 
@@ -784,11 +786,22 @@ function getSignalLifecycleTransition(meta, decision, mode = 'stock') {
         const levelText = levels.length === 1 ? `信号防守位${levels[0]}` : `相关信号防守位${levels.join('/')}`;
         const closeText = Number.isFinite(Number(meta?.currentClose)) ? Number(meta.currentClose).toFixed(2) : '--';
         const signalText = hard.map(item => `${getUserSignalText(item.signal)}(+${Number(item.score) || 0})`).join('、');
-        let actionText = mode === 'index' ? '当前保持低风险暴露' : '当前空仓观察';
-        if (previousPosition > 0 && position === 0) {
-            actionText = mode === 'index'
-                ? `风险仓位从${previousPosition}%降至0%`
-                : (previousPosition <= 30 ? `退出${previousPosition}%试探仓，当前空仓观察` : `仓位从${previousPosition}%降至0%`);
+        let actionText;
+        if (mode === 'index') {
+            if (position === 0) actionText = previousPosition > 0 ? `风险仓位从${previousPosition}%降至0%` : '当前保持低风险暴露';
+            else if (previousPosition === 0) actionText = `风险仓位由0%提高至${position}%`;
+            else if (position < previousPosition) actionText = `风险仓位从${previousPosition}%降至${position}%`;
+            else if (position > previousPosition) actionText = `风险仓位从${previousPosition}%提高至${position}%`;
+            else actionText = `当前维持${position}%风险仓位`;
+        } else {
+            if (position === 0) {
+                actionText = previousPosition > 0
+                    ? (previousPosition <= 30 ? `退出${previousPosition}%试探仓，当前空仓观察` : `仓位从${previousPosition}%降至0%`)
+                    : '当前保持空仓观察';
+            } else if (previousPosition === 0) actionText = `本次由空仓转为${position}%轻仓试探`;
+            else if (position < previousPosition) actionText = `当前从${previousPosition}%降至${position}%防守`;
+            else if (position > previousPosition) actionText = `当前从${previousPosition}%提高至${position}%`;
+            else actionText = `当前维持${position}%${position <= 30 ? '轻仓' : '仓位'}观察`;
         }
         return {
             kind: 'hard',
@@ -966,7 +979,7 @@ function getStockDecisionSummary(meta, decision) {
     const isEntry = previousPosition === 0 && position > 0;
     const isIncrease = position > previousPosition;
     const isReduce = previousPosition > 0 && position < previousPosition;
-    if (!hasCriticalExit && lifecycleTransition.kind === 'hard') {
+    if (!hasCriticalExit && lifecycleTransition.kind === 'hard' && !isIncrease) {
         stateLabel = '信号硬失效';
         userAction = position === 0 ? '空仓观察' : '优先防守';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'soft') {
@@ -1093,7 +1106,7 @@ function getIndexDecisionSummary(meta, decision) {
         userAction = isReduce ? '降低风险暴露' : '维持当前风险仓位';
     }
 
-    if (!hasCriticalExit && lifecycleTransition.kind === 'hard') {
+    if (!hasCriticalExit && lifecycleTransition.kind === 'hard' && !isIncrease) {
         stateLabel = '指数信号硬失效';
         userAction = position === 0 ? '保持低风险暴露' : '优先降低风险';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'soft') {
