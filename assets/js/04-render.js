@@ -210,7 +210,8 @@ const bsMarkerPlugin = {
             const px = x.getPixelForValue(i);
             if (isNaN(px) || px < left || px > right || !d._decision) return;
             if (d._decision.bsMark === 'B') { 
-                ctx.fillStyle = colorUpHex; 
+                const isGoldBuy = ['trial', 'strong'].includes(d._decision.bQuality);
+                ctx.fillStyle = isGoldBuy ? (getCssVar('--yellow') || '#f5a623') : colorUpHex;
                 const py = y.getPixelForValue(d.low);
                 if (!isNaN(py)) {
                     const markerY = Math.min(py + 18, bottom - 9);
@@ -654,10 +655,13 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const causeText = signalCause.text || '近窗有效信号';
 
     let marketHint = '核心建仓门禁开放；是否开仓、持有、减仓或离场仍由个股/指数自身信号决定。';
-    if (marketGate.type === 'new-position-cap') marketHint = '本次新仓受20%上限约束；已有仓位不会因大盘被动减仓。';
-    else if (marketGate.type === 'add-blocked') marketHint = `本次加仓被暂停，维持当前${position}%仓位；已有仓位不会因大盘被动减仓。`;
+    if (marketGate.type === 'add-blocked') marketHint = `本次加仓被暂停，维持当前${position}%仓位；已有仓位不会因大盘被动减仓。`;
     else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次开仓被暂停。';
-    else if (decision?.market?.label === '全面弱势') marketHint = '只约束后续新仓和加仓，本次没有改变当前已有仓位。';
+    else if (decision?.market?.label === '全面弱势') {
+        marketHint = previousPosition === 0
+            ? '核心宽基全面弱势；本次新仓按个股信号执行，不受20%上限限制，后续加仓仍暂停。'
+            : '核心宽基全面弱势；已有仓位不因大盘被动减仓，后续加仓仍暂停。';
+    }
     else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停开新仓和加仓；已有仓位仍按自身信号处理。';
 
     let signalHint = `未买入原因：买入积分只有 ${scoreText}，没有达到当前策略要求。`;
@@ -669,11 +673,13 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
         signalHint = `观察依据：买入积分为 ${scoreText}，当前仓位主要依赖已有趋势和风控约束。`;
     }
 
-    const stopText = formatPriceLevel(decision?.risk?.stop);
+    const structureDefenseText = formatPriceLevel(decision?.b11StructureDefense?.structureLevel);
+    const hasStructureDefense = structureDefenseText !== '--';
+    const stopText = hasStructureDefense ? structureDefenseText : formatPriceLevel(decision?.risk?.stop);
     const riskText = guardHint || (displayExitLevel && displayExitLevel !== '无明确离场' ? displayExitLevel : '暂无额外风险压制');
     const guardAction = stopText === '--'
         ? `风险依据：${riskText}。`
-        : `风险依据：${riskText}；防守位 ${stopText}。`;
+        : `风险依据：${riskText}；${hasStructureDefense ? '结构防守位' : '防守位'} ${stopText}。`;
 
     return { marketHint, signalHint, guardHint: guardAction };
 }
@@ -687,10 +693,13 @@ function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const causeText = signalCause.text || '近窗有效指数信号';
 
     let marketHint = '核心宽基增仓环境开放；当前指数是否提高风险仓位，继续由自身动能和风险决定。';
-    if (marketGate.type === 'new-position-cap') marketHint = '核心宽基全面弱势，本次新增风险仓位受20%上限约束。';
-    else if (marketGate.type === 'add-blocked') marketHint = `核心宽基全面弱势，本次暂停提高风险仓位并维持${position}%。`;
+    if (marketGate.type === 'add-blocked') marketHint = `核心宽基全面弱势，本次暂停提高风险仓位并维持${position}%。`;
     else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次暂停增加市场风险暴露。';
-    else if (decision?.market?.label === '全面弱势') marketHint = '核心宽基全面弱势，只限制后续增加风险，本次未主动压缩已有风险仓位。';
+    else if (decision?.market?.label === '全面弱势') {
+        marketHint = previousPosition === 0
+            ? '核心宽基全面弱势；本次新建风险仓位按自身动能执行，不受20%上限限制，后续提高风险仓位仍暂停。'
+            : '核心宽基全面弱势；已有风险仓位不因大盘被动压缩，后续提高风险仓位仍暂停。';
+    }
     else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停增加市场风险；已有风险仓位仍按指数自身信号处理。';
 
     let signalHint = `动能不足：指数动能积分只有 ${scoreText}，没有达到当前策略要求。`;
@@ -779,6 +788,12 @@ function getPositionCalculationCopy(meta, decision, mode = 'stock') {
     else if (['减仓观察', '延续防守'].includes(decision?.exit?.level)) parts.push('离场防守上限30%');
     if ((meta?.warningSignals || []).length) parts.push('风险预警上限40%');
     if (Number(decision?.risk?.score) < 40) parts.push(mode === 'index' ? '指数高风险上限20%' : '个股高风险上限20%');
+    const b11Defense = decision?.b11StructureDefense;
+    if (Number.isFinite(Number(b11Defense?.structureLevel))) {
+        const structureDate = b11Defense?.structureDate ? `（${b11Defense.structureDate}确认）` : '';
+        const defenseText = `B11结构防守 ${Number(b11Defense.structureLevel).toFixed(2)}${structureDate}`;
+        parts.push(b11Defense.localBreak ? `${defenseText}；局部破位暂停加仓` : defenseText);
+    }
     if (decision?.positionCap?.reason) parts.push(decision.positionCap.reason);
     if (decision?.marketGate?.detail) parts.push(decision.marketGate.detail);
     parts.push(`最终${positionName} ${finalPosition}%`);
@@ -824,6 +839,7 @@ function generateAnalysisHTML(idx, full, meta) {
         const day = Number.isFinite(Number(item.day)) ? Number(item.day) : idx - (Number(item.dayOffset) || 0);
         return [`${day}:${item.signal}`, item];
     }));
+    const localBreakMap = new Map((meta.localBreakWindowSignals || []).map(item => [`${item.day}:${item.signal}`, item]));
     const windowSignalKeys = new Set((meta.windowSignals || []).map(item => `${item.day}:${item.signal}`));
     
     let ptsRawHtml = '';
@@ -850,7 +866,10 @@ function generateAnalysisHTML(idx, full, meta) {
             const dayOffset = idx - Number(item.day);
             const dayLabel = dayOffset === 0 ? '今日' : dayOffset === 1 ? '昨日' : `${dayOffset}日前`;
             const scoreItem = scoreSignalMap.get(`${item.day}:${item.signal}`);
-            const tag = scoreItem
+            const localBreak = localBreakMap.get(`${item.day}:${item.signal}`);
+            const tag = localBreak
+                ? `${localBreak.invalidationDate || dayLabel}局部跌破${Number(localBreak.invalidationLevel).toFixed(2)} · 暂停加仓，结构防守${Number(localBreak.structureLevel).toFixed(2)}`
+                : scoreItem
                 ? `${dayLabel} · 计分 +${scoreItem.score}`
                 : (item.signal.startsWith('B') ? `${dayLabel} · 同组去重` : `${dayLabel} · 离场跟踪`);
             ptsValidHtml += renderTechnicalSignalRow(getUserSignalText(item.signal), item.signal, tag, !scoreItem && item.signal.startsWith('B'));
@@ -875,7 +894,7 @@ function generateAnalysisHTML(idx, full, meta) {
             const invalidationDate = item.invalidationDate || full?.[item.invalidationDay]?.date || '后续';
             const invalidationText = item.reason === 'kdj-dead-cross'
                 ? `${invalidationDate}死叉失效`
-                : `${invalidationDate}跌破${Number.isFinite(Number(item.invalidationLevel)) ? Number(item.invalidationLevel).toFixed(2) : '防守位'}失效`;
+                : `${invalidationDate}跌破${item.defenseType === 'structure' ? '结构防守位' : ''}${Number.isFinite(Number(item.invalidationLevel)) ? Number(item.invalidationLevel).toFixed(2) : '防守位'}${item.defenseType === 'structure' && item.structureDate ? `（${item.structureDate}确认）` : ''}失效`;
             ptsInvalidHtml += renderTechnicalSignalRow(
                 getUserSignalText(item.signal),
                 item.signal,
@@ -970,7 +989,10 @@ function generateAnalysisHTML(idx, full, meta) {
     ].slice(0, 3);
     const guardSignalSummary = guardSignals.length ? `信号 ${guardSignals.join(' / ')}` : '';
     const guardHoldingText = diagnosis ? (diagnosis.displayStatus || diagnosis.status) : '';
-    const guardHint = [riskFlags, guardSignalSummary, guardHoldingText].filter(Boolean).join(' · ');
+    const b11StructureText = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel))
+        ? `B11结构防守 ${Number(decision.b11StructureDefense.structureLevel).toFixed(2)}`
+        : '';
+    const guardHint = [riskFlags, guardSignalSummary, b11StructureText, guardHoldingText].filter(Boolean).join(' · ');
     const noviceEvidence = getNoviceEvidenceCopy(meta, decision, displayExitLevel, guardHint, state.mode);
 
     let panelClass = 'panel-neutral';
@@ -987,6 +1009,9 @@ function generateAnalysisHTML(idx, full, meta) {
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
     const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
     const positionLabel = isIndexMode ? '当前风险仓位' : '当前建议仓位';
+    const hasB11StructureDefense = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel));
+    const visibleDefenseLabel = hasB11StructureDefense ? '结构防守位' : '防守位';
+    const visibleDefenseLevel = hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop;
 
     const actionPanelHtml = `
         <div class="action-panel ${panelClass}">
@@ -1008,7 +1033,7 @@ function generateAnalysisHTML(idx, full, meta) {
             <div class="decision-invalid"><span>失效条件：</span>${escapeHTML(noviceSummary.invalidCondition)}</div>
             <div class="level-line">
                 <div class="level-pill">
-                    <span>防守位</span><strong class="mono">${fmt(decision.risk.stop)}</strong>
+                    <span>${visibleDefenseLabel}</span><strong class="mono">${fmt(visibleDefenseLevel)}</strong>
                 </div>
                 <div class="level-pill">
                     <span>压力区</span><strong class="mono">${fmt(decision.risk.pressure)}</strong>

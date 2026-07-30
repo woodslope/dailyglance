@@ -417,14 +417,95 @@ function isWindowBuySignalEligible(signal, signalDay, full, strategy = STRATEGY)
     return false;
 }
 
+function getB11StructureDefense(signalDay, full, strategy = STRATEGY) {
+    const config = strategy?.b11StructureDefense;
+    const signalLow = Number(full?.[signalDay]?.low);
+    if (state.mode !== 'stock' || !config || !Number.isFinite(signalLow)) return null;
+
+    const lookbackDays = Math.max(1, Number(config.lookbackDays) || 20);
+    const pivotDays = Math.max(1, Number(config.pivotDays) || 2);
+    const cacheKey = `${signalDay}|${signalLow}|${lookbackDays}|${pivotDays}`;
+    let cachedDefenses = b11StructureDefenseCache.get(full);
+    if (!cachedDefenses) {
+        cachedDefenses = new Map();
+        b11StructureDefenseCache.set(full, cachedDefenses);
+    }
+    if (cachedDefenses.has(cacheKey)) return cachedDefenses.get(cacheKey);
+
+    const firstCandidate = Math.max(pivotDays, signalDay - lookbackDays);
+    const lastCandidate = signalDay - pivotDays;
+    let defense = null;
+    for (let day = lastCandidate; day >= firstCandidate; day--) {
+        const low = Number(full?.[day]?.low);
+        if (!Number.isFinite(low) || low >= signalLow) continue;
+        let confirmed = true;
+        for (let offset = 1; offset <= pivotDays; offset++) {
+            const leftLow = Number(full?.[day - offset]?.low);
+            const rightLow = Number(full?.[day + offset]?.low);
+            if (!Number.isFinite(leftLow) || !Number.isFinite(rightLow) || low >= leftLow || low >= rightLow) {
+                confirmed = false;
+                break;
+            }
+        }
+        if (confirmed) {
+            defense = {
+                localLevel: signalLow,
+                structureLevel: low,
+                structureDay: day,
+                structureDate: full?.[day]?.date || ''
+            };
+            break;
+        }
+    }
+    cachedDefenses.set(cacheKey, defense);
+    return defense;
+}
+
 function getWindowSignalInvalidation(signal, signalDay, currentDay, full, ind, strategy = STRATEGY) {
     if (!signal?.startsWith('B') || signalDay >= currentDay) return null;
     const signalLow = Number(full?.[signalDay]?.low);
+    const b11Defense = signal === 'B11' ? getB11StructureDefense(signalDay, full, strategy) : null;
     const kValues = ind?.kdj?.k || [];
     const dValues = ind?.kdj?.d || [];
     const firstCheckDay = strategy?.monotonicSignalLifecycle ? signalDay + 1 : currentDay;
+    let localBreak = null;
     for (let day = firstCheckDay; day <= currentDay; day++) {
         const close = Number(full?.[day]?.close);
+        if (b11Defense) {
+            if (Number.isFinite(close) && close < b11Defense.structureLevel) {
+                return {
+                    signal,
+                    day: signalDay,
+                    signalDate: full?.[signalDay]?.date || '',
+                    score: getSignalScore(signal, strategy),
+                    reason: 'price-break',
+                    defenseType: 'structure',
+                    invalidationDay: day,
+                    invalidationDate: full?.[day]?.date || '',
+                    invalidationLevel: b11Defense.structureLevel,
+                    localLevel: b11Defense.localLevel,
+                    structureDay: b11Defense.structureDay,
+                    structureDate: b11Defense.structureDate
+                };
+            }
+            if (!localBreak && Number.isFinite(close) && close < b11Defense.localLevel) {
+                localBreak = {
+                    signal,
+                    day: signalDay,
+                    signalDate: full?.[signalDay]?.date || '',
+                    score: getSignalScore(signal, strategy),
+                    reason: 'local-price-break',
+                    defenseType: 'local',
+                    invalidationDay: day,
+                    invalidationDate: full?.[day]?.date || '',
+                    invalidationLevel: b11Defense.localLevel,
+                    structureLevel: b11Defense.structureLevel,
+                    structureDay: b11Defense.structureDay,
+                    structureDate: b11Defense.structureDate
+                };
+            }
+            continue;
+        }
         if (Number.isFinite(signalLow) && Number.isFinite(close) && close < signalLow) {
             return {
                 signal,
@@ -454,11 +535,11 @@ function getWindowSignalInvalidation(signal, signalDay, currentDay, full, ind, s
             }
         }
     }
-    return null;
+    return localBreak;
 }
 
 function calculateAllSignals(idx, full, ind) {
-    if(idx < 60 || !full[idx]) return { currentDay: idx, currentDate: full?.[idx]?.date || '', currentClose: full?.[idx]?.close ?? null, buySignals: [], exitSignals: [], allSignals: {}, windowScore: 0, windowSignals: [], windowScoreSignals: [], invalidatedWindowSignals: [], inCooldown: false, cooldownDays: 3, daysSinceExit: Infinity, lastStrongExitDate: '', previousStrongExitDate: '', repeatedStrongExit: false };
+    if(idx < 60 || !full[idx]) return { currentDay: idx, currentDate: full?.[idx]?.date || '', currentClose: full?.[idx]?.close ?? null, buySignals: [], exitSignals: [], allSignals: {}, windowScore: 0, windowSignals: [], windowScoreSignals: [], invalidatedWindowSignals: [], localBreakWindowSignals: [], inCooldown: false, cooldownDays: 3, daysSinceExit: Infinity, lastStrongExitDate: '', previousStrongExitDate: '', repeatedStrongExit: false };
     
     const rawSigs = full[idx]?._signals || calculateDailySignals(idx, full, ind), signals = {}, S = STRATEGY; 
     rawSigs.forEach(s => { signals[s] = { status: true, score: SIGNAL_SCORES[s] || 0 }; });
@@ -479,14 +560,15 @@ function calculateAllSignals(idx, full, ind) {
     if(lastExitIdx >= 0 && lastExitIdx < idx) { daysSinceExit = idx - lastExitIdx; if(daysSinceExit <= cooldownDays) inCooldown = true; }
     const repeatedStrongExit = lastExitIdx === idx && previousStrongExitIdx >= 0 && idx - previousStrongExitIdx <= cooldownDays;
     
-    let windowSignals = [], invalidatedWindowSignals = []; const usedSignals = new Set(), groupBest = new Map();
+    let windowSignals = [], invalidatedWindowSignals = [], localBreakWindowSignals = []; const usedSignals = new Set(), groupBest = new Map();
     for(let i = Math.max(0, idx - S.windowDays + 1); i <= idx; i++) {
         (full[i]?._signals || []).forEach(sig => {
             if(!usedSignals.has(sig)) {
                 if(sig.startsWith('L') && S.exitSignals?.includes(sig)) { windowSignals.push({day: i, signal: sig}); usedSignals.add(sig); } 
                 else if(sig.startsWith('B') && S.buySignals?.includes(sig) && i > lastExitIdx && isWindowBuySignalEligible(sig, i, full, S)) {
                     const invalidation = getWindowSignalInvalidation(sig, i, idx, full, ind, S);
-                    if (invalidation) { invalidatedWindowSignals.push(invalidation); return; }
+                    if (invalidation?.reason === 'local-price-break') localBreakWindowSignals.push(invalidation);
+                    else if (invalidation) { invalidatedWindowSignals.push(invalidation); return; }
                     const score = getSignalScore(sig, S), groupKey = getScoreGroupKey(S, sig), existing = groupBest.get(groupKey);
                     if(!existing || score > existing.score) groupBest.set(groupKey, { score, signal: sig, day: i, groupKey });
                     windowSignals.push({day: i, signal: sig}); usedSignals.add(sig);
@@ -507,6 +589,7 @@ function calculateAllSignals(idx, full, ind) {
         windowSignals,
         windowScoreSignals,
         invalidatedWindowSignals,
+        localBreakWindowSignals,
         inCooldown,
         cooldownDays,
         daysSinceExit,
@@ -531,6 +614,42 @@ function getStrongExitCooldownText(meta) {
     return meta?.repeatedStrongExit
         ? `${total}个交易日冷静期从下一交易日起重新计时`
         : `从下一交易日起进入${total}个交易日冷静期`;
+}
+
+function getB11StructureDefenseContext(meta, full, strategy = STRATEGY) {
+    const hardBreak = (meta?.invalidatedWindowSignals || []).find(item =>
+        item?.signal === 'B11' && item?.defenseType === 'structure'
+    );
+    const windowSignal = (meta?.windowSignals || []).find(item => item?.signal === 'B11');
+    const scoreSignal = (meta?.windowScoreSignals || []).find(item => item?.signal === 'B11');
+    const signalDay = Number.isFinite(Number(windowSignal?.day))
+        ? Number(windowSignal.day)
+        : Number.isFinite(Number(scoreSignal?.day))
+        ? Number(scoreSignal.day)
+        : Number(hardBreak?.day);
+    if (!Number.isFinite(signalDay)) return null;
+
+    const calculated = getB11StructureDefense(signalDay, full, strategy);
+    const structureLevel = Number(hardBreak?.invalidationLevel ?? calculated?.structureLevel);
+    const localLevel = Number(hardBreak?.localLevel ?? calculated?.localLevel);
+    if (!Number.isFinite(structureLevel) || !Number.isFinite(localLevel)) return null;
+
+    const localBreak = (meta?.localBreakWindowSignals || []).find(item =>
+        item?.signal === 'B11' && Number(item?.day) === signalDay
+    );
+    return {
+        signal: 'B11',
+        signalDay,
+        signalDate: hardBreak?.signalDate || full?.[signalDay]?.date || '',
+        localLevel,
+        structureLevel,
+        structureDay: Number(hardBreak?.structureDay ?? calculated?.structureDay),
+        structureDate: hardBreak?.structureDate || calculated?.structureDate || '',
+        localBreak: !!localBreak,
+        localBreakDay: Number(localBreak?.invalidationDay),
+        localBreakDate: localBreak?.invalidationDate || '',
+        hardInvalidated: !!hardBreak
+    };
 }
 
 function strategyUsesUnconditionalExitCombo(strategy = STRATEGY) {
@@ -634,7 +753,7 @@ function getMarketContext(date) {
     
     let label, cls, newPositionCap = null, allowAdd = true, reason;
     if (bull.length >= 2) { label = '核心偏强'; cls = 'bull'; reason = '三项核心宽基多数走强，增仓门禁开放'; }
-    else if (bear.length >= 2) { label = '全面弱势'; cls = 'bear'; newPositionCap = 20; allowAdd = false; reason = '三项核心宽基多数空头，新仓上限20%，已有仓位暂停加仓'; }
+    else if (bear.length >= 2) { label = '全面弱势'; cls = 'bear'; allowAdd = false; reason = '三项核心宽基多数空头；新仓按个股信号执行，已有仓位暂停加仓'; }
     else { label = '核心分化'; cls = 'neutral'; reason = '三项核心宽基未形成多数空头，个股按自身信号和风控决定仓位'; }
     return { label, cls, newPositionCap, allowAdd, reason, trends };
 }
@@ -758,9 +877,28 @@ function getSignalCauseSummary(meta, maxSignals = 2) {
     return { items, selected, names, timing, text: `${timing}${names.join('、')}${suffix}` };
 }
 
+function getWaveBQualityMetadata(meta, decision, ruleset = WAVE_B_QUALITY_RULESET) {
+    if (state.strategy !== '波段抄底型' || state.mode !== 'stock' || decision?.bsMark !== 'B') return null;
+    const qualityStatus = ruleset?.status;
+    if (!['trial', 'approved'].includes(qualityStatus)) return { bQuality: 'standard', bQualityReasons: [], bQualityRuleId: null };
+    const signals = new Set((meta?.windowScoreSignals || []).map(item => item?.signal).filter(Boolean));
+    const rule = (ruleset?.rules || []).find(item =>
+        (item.requiredSignals || []).every(signal => signals.has(signal))
+    );
+    if (!rule) return { bQuality: 'standard', bQualityReasons: [], bQualityRuleId: null };
+    return {
+        bQuality: qualityStatus === 'trial' ? 'trial' : 'strong',
+        bQualityReasons: (rule.reasons || []).slice(0, 2),
+        bQualityRuleId: rule.id
+    };
+}
+
 function getTodaySignalInvalidations(meta, reason = '') {
     const currentDay = Number(meta?.currentDay);
-    return (meta?.invalidatedWindowSignals || []).filter(item => {
+    const items = reason === 'local-price-break'
+        ? meta?.localBreakWindowSignals || []
+        : meta?.invalidatedWindowSignals || [];
+    return items.filter(item => {
         if (Number(item?.invalidationDay) !== currentDay) return false;
         return !reason || item?.reason === reason;
     });
@@ -768,6 +906,7 @@ function getTodaySignalInvalidations(meta, reason = '') {
 
 function getSignalLifecycleTransition(meta, decision, mode = 'stock') {
     const hard = getTodaySignalInvalidations(meta, 'price-break');
+    const local = getTodaySignalInvalidations(meta, 'local-price-break');
     const soft = getTodaySignalInvalidations(meta, 'kdj-dead-cross');
     const threshold = Number(STRATEGY?.buyThreshold) || 0;
     const currentScore = Number(meta?.windowScore) || 0;
@@ -782,8 +921,16 @@ function getSignalLifecycleTransition(meta, decision, mode = 'stock') {
     const previousPosition = Number(decision?.prevAdv) || 0;
 
     if (hard.length) {
-        const levels = [...new Set(hard.map(item => Number(item?.invalidationLevel)).filter(Number.isFinite).map(value => value.toFixed(2)))];
-        const levelText = levels.length === 1 ? `信号防守位${levels[0]}` : `相关信号防守位${levels.join('/')}`;
+        const levels = [...new Set(hard.map(item => {
+            const level = Number(item?.invalidationLevel);
+            if (!Number.isFinite(level)) return '';
+            if (item?.defenseType === 'structure') {
+                const dateText = item?.structureDate ? `（${item.structureDate}确认）` : '';
+                return `结构防守位${level.toFixed(2)}${dateText}`;
+            }
+            return `信号防守位${level.toFixed(2)}`;
+        }).filter(Boolean))];
+        const levelText = levels.length === 1 ? levels[0] : `相关${levels.join('/')}`;
         const closeText = Number.isFinite(Number(meta?.currentClose)) ? Number(meta.currentClose).toFixed(2) : '--';
         const signalText = hard.map(item => `${getUserSignalText(item.signal)}(+${Number(item.score) || 0})`).join('、');
         let actionText;
@@ -806,6 +953,24 @@ function getSignalLifecycleTransition(meta, decision, mode = 'stock') {
         return {
             kind: 'hard',
             text: `今日收盘${closeText}跌破${levelText}，${signalText}失效，${scoreDelta}；${actionText}`
+        };
+    }
+
+    if (local.length) {
+        const item = local[0];
+        const localLevel = Number(item?.invalidationLevel);
+        const structureLevel = Number(item?.structureLevel);
+        const localText = Number.isFinite(localLevel) ? localLevel.toFixed(2) : '局部防守位';
+        const structureText = Number.isFinite(structureLevel)
+            ? `结构防守位${structureLevel.toFixed(2)}${item?.structureDate ? `（${item.structureDate}确认）` : ''}`
+            : '结构防守位';
+        const closeText = Number.isFinite(Number(meta?.currentClose)) ? Number(meta.currentClose).toFixed(2) : '--';
+        const actionText = position > 0
+            ? `暂停加仓，当前维持${position}%${position <= 30 ? '试探仓' : '仓位'}观察`
+            : '当前不再按该局部信号新增仓位';
+        return {
+            kind: 'local',
+            text: `今日收盘${closeText}跌破${getUserSignalText(item.signal)}局部防守位${localText}，但仍在${structureText}上方；${actionText}`
         };
     }
 
@@ -838,14 +1003,22 @@ function getStockInvalidCondition(meta, decision, position, hasWarning) {
     const stopText = formatPriceLevel(decision?.risk?.stop);
     const canShowStop = stopText !== '--';
     const marketGate = decision?.marketGate || {};
+    const b11Defense = decision?.b11StructureDefense;
+    const structureLevel = Number(b11Defense?.structureLevel);
+    const structureDateText = b11Defense?.structureDate ? `（${b11Defense.structureDate}确认）` : '';
+    const hasB11StructureDefense = Number.isFinite(structureLevel);
 
     if (position === 0 && marketGate.type === 'entry-blocked') {
         return `${decision.market.label}下增仓门禁关闭；待沪深300、中证500和中证1000补齐并重新开放后，再按个股信号考虑开仓。`;
     }
 
-    if (marketGate.type === 'new-position-cap') {
-        const stopGuard = canShowStop ? `若跌破防守位 ${stopText}，或再出离场信号，降到 0%。` : '若再出离场信号，降到 0%。';
-        return `全面弱势期间新仓最多20%；待增仓门禁重新开放，且个股信号仍有效时，才考虑提高仓位。${stopGuard}`;
+    if (position === 0 && hasB11StructureDefense && b11Defense?.hardInvalidated) {
+        return `已收盘跌破结构防守位 ${structureLevel.toFixed(2)}${structureDateText}；待买入积分重新达到 ${threshold}/${threshold} 后，才重新考虑。`;
+    }
+
+    if (position > 0 && position <= 30 && hasB11StructureDefense) {
+        const localHint = b11Defense?.localBreak ? 'B11局部回踩已失守，当前暂停加仓；' : '';
+        return `${localHint}若收盘跌破结构防守位 ${structureLevel.toFixed(2)}${structureDateText}，或再出离场信号，降到 0%。`;
     }
 
     if (marketGate.type === 'add-blocked') {
@@ -888,11 +1061,6 @@ function getIndexInvalidCondition(meta, decision, position, hasWarning) {
 
     if (position === 0 && marketGate.type === 'entry-blocked') {
         return '待沪深300、中证500和中证1000数据补齐并重新允许增加风险后，再结合当前指数动能决定是否提高风险仓位。';
-    }
-
-    if (marketGate.type === 'new-position-cap') {
-        const stopGuard = canShowStop ? `若跌破指数防守位 ${stopText}，或再出离场信号，将风险仓位降至 0%。` : '若再出离场信号，将风险仓位降至 0%。';
-        return `核心宽基全面弱势期间新增风险仓位最多20%；待核心环境改善且指数动能仍有效时，才考虑继续提高风险暴露。${stopGuard}`;
     }
 
     if (marketGate.type === 'add-blocked') {
@@ -982,6 +1150,9 @@ function getStockDecisionSummary(meta, decision) {
     if (!hasCriticalExit && lifecycleTransition.kind === 'hard' && !isIncrease) {
         stateLabel = '信号硬失效';
         userAction = position === 0 ? '空仓观察' : '优先防守';
+    } else if (!hasCriticalExit && lifecycleTransition.kind === 'local') {
+        stateLabel = '结构未破';
+        userAction = position > 0 ? '只适合轻仓' : '先不碰';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'soft') {
         stateLabel = '动能转弱';
         userAction = position > 0 ? '轻仓观察' : '先不碰';
@@ -1020,8 +1191,6 @@ function getStockDecisionSummary(meta, decision) {
         reason = `市场环境为${marketLabel}，${exitReason}${zeroPositionText}`;
     } else if (marketGate.type === 'entry-blocked' && position === 0) {
         reason = `${buyCauseText}使买入积分达到 ${scoreText}，但${marketLabel}下增仓门禁关闭，仍暂不开新仓`;
-    } else if (marketGate.type === 'new-position-cap') {
-        reason = `${buyCauseText}使买入积分达到 ${scoreText}，本次由空仓转为持仓；但全面弱势下新仓上限20%，当前只适合 ${position}% 轻仓试探`;
     } else if (marketGate.type === 'add-blocked') {
         reason = `${buyCauseText}使买入积分维持在 ${scoreText}，但全面弱势暂停加仓，当前维持${position}%`;
     } else if (isReduce) {
@@ -1033,7 +1202,8 @@ function getStockDecisionSummary(meta, decision) {
     } else if (position === 0) {
         reason = `${isFavorableMarket ? '大盘虽偏好，但' : ''}买入积分只有 ${scoreText}，当前还不满足开仓条件`;
     } else if (isEntry) {
-        reason = `${buyCauseText}使买入积分达到 ${scoreText}，本次由空仓转为${position}%轻仓试探`;
+        const entryText = position <= 30 ? `${position}%轻仓试探` : `${position}%仓位`;
+        reason = `${buyCauseText}使买入积分达到 ${scoreText}，本次由空仓转为${entryText}`;
     } else if (isIncrease) {
         reason = `${buyCauseText}使买入积分达到 ${scoreText}，当前由${previousPosition}%提高至${position}%`;
     } else if (position <= 30) {
@@ -1142,8 +1312,6 @@ function getIndexDecisionSummary(meta, decision) {
         reason = `${exitReason}，${position === 0 ? riskPositionToZero : '当前优先处理市场风险'}`;
     } else if (marketGate.type === 'entry-blocked' && position === 0) {
         reason = `${causeText}使指数动能积分达到 ${scoreText}，但核心宽基数据未补齐，暂不增加市场风险暴露`;
-    } else if (marketGate.type === 'new-position-cap') {
-        reason = `${causeText}使指数动能积分达到 ${scoreText}，风险仓位由0%提高至${position}%；但核心宽基全面弱势，新增风险仓位上限20%`;
     } else if (marketGate.type === 'add-blocked') {
         reason = `${causeText}使指数动能积分维持在 ${scoreText}，但核心宽基全面弱势，暂停提高风险仓位并维持${position}%`;
     } else if (isReduce) {
@@ -1178,9 +1346,16 @@ function getIndexDecisionSummary(meta, decision) {
 }
 
 function getNoviceDecisionSummary(meta, decision, mode = 'stock') {
-    return mode === 'index'
+    const summary = mode === 'index'
         ? getIndexDecisionSummary(meta, decision)
         : getStockDecisionSummary(meta, decision);
+    if (decision?.bsMark !== 'B' || !['trial', 'strong'].includes(decision?.bQuality)) return summary;
+    const reasons = (decision.bQualityReasons || []).filter(Boolean).slice(0, 2);
+    return {
+        ...summary,
+        state: decision.bQuality === 'trial' ? '金色 B（试用）' : '强确认买点',
+        reason: reasons.length ? reasons.join('；') : summary.reason
+    };
 }
 
 function quantizePosition(val) { const steps = [0, 10, 20, 30, 50, 80, 100]; return steps.reduce((prev, curr) => Math.abs(curr - val) < Math.abs(prev - val) ? curr : prev); }
@@ -1194,17 +1369,15 @@ function applyMarketRiskGate(market, prevPos, targetPosition) {
     const previous = Math.max(0, Number(prevPos) || 0);
     const target = Math.max(0, Number(targetPosition) || 0);
     const label = market?.label || '环境未知';
-    const configuredCap = Number.isFinite(market?.newPositionCap)
-        ? Number(market.newPositionCap)
-        : (label === '全面弱势' ? 20 : (label === '环境未知' || label === '环境待确认' ? 0 : null));
+    const entryBlocked = Number.isFinite(market?.newPositionCap)
+        ? Number(market.newPositionCap) <= 0
+        : ['环境未知', '环境待确认'].includes(label);
     const allowAdd = typeof market?.allowAdd === 'boolean'
         ? market.allowAdd
         : !['全面弱势', '环境未知', '环境待确认'].includes(label);
 
-    if (previous === 0 && Number.isFinite(configuredCap) && target > 0 && target >= configuredCap) {
-        const position = quantizePosition(Math.min(target, configuredCap));
-        if (configuredCap <= 0) return { position, applied:true, type:'entry-blocked', detail:`${label}增仓门禁关闭` };
-        return { position, applied:true, type:'new-position-cap', detail:`${label}新仓上限${configuredCap}%` };
+    if (previous === 0 && entryBlocked && target > 0) {
+        return { position:0, applied:true, type:'entry-blocked', detail:`${label}增仓门禁关闭` };
     }
     if (previous > 0 && target > previous && !allowAdd) {
         const detail = label === '全面弱势' ? '全面弱势暂停加仓' : `${label}暂停加仓`;
@@ -1241,12 +1414,32 @@ function getSoftSignalGraceContext(meta, prevPos, basePosition, exit, idx, strat
     };
 }
 
+function getLocalStructureDefenseContext(meta, b11Defense, prevPos, exit, strategy = STRATEGY) {
+    const localBreaks = b11Defense?.localBreak ? [b11Defense] : [];
+    const watchPosition = Number(strategy?.watchPosition) || 0;
+    const exitIsClear = !exit || exit.level === '无明确离场';
+    const applied = localBreaks.length > 0
+        && watchPosition > 0
+        && prevPos > 0
+        && prevPos <= watchPosition
+        && exitIsClear
+        && !meta?.inCooldown;
+    return {
+        applied,
+        signals: localBreaks.map(item => item.signal),
+        localBreaks
+    };
+}
+
 function computeDecisionForIndex(idx, full, prevPos) {
     const meta = getSignalMeta(idx, full, state.indicators), market = getMarketContext(full[idx].date);
     const risk = getRiskContext(idx, full, state.indicators), exit = getExitSeverity(meta, idx, full, state.indicators);
+    const b11StructureDefense = getB11StructureDefenseContext(meta, full, STRATEGY);
     let base = getBasePosition(idx, full, state.indicators, meta);
     const softSignalGrace = getSoftSignalGraceContext(meta, prevPos, base, exit, idx, STRATEGY);
+    const localStructureDefense = getLocalStructureDefenseContext(meta, b11StructureDefense, prevPos, exit, STRATEGY);
     if (softSignalGrace.applied) base = prevPos;
+    if (localStructureDefense.applied) base = prevPos;
 
     let rawPosition = base * risk.coef, position = quantizePosition(rawPosition);
     const isCriticalExit = exit.level === '清仓防守' || exit.level === '强离场' || (meta.type || '').includes('规避') || (meta.type || '').includes('破位');
@@ -1283,7 +1476,7 @@ function computeDecisionForIndex(idx, full, prevPos) {
     const invalidatedTodayScore = (meta.invalidatedWindowSignals || [])
         .filter(item => Number(item?.invalidationDay) === Number(idx))
         .reduce((sum, item) => sum + (Number(item?.score) || 0), 0);
-    return {
+    const decision = {
         basePosition: base,
         position,
         prevAdv: prevPos,
@@ -1297,11 +1490,15 @@ function computeDecisionForIndex(idx, full, prevPos) {
         windowScore: meta.windowScore,
         previousWindowScore: Number.isFinite(previousWindowScore) ? previousWindowScore : meta.windowScore + invalidatedTodayScore,
         softSignalGrace,
+        localStructureDefense,
+        b11StructureDefense,
         previousSoftSignalGrace: !!full?.[idx - 1]?._decision?.softSignalGrace?.applied,
         simpleAction,
         simpleColorClass,
         bsMark
     };
+    const bQuality = getWaveBQualityMetadata(meta, decision);
+    return bQuality ? { ...decision, ...bQuality } : decision;
 }
 
 function getWeeklyDirectionContext(idx, full, ind) {

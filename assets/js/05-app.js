@@ -1163,9 +1163,9 @@ function updateLeftMarketContext(date) {
     const market = getMarketContext(date);
     const panelClass = market.cls === 'bull' ? 'panel-bull' : (market.cls === 'bear' ? 'panel-bear' : 'panel-info');
     const textClass = market.cls === 'bull' ? 'text-bull' : (market.cls === 'bear' ? 'text-bear' : 'text-main');
-    const gateText = Number.isFinite(market.newPositionCap)
-        ? (market.newPositionCap <= 0 ? '关闭' : `新仓≤${market.newPositionCap}%`)
-        : '开放';
+    const gateText = Number.isFinite(market.newPositionCap) && market.newPositionCap <= 0
+        ? '关闭'
+        : (market.allowAdd === false ? '新仓开放' : '开放');
 
     const detailHtml = market.trends.map(t => `
         <div class="market-core-state">
