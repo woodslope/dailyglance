@@ -4,14 +4,14 @@
 // ==========================================
 
 const INDEX_CONFIG = {
-    sh: { name: '上证指数', eastmoney: '1.000001', tencent: 'sh000001', role: 'observe' },
-    sz: { name: '深证成指', eastmoney: '0.399001', tencent: 'sz399001', role: 'observe' },
-    hs300: { name: '沪深300', eastmoney: '1.000300', tencent: 'sh000300', role: 'core' },
-    zz500: { name: '中证500', eastmoney: '1.000905', tencent: 'sh000905', role: 'core' },
-    zz1000: { name: '中证1000', eastmoney: '1.000852', tencent: 'sh000852', role: 'core' },
-    cy: { name: '创业板指', eastmoney: '0.399006', tencent: 'sz399006', role: 'observe' },
-    kc50: { name: '科创50', eastmoney: '1.000688', tencent: 'sh000688', role: 'observe' },
-    bz50: { name: '北证50', eastmoney: '0.899050', tencent: 'bj899050', role: 'observe' }
+    sh: { name: '上证指数', tickflow: '000001.SH', eastmoney: '1.000001', tencent: 'sh000001', role: 'observe' },
+    sz: { name: '深证成指', tickflow: '399001.SZ', eastmoney: '0.399001', tencent: 'sz399001', role: 'observe' },
+    hs300: { name: '沪深300', tickflow: '000300.SH', eastmoney: '1.000300', tencent: 'sh000300', role: 'core' },
+    zz500: { name: '中证500', tickflow: '000905.SH', eastmoney: '1.000905', tencent: 'sh000905', role: 'core' },
+    zz1000: { name: '中证1000', tickflow: '000852.SH', eastmoney: '1.000852', tencent: 'sh000852', role: 'core' },
+    cy: { name: '创业板指', tickflow: '399006.SZ', eastmoney: '0.399006', tencent: 'sz399006', role: 'observe' },
+    kc50: { name: '科创50', tickflow: '000688.SH', eastmoney: '1.000688', tencent: 'sh000688', role: 'observe' },
+    bz50: { name: '北证50', tickflow: '899050.BJ', eastmoney: '0.899050', tencent: 'bj899050', role: 'observe' }
 };
 const INDEX_IDS = Object.keys(INDEX_CONFIG);
 const CORE_MARKET_INDEX_IDS = INDEX_IDS.filter(id => INDEX_CONFIG[id].role === 'core');
@@ -28,6 +28,15 @@ function resolveTencentSymbol(id) {
     const cfg = getIndexConfig(id);
     if(cfg) return cfg.tencent;
     return resolveSecurityTencentSymbol(id);
+}
+function resolveTickFlowSymbol(id) {
+    const cfg = getIndexConfig(id);
+    if (cfg) return cfg.tickflow;
+    const secid = resolveSecuritySecid(id);
+    const code = getSecurityCode(id) || (String(secid || '').includes('.') ? String(secid).split('.')[1] : '');
+    const market = getMarketFromSecid(secid);
+    if (!/^\d{6}$/.test(code) || !['sh', 'sz'].includes(market)) return '';
+    return `${code}.${market === 'sh' ? 'SH' : 'SZ'}`;
 }
 
 const STOCK_TOKEN='D43BF722C8E33BDC906FB84D85E326E8';
@@ -1131,6 +1140,64 @@ const requestManager = {
     }
 };
 
+const TICKFLOW_HISTORY_URL = 'https://free-api.tickflow.org/v1/klines';
+const TICKFLOW_HISTORY_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+});
+
+function formatTickFlowHistoryDate(timestamp) {
+    const date = new Date(Number(timestamp));
+    if (Number.isNaN(date.getTime())) return '';
+    const parts = {};
+    TICKFLOW_HISTORY_DATE_FORMATTER.formatToParts(date).forEach(part => { parts[part.type] = part.value; });
+    return parts.year && parts.month && parts.day ? `${parts.year}-${parts.month}-${parts.day}` : '';
+}
+
+async function fetchTickFlowKline(id) {
+    if (isHistorySourceCircuitOpen('tickflow')) return [];
+    const symbol = resolveTickFlowSymbol(id);
+    if (!symbol) return [];
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), SYS_CONFIG.REQ_TIMEOUT) : null;
+    try {
+        const url = `${TICKFLOW_HISTORY_URL}?symbol=${encodeURIComponent(symbol)}&period=1d&count=1000&adjust=forward_additive`;
+        const response = await fetch(url, {
+            method: 'GET',
+            cache: 'no-store',
+            ...(controller ? { signal: controller.signal } : {})
+        });
+        if (response.status === 400 || response.status === 404) {
+            recordHistorySourceSuccess('tickflow');
+            return [];
+        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        recordHistorySourceSuccess('tickflow');
+        const columns = payload?.data;
+        const fields = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'amount'];
+        if (!columns || fields.some(field => !Array.isArray(columns[field]))) return [];
+        const rowCount = Math.min(...fields.map(field => columns[field].length));
+        if (!rowCount) return [];
+        return normalizeConfirmedHistoryData(Array.from({ length: rowCount }, (_, index) => ({
+            date: formatTickFlowHistoryDate(columns.timestamp[index]),
+            open: columns.open[index],
+            close: columns.close[index],
+            high: columns.high[index],
+            low: columns.low[index],
+            vol: columns.volume[index],
+            amt: columns.amount[index]
+        })), id);
+    } catch (error) {
+        recordHistorySourceTransportFailure('tickflow');
+        return [];
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 function jsonpFetchEastmoneyKline(id) {
     if (isHistorySourceCircuitOpen('eastmoney')) return Promise.resolve([]);
     return new Promise(resolve => {
@@ -1300,14 +1367,27 @@ function batchGetRealtimePrices(ids) {
 }
 
 async function syncDataWithHistory(id) {
-    let data = normalizeConfirmedHistoryData(await jsonpFetchEastmoneyKline(id), id); if(data && data.length >= 30) { setConfirmedStatus(id, { source: 'eastmoney', status: 'fresh', lastDate: data[data.length - 1]?.date || '', syncedAt: Date.now() }); return data; } 
-    if (id === 'bz50') {
-        data = normalizeConfirmedHistoryData(await jsonpFetchSinaBz50Kline(id), id);
-        if(data && data.length >= 30) { setConfirmedStatus(id, { source: 'sina', status: 'fresh', lastDate: data[data.length - 1]?.date || '', syncedAt: Date.now() }); return data; }
+    const sources = id === 'bz50'
+        ? [
+            { name: 'tickflow', load: fetchTickFlowKline },
+            { name: 'sina', load: jsonpFetchSinaBz50Kline },
+            { name: 'eastmoney', load: jsonpFetchEastmoneyKline },
+            { name: 'tencent', load: jsonpFetchTencentKline }
+        ]
+        : [
+            { name: 'tickflow', load: fetchTickFlowKline },
+            { name: 'tencent', load: jsonpFetchTencentKline },
+            { name: 'eastmoney', load: jsonpFetchEastmoneyKline }
+        ];
+    for (const source of sources) {
+        const data = normalizeConfirmedHistoryData(await source.load(id), id);
+        if (data && data.length >= 30) {
+            setConfirmedStatus(id, { source: source.name, status: 'fresh', lastDate: data[data.length - 1]?.date || '', syncedAt: Date.now() });
+            return data;
+        }
     }
-    data = normalizeConfirmedHistoryData(await jsonpFetchTencentKline(id), id); if(data && data.length >= 30) { setConfirmedStatus(id, { source: 'tencent', status: 'fresh', lastDate: data[data.length - 1]?.date || '', syncedAt: Date.now() }); return data; } 
     setConfirmedStatus(id, { status: 'failed', syncedAt: Date.now() });
-    return null; 
+    return null;
 }
 
 function getHistoryRefreshMeta(id) {
