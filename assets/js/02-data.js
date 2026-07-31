@@ -162,6 +162,14 @@ function getActiveSecurityTarget() {
 const cachedFetchRefreshJobs = new Map();
 let cachedFetchRefreshApplyTimer = 0;
 let pendingCachedFetchRefreshApplyId = '';
+
+// JSONP cleanup registry — prevents script tag and global callback leaks on page unload
+const _jsonpCleanupFns = new Set();
+function _registerJsonpCleanup(fn) { _jsonpCleanupFns.add(fn); }
+function _runJsonpCleanup() { _jsonpCleanupFns.forEach(fn => { try { fn(); } catch(e) {} }); _jsonpCleanupFns.clear(); }
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pagehide', _runJsonpCleanup);
+}
 const historyRefreshMeta = new Map();
 const historySourceCircuits = new Map();
 const CN_MARKET_HOLIDAYS = new Set([
@@ -1400,9 +1408,9 @@ const requestManager = {
         const now = Date.now(), s = this.limiters.get(id) || { lastCall: 0, isFetching: false };
         if (s.isFetching) return null; if (now - s.lastCall < SYS_CONFIG.THROTTLE_MS) return null;
         s.isFetching = true; this.limiters.set(id, s);
-        try { const rt = await getRealtimePriceJSONP(id); s.lastCall = Date.now(); return rt; } 
-        catch (e) { return null; } 
-        finally { s.isFetching = false; this.limiters.set(id, s); }
+        try { const rt = await getRealtimePriceJSONP(id); return rt; }
+        catch (e) { return null; }
+        finally { s.lastCall = Date.now(); s.isFetching = false; this.limiters.set(id, s); }
     }
 };
 
@@ -1470,6 +1478,7 @@ function jsonpFetchEastmoneyKline(id) {
         const secid = resolveSecid(id), cb = 'em_kline_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
         const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=1000&cb=${cb}`;
         let cl = false; const cleanup = () => { if(cl) return; cl=true; clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        _registerJsonpCleanup(cleanup);
         const fail = () => { if (cl) return; recordHistorySourceTransportFailure('eastmoney'); cleanup(); resolve([]); };
         const timer = setTimeout(fail, 8000);
         window[cb] = data => { 
@@ -1487,6 +1496,7 @@ function jsonpFetchTencentKline(id) {
         let symbol = resolveTencentSymbol(id);
         const cb = 'tx_kline_' + Date.now(), url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,1000,qfq&_var=${cb}`;
         let cl = false; const cleanup = () => { if(cl) return; cl = true; clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        _registerJsonpCleanup(cleanup);
         const fail = () => { if (cl) return; recordHistorySourceTransportFailure('tencent'); cleanup(); resolve([]); };
         const timer = setTimeout(fail, 5000); window[cb] = undefined;
         const script = document.createElement('script'); script.id = cb; script.src = url;
@@ -1557,6 +1567,7 @@ function getRealtimePriceJSONP(id) {
         const symbol = resolveTencentSymbol(id), varName = 'v_' + symbol;
         const script = document.createElement('script'); script.src = `https://qt.gtimg.cn/q=${symbol}`; script.charset = 'GBK';
         let cl = false; const cleanup = () => { if(cl) return; cl = true; clearTimeout(timer); if(script.parentNode) script.remove(); };
+        _registerJsonpCleanup(cleanup);
         const timer = setTimeout(() => { cleanup(); resolve(null); }, 5000);
         script.onload = () => { 
             cleanup(); 
@@ -1701,7 +1712,7 @@ async function syncDataIncremental(id) {
 }
 
 async function syncData(id) { 
-    const cached = await getCachedData(id); 
+    let cached = await getCachedData(id);
     const hasEnough = cached && cached.length >= 30; 
     const cachedLastDate = cached && cached.length ? (cached[cached.length - 1]?.date || '') : '';
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
@@ -1712,7 +1723,7 @@ async function syncData(id) {
     if(isMarketOpen()) { 
         if(hasEnough) { 
             const incremental = await syncDataIncremental(id); 
-            if(incremental && incremental.length > 0) { await dbSet(id, incremental); cached.length = 0; Array.prototype.push.apply(cached, incremental); } 
+            if(incremental && incremental.length > 0) { await dbSet(id, incremental); cached = incremental; }
             const rt = await requestManager.fetchRealtimeWithThrottle(id); 
             if (rt) applyRealtimeQuoteForSeries(id, cached, rt);
             else tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);

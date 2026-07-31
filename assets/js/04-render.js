@@ -24,12 +24,6 @@ function refreshChartsIfNeeded() {
     Object.values(state.charts).forEach(c => { if (c) { if (typeof c.draw === 'function') c.draw(); else c.update('none'); } });
 }
 
-function updateChartDragPreview() {
-    const boxes = document.querySelectorAll('.main-chart-box, .volume-chart-box, .macd-chart-box, .kdj-chart-box, #crosshairOverlay');
-    if (!boxes.length) return;
-    boxes.forEach(el => { el.style.transform = 'translateX(0px)'; });
-}
-
 function clearChartDragPreview() {
     const boxes = document.querySelectorAll('.main-chart-box, .volume-chart-box, .macd-chart-box, .kdj-chart-box, #crosshairOverlay');
     if (!boxes.length) return;
@@ -333,7 +327,6 @@ function getChartPanBarWidth() {
 function applyChartDragPan(force = false) {
     chartDragPanRAF = 0;
     if (!chartDragPan) return;
-    updateChartDragPreview();
     const barWidth = chartDragPan.barWidth;
     if (!barWidth) return;
     const rawDelta = chartDragPan.currentX - chartDragPan.lastAppliedX;
@@ -348,8 +341,7 @@ function applyChartDragPan(force = false) {
         chartDragPan.didPan = true;
         clearStaleTooltips();
         drawViewport();
-        updateChartDragPreview();
-    }
+        }
 }
 
 function startChartDragPan(event) {
@@ -373,7 +365,6 @@ function startChartDragPan(event) {
         chartDragPan.target.setPointerCapture(event.pointerId);
     }
     getChartDragMainBox(chartDragPan.target)?.classList?.add('drag-panning');
-    updateChartDragPreview();
     event?.preventDefault?.();
 }
 
@@ -383,7 +374,6 @@ function moveChartDragPan(event) {
     if (Math.abs(chartDragPan.currentX - chartDragPan.startX) >= Math.max(3, chartDragPan.barWidth / 3)) {
         chartDragPan.didMove = true;
     }
-    updateChartDragPreview();
     if (!chartDragPanRAF) chartDragPanRAF = requestAnimationFrame(() => applyChartDragPan(false));
     event?.preventDefault?.();
 }
@@ -637,7 +627,7 @@ function renderChartViewport(perfTrace) {
         uc('kdj', 'kdjChart', { 
             type: 'line', 
             data: { labels, datasets: [ { label: 'K', data: kd.k.slice(visibleRange.start, visibleRange.end + 1), borderColor: '#f8fafc', borderWidth: 1, pointRadius: 0, tension: 0.1 }, { label: 'D', data: kd.d.slice(visibleRange.start, visibleRange.end + 1), borderColor: '#f5a623', borderWidth: 1, pointRadius: 0, tension: 0.1 }, { label: 'J', data: kd.j.slice(visibleRange.start, visibleRange.end + 1), borderColor: '#8b5cf6', borderWidth: 1, pointRadius: 0, tension: 0.1 } ] }, 
-            options: kdjOpts, plugins: [localAlignPlugin, freezePlugin] 
+            options: kdjOpts, plugins: [freezePlugin]
         });
     }
     PERF.end(perfTrace, { points: slice.length });

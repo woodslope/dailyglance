@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-10T00:00:00.000Z",
+  "source": "DailyGlance production strategy chain over local strategy-cache fixtures",
+  "appBuild": "2026-07-22-09",
+  "signalVersion": "v4.2.12",
+  "note": "These snapshots pin observable production decisions for fixed cached samples. Update intentionally only when production strategy behavior changes.",
+  "samples": [
+    {
+      "key": "index-sh-2026-06-26-trend",
+      "name": "上证指数",
+      "id": "sh",
+      "mode": "index",
+      "strategy": "稳健趋势型",
+      "date": "2026-06-26",
+      "file": ".local/strategy-cache/index_sh_1_000001_101_fqt1_lmt1000.json",
+      "marketFiles": {
+        "hs300": ".local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json",
+        "zz500": ".local/strategy-cache/index_zz500_1_000905_101_fqt1_lmt1000.json",
+        "zz1000": ".local/strategy-cache/index_zz1000_1_000852_101_fqt1_lmt1000.json"
+      },
+      "expected": {
+        "key": "index-sh-2026-06-26-trend",
+        "id": "sh",
+        "mode": "index",
+        "strategy": "稳健趋势型",
+        "date": "2026-06-26",
+        "close": 4027.26,
+        "windowScore": 0,
+        "windowSignals": [
+          "L1"
+        ],
+        "buySignals": [],
+        "exitSignals": [
+          "L1"
+        ],
+        "warningSignals": [],
+        "type": "👀 弱势震荡",
+        "position": 0,
+        "bsMark": "S",
+        "simpleAction": "执行离场",
+        "marketLabel": "核心偏强",
+        "riskLevel": "低波动/偏离",
+        "exitLevel": "减仓观察"
+      }
+    },
+    {
+      "key": "index-cy-2026-06-26-trend",
+      "name": "创业板指",
+      "id": "cy",
+      "mode": "index",
+      "strategy": "稳健趋势型",
+      "date": "2026-06-26",
+      "file": ".local/strategy-cache/index_cy_0_399006_101_fqt1_lmt1000.json",
+      "marketFiles": {
+        "hs300": ".local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json",
+        "zz500": ".local/strategy-cache/index_zz500_1_000905_101_fqt1_lmt1000.json",
+        "zz1000": ".local/strategy-cache/index_zz1000_1_000852_101_fqt1_lmt1000.json"
+      },
+      "expected": {
+        "key": "index-cy-2026-06-26-trend",
+        "id": "cy",
+        "mode": "index",
+        "strategy": "稳健趋势型",
+        "date": "2026-06-26",
+        "close": 4194.21,
+        "windowScore": 8,
+        "windowSignals": [
+          "L2",
+          "B3",
+          "B2",
+          "B12",
+          "B15",
+          "B1"
+        ],
+        "buySignals": [],
+        "exitSignals": [],
+        "warningSignals": [],
+        "type": "✅ 明确转强",
+        "position": 80,
+        "bsMark": null,
+        "simpleAction": "积极持有",
+        "marketLabel": "核心偏强",
+        "riskLevel": "低波动/偏离",
+        "exitLevel": "无明确离场"
+      }
+    },
+    {
+      "key": "index-kc50-2026-06-26-breakout",
+      "name": "科创50",
+      "id": "kc50",
+      "mode": "index",
+      "strategy": "突破追涨型",
+      "date": "2026-06-26",
+      "file": ".local/strategy-cache/index_kc50_1_000688_101_fqt1_lmt1000.json",
+      "marketFiles": {
+        "hs300": ".local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json",
+        "zz500": ".local/strategy-cache/index_zz500_1_000905_101_fqt1_lmt1000.json",
+        "zz1000": ".local/strategy-cache/index_zz1000_1_000852_101_fqt1_lmt1000.json"
+      },
+      "expected": {
+        "key": "index-kc50-2026-06-26-breakout",
+        "id": "kc50",
+        "mode": "index",
+        "strategy": "突破追涨型",
+        "date": "2026-06-26",
+        "close": 2032.28,
+        "windowScore": 1,
+        "windowSignals": [
+          "B3"
+        ],
+        "buySignals": [],
+        "exitSignals": [],
+        "warningSignals": [],
+        "type": "📈 趋势抱单",
+        "position": 0,
+        "bsMark": null,
+        "simpleAction": "持币观望",
+        "marketLabel": "核心偏强",
+        "riskLevel": "中等波动/偏离",
+        "exitLevel": "无明确离场"
+      }
+    },
+    {
+      "key": "stock-600519-2026-06-26-trend",
+      "name": "贵州茅台",
+      "id": "600519",
+      "mode": "stock",
+      "strategy": "稳健趋势型",
+      "date": "2026-06-26",
+      "file": ".local/strategy-cache/stock_600519_1_600519_101_fqt1_lmt1000.json",
+      "marketFiles": {
+        "hs300": ".local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json",
+        "zz500": ".local/strategy-cache/index_zz500_1_000905_101_fqt1_lmt1000.json",
+        "zz1000": ".local/strategy-cache/index_zz1000_1_000852_101_fqt1_lmt1000.json"
+      },
+      "expected": {
+        "key": "stock-600519-2026-06-26-trend",
+        "id": "600519",
+        "mode": "stock",
+        "strategy": "稳健趋势型",
+        "date": "2026-06-26",
+        "close": 1168.63,
+        "windowScore": 0,
+        "windowSignals": [
+          "L3",
+          "L9"
+        ],
+        "buySignals": [],
+        "exitSignals": [],
+        "warningSignals": [],
+        "type": "⏸️ 离场观望",
+        "position": 0,
+        "bsMark": null,
+        "simpleAction": "持币观望",
+        "marketLabel": "核心偏强",
+        "riskLevel": "中等波动/偏离",
+        "exitLevel": "无明确离场"
+      }
+    },
+    {
+      "key": "stock-300750-2026-06-26-composite",
+      "name": "宁德时代",
+      "id": "300750",
+      "mode": "stock",
+      "strategy": "综合全能型",
+      "date": "2026-06-26",
+      "file": ".local/strategy-cache/stock_300750_0_300750_101_fqt1_lmt1000.json",
+      "marketFiles": {
+        "hs300": ".local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json",
+        "zz500": ".local/strategy-cache/index_zz500_1_000905_101_fqt1_lmt1000.json",
+        "zz1000": ".local/strategy-cache/index_zz1000_1_000852_101_fqt1_lmt1000.json"
+      },
+      "expected": {
+        "key": "stock-300750-2026-06-26-composite",
+        "id": "300750",
+        "mode": "stock",
+        "strategy": "综合全能型",
+        "date": "2026-06-26",
+        "close": 381,
+        "windowScore": 0,
+        "windowSignals": [
+          "L9",
+          "L1",
+          "L3",
+          "L5"
+        ],
+        "buySignals": [],
+        "exitSignals": [
+          "L1",
+          "L3",
+          "L9"
+        ],
+        "warningSignals": [],
+        "type": "🚪 趋势破位",
+        "position": 0,
+        "bsMark": null,
+        "simpleAction": "规避风险",
+        "marketLabel": "核心偏强",
+        "riskLevel": "高偏离风险",
+        "exitLevel": "强离场"
+      }
+    }
+  ]
+}

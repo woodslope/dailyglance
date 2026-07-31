@@ -467,7 +467,8 @@ function getWindowSignalInvalidation(signal, signalDay, currentDay, full, ind, s
     const b11Defense = signal === 'B11' ? getB11StructureDefense(signalDay, full, strategy) : null;
     const kValues = ind?.kdj?.k || [];
     const dValues = ind?.kdj?.d || [];
-    const firstCheckDay = strategy?.monotonicSignalLifecycle ? signalDay + 1 : currentDay;
+    // Always check from signal trigger day onward; prevents signals from "recovering" after a price break.
+    const firstCheckDay = strategy?.monotonicSignalLifecycle === false ? currentDay : signalDay + 1;
     let localBreak = null;
     for (let day = firstCheckDay; day <= currentDay; day++) {
         const close = Number(full?.[day]?.close);
@@ -778,7 +779,7 @@ function getRiskContext(idx, full, ind) {
 
 function getExitSeverity(meta, idx, full, ind) {
     const exits = meta.exitSignals || [], raw = Object.keys(meta.allSignals || {});
-    if ((meta.type && meta.type.includes('清仓规避')) || (strategyUsesUnconditionalExitCombo(STRATEGY) && raw.includes('L10') && raw.includes('L3'))) return { level: '清仓防守', detail: '触发高危清仓信号' };
+    if (meta.type && meta.type.includes('清仓规避')) return { level: '清仓防守', detail: '触发高危清仓信号' };
     const strongExitSet = getStrongExitSignals(STRATEGY);
     const strongExitSignals = exits.filter(s => strongExitSet.has(s));
     if (strongExitSignals.length) return { level: '强离场', detail: `触发核心破位防守：${strongExitSignals.map(s => getUserSignalText(s)).join('+')}` };
@@ -1453,7 +1454,13 @@ function computeDecisionForIndex(idx, full, prevPos) {
     const positionCap = getPositionCap(meta, prevPos, position);
     if (positionCap) position = quantizePosition(Math.min(position, positionCap.limit));
 
-    if (Math.abs(position - prevPos) <= 10 && position !== 0) position = prevPos;
+    // Hysteresis: suppress noise within 10%, but never override a reduction caused by exit/warning/risk signals.
+    if (Math.abs(position - prevPos) <= 10 && position !== 0) {
+        const wasReduced = position < prevPos &&
+            (exit.level === '减仓观察' || exit.level === '延续防守' ||
+             meta.warningSignals?.length || risk.score < 40 || positionCap);
+        if (!wasReduced) position = prevPos;
+    }
     if (prevPos === 0 && position > 0 && meta.type === '📈 趋势抱单') position = 0;
     const marketGate = applyMarketRiskGate(market, prevPos, position);
     position = marketGate.position;

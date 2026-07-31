@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "name": "DailyGlance sustainable strategy validation policy",
+  "baselineStartIndex": 60,
+  "warmupTradingDays": 120,
+  "temporalWindows": {
+    "count": 3,
+    "lengthTradingDays": 126,
+    "referenceIndex": "hs300"
+  },
+  "costScenarios": [
+    { "id": "standard", "label": "单边成本0.10%", "costRate": 0.001, "delayBars": 0 },
+    { "id": "cost_020", "label": "单边成本0.20%", "costRate": 0.002, "delayBars": 0 },
+    { "id": "cost_030", "label": "单边成本0.30%", "costRate": 0.003, "delayBars": 0 },
+    { "id": "delay_one_bar", "label": "延迟一根K线成交", "costRate": 0.001, "delayBars": 1 }
+  ],
+  "gates": {
+    "minimumCompletedTrades": 30,
+    "minimumAffectedDecisionDays": 30,
+    "minimumShadowTradingDays": 20,
+    "minimumImprovedSymbolRatio": 0.55,
+    "minimumPositiveTemporalWindows": 2,
+    "performance": {
+      "minimumReturnDelta": 0.005,
+      "maximumDrawdownRegression": 0.005,
+      "maximumTurnoverIncreaseRatio": 0.10
+    },
+    "risk_control": {
+      "minimumDrawdownImprovement": 0.005,
+      "maximumReturnRegression": 0.005,
+      "maximumTurnoverIncreaseRatio": 0.10
+    },
+    "efficiency": {
+      "minimumTurnoverReductionRatio": 0.10,
+      "maximumReturnRegression": 0.0025,
+      "maximumDrawdownRegression": 0.0025
+    },
+    "semantic_correctness": {
+      "maximumReturnRegression": 0.01,
+      "maximumDrawdownRegression": 0.01
+    },
+    "cohort": {
+      "minimumHardGateSymbols": 5,
+      "maximumReturnRegression": 0.01,
+      "maximumDrawdownRegression": 0.01
+    },
+    "stress": {
+      "scenarioId": "cost_020",
+      "maximumAdvantageRegression": 0.0025
+    }
+  },
+  "waveBQuality": {
+    "scope": "stock",
+    "registeredRule": {
+      "id": "wave-b-quality-20260730-02-b8-b17",
+      "strategy": "波段抄底型",
+      "scope": "stock",
+      "requiredSignals": ["B8", "B17"]
+    },
+    "minimumSamples": 30,
+    "minimumSymbols": 10,
+    "minimumSuccessAdvantage": 0.15,
+    "minimumFailureAdvantage": 0.1,
+    "maximumSymbolShare": 0.25,
+    "maximumYearShare": 0.35,
+    "minimumReturnAdvantages": 2,
+    "minimumDelayedCostAdvantages": 2,
+    "stressScenario": {
+      "id": "delay_one_bar_cost_020",
+      "label": "延迟一根K线成交，单边成本0.20%",
+      "entryDelayBars": 1,
+      "costRate": 0.002
+    },
+    "minimumTemporalSamples": 5,
+    "minimumPositiveTemporalWindows": 2,
+    "requireForwardValidation": true,
+    "forwardValidation": {
+      "minimumNewTradingDays": 20,
+      "minimumMaturedBEvents": 30,
+      "minimumBaselineBEvents": 30,
+      "requiresFrozenHistoricalQualification": true,
+      "manualApprovalOnly": true
+    }
+  }
+}

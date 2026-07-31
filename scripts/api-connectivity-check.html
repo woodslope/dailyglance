@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>行情接口连通性检查</title>
+  <style>
+    :root {
+      --canvas: #eef1ef;
+      --surface: #ffffff;
+      --ink: #17262a;
+      --muted: #5f7075;
+      --line: #ced8d8;
+      --brand: #087f5b;
+      --brand-soft: #e3f4ed;
+      --danger: #c2362b;
+      --danger-soft: #fce9e7;
+      --warn: #966900;
+      --warn-soft: #fff4cb;
+      --idle: #68787d;
+      --idle-soft: #edf1f1;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-width: 320px;
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .shell {
+      width: min(1120px, calc(100% - 32px));
+      margin: 32px auto 48px;
+    }
+
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 24px;
+      padding-bottom: 18px;
+      border-bottom: 2px solid var(--ink);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.2;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+
+    .subhead {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .run-state {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .control-bar {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) auto auto;
+      gap: 10px;
+      align-items: end;
+      margin: 22px 0;
+    }
+
+    .field-label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    input {
+      width: 100%;
+      min-height: 40px;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      outline: none;
+      background: var(--surface);
+      color: var(--ink);
+    }
+
+    input:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(8, 127, 91, 0.13);
+    }
+
+    button {
+      min-height: 40px;
+      padding: 9px 14px;
+      border: 1px solid var(--ink);
+      border-radius: 5px;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover:not(:disabled) {
+      background: #2d4146;
+    }
+
+    button.secondary {
+      background: var(--surface);
+      color: var(--ink);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+
+    .probe-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .probe {
+      display: grid;
+      gap: 13px;
+      min-height: 188px;
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+    }
+
+    .probe-wide {
+      grid-column: 1 / -1;
+      min-height: 0;
+    }
+
+    .probe-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 12px;
+    }
+
+    .probe-title {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .probe-meta {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-width: 64px;
+      justify-content: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--idle-soft);
+      color: var(--idle);
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .badge.running { background: var(--warn-soft); color: var(--warn); }
+    .badge.success { background: var(--brand-soft); color: var(--brand); }
+    .badge.failure, .badge.timeout, .badge.cors { background: var(--danger-soft); color: var(--danger); }
+
+    .result {
+      min-height: 42px;
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .endpoint {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .probe-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .probe-actions button {
+      min-width: 76px;
+      min-height: 34px;
+      padding: 6px 10px;
+      border-color: var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .probe-actions button:hover:not(:disabled) {
+      border-color: var(--ink);
+      background: var(--idle-soft);
+    }
+
+    .custom-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .note strong { color: var(--ink); }
+
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 24px, 1120px); margin-top: 20px; }
+      .masthead { display: block; }
+      .run-state { margin-top: 10px; }
+      .control-bar, .custom-row { grid-template-columns: 1fr; }
+      .probe-grid, .notes { grid-template-columns: 1fr; }
+      .probe-wide { grid-column: auto; }
+      .control-bar button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div>
+        <h1>行情接口连通性检查</h1>
+        <p class="subhead">用浏览器实际请求方式验证历史 K 线接口，不写缓存、不改策略。</p>
+      </div>
+      <div class="run-state" id="runState">等待检测</div>
+    </header>
+
+    <section class="control-bar" aria-label="检测控制">
+      <label class="field-label">
+        测试证券代码
+        <input id="symbolInput" value="600519" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="symbolHint">
+      </label>
+      <button id="runAllButton" type="button">检测全部</button>
+      <button id="resetButton" class="secondary" type="button">重置结果</button>
+    </section>
+
+    <section class="probe-grid" aria-live="polite">
+      <article class="probe" data-probe="eastmoney">
+        <div class="probe-title-row">
+          <div>
+            <h2 class="probe-title">东方财富历史 K 线</h2>
+            <p class="probe-meta">JSONP，和主应用一致</p>
+          </div>
+          <span class="badge" data-role="badge">未检测</span>
+        </div>
+        <div class="result" data-role="result">等待发起请求。</div>
+        <div class="endpoint" data-role="endpoint">push2his.eastmoney.com</div>
+        <div class="probe-actions"><span class="probe-meta">超时：8 秒</span><button type="button" data-action="eastmoney">检测</button></div>
+      </article>
+
+      <article class="probe" data-probe="tencent">
+        <div class="probe-title-row">
+          <div>
+            <h2 class="probe-title">腾讯历史 K 线</h2>
+            <p class="probe-meta">JSONP，现有历史回退源</p>
+          </div>
+          <span class="badge" data-role="badge">未检测</span>
+        </div>
+        <div class="result" data-role="result">等待发起请求。</div>
+        <div class="endpoint" data-role="endpoint">web.ifzq.gtimg.cn</div>
+        <div class="probe-actions"><span class="probe-meta">超时：5 秒</span><button type="button" data-action="tencent">检测</button></div>
+      </article>
+
+      <article class="probe" data-probe="sina">
+        <div class="probe-title-row">
+          <div>
+            <h2 class="probe-title">新浪北证 50 历史</h2>
+            <p class="probe-meta">JSONP，北证 50 专用回退源</p>
+          </div>
+          <span class="badge" data-role="badge">未检测</span>
+        </div>
+        <div class="result" data-role="result">固定测试北证 50，不受输入代码影响。</div>
+        <div class="endpoint" data-role="endpoint">quotes.sina.cn</div>
+        <div class="probe-actions"><span class="probe-meta">超时：5 秒</span><button type="button" data-action="sina">检测</button></div>
+      </article>
+
+      <article class="probe" data-probe="custom">
+        <div class="probe-title-row">
+          <div>
+            <h2 class="probe-title">自定义 Fetch 检查</h2>
+            <p class="probe-meta">适合测试可 CORS 访问的 URL</p>
+          </div>
+          <span class="badge" data-role="badge">未检测</span>
+        </div>
+        <div class="custom-row">
+          <label class="field-label">
+            HTTPS URL
+            <input id="customUrlInput" placeholder="https://example.com/api/health" autocomplete="off" spellcheck="false">
+          </label>
+          <button type="button" data-action="custom">检测</button>
+        </div>
+        <div class="result" data-role="result">未填写 URL。</div>
+        <div class="endpoint" data-role="endpoint">浏览器只能读取允许 CORS 的响应</div>
+      </article>
+    </section>
+
+    <section class="notes" aria-label="结果说明">
+      <div class="note"><strong>成功</strong><br>脚本实际加载且返回可解析的数据。</div>
+      <div class="note"><strong>失败 / 超时</strong><br>常见原因是服务器断连、DNS、网络路径或临时限流。</div>
+      <div class="note"><strong>CORS 失败</strong><br>只说明浏览器不能读取响应，不等于服务端一定不可达。</div>
+    </section>
+  </main>
+
+  <script>
+    const probeCards = Object.fromEntries([...document.querySelectorAll('[data-probe]')].map(card => [card.dataset.probe, card]));
+    const symbolInput = document.getElementById('symbolInput');
+    const customUrlInput = document.getElementById('customUrlInput');
+    const runAllButton = document.getElementById('runAllButton');
+    const resetButton = document.getElementById('resetButton');
+    const runState = document.getElementById('runState');
+    let runningCount = 0;
+
+    function nowToken(prefix) {
+      return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function setRunState(text) {
+      runState.textContent = text;
+    }
+
+    function setProbeState(name, state, message, endpoint) {
+      const card = probeCards[name];
+      if (!card) return;
+      const badge = card.querySelector('[data-role="badge"]');
+      const result = card.querySelector('[data-role="result"]');
+      const endpointNode = card.querySelector('[data-role="endpoint"]');
+      const labels = { idle: '未检测', running: '检测中', success: '连通', failure: '失败', timeout: '超时', cors: 'CORS 限制' };
+      badge.className = `badge ${state === 'idle' ? '' : state}`;
+      badge.textContent = labels[state] || state;
+      result.textContent = message;
+      if (endpoint) endpointNode.textContent = endpoint;
+    }
+
+    function normalizeCode(value) {
+      const code = String(value || '').trim().replace(/\s/g, '');
+      if (/^[01]\.\d{6}$/.test(code)) return code.slice(2);
+      return /^\d{6}$/.test(code) ? code : null;
+    }
+
+    function resolveSymbols() {
+      const code = normalizeCode(symbolInput.value);
+      if (!code) return null;
+      const isShanghai = /^(6|68)/.test(code);
+      const isBeijing = /^(4|8)/.test(code);
+      return {
+        code,
+        eastmoney: `${isShanghai ? '1' : '0'}.${code}`,
+        tencent: `${isBeijing ? 'bj' : (isShanghai ? 'sh' : 'sz')}${code}`
+      };
+    }
+
+    function formatDuration(startedAt) {
+      return `${Math.max(0, Math.round(performance.now() - startedAt))} ms`;
+    }
+
+    function loadJsonp({ url, callbackName, timeoutMs, validate }) {
+      return new Promise(resolve => {
+        const startedAt = performance.now();
+        let done = false;
+        const script = document.createElement('script');
+        const finish = (state, payload) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          delete window[callbackName];
+          script.remove();
+          resolve({ state, payload, elapsed: formatDuration(startedAt) });
+        };
+        const timer = window.setTimeout(() => finish('timeout'), timeoutMs);
+        window[callbackName] = payload => finish(validate(payload) ? 'success' : 'failure', payload);
+        script.async = true;
+        script.src = url;
+        script.onerror = () => finish('failure');
+        document.head.appendChild(script);
+      });
+    }
+
+    function loadScriptVariable({ url, variableName, timeoutMs, validate }) {
+      return new Promise(resolve => {
+        const startedAt = performance.now();
+        let done = false;
+        const script = document.createElement('script');
+        const finish = (state, payload) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          delete window[variableName];
+          script.remove();
+          resolve({ state, payload, elapsed: formatDuration(startedAt) });
+        };
+        const timer = window.setTimeout(() => finish('timeout'), timeoutMs);
+        window[variableName] = undefined;
+        script.async = true;
+        script.src = url;
+        script.onload = () => {
+          const payload = window[variableName];
+          finish(validate(payload) ? 'success' : 'failure', payload);
+        };
+        script.onerror = () => finish('failure');
+        document.head.appendChild(script);
+      });
+    }
+
+    function setRunning(name, endpoint) {
+      runningCount += 1;
+      setProbeState(name, 'running', '正在发起浏览器实际请求…', endpoint);
+      setRunState(`正在检测 ${runningCount} 个接口`);
+    }
+
+    function finishRun(name, outcome, successMessage, failureMessage, endpoint) {
+      runningCount = Math.max(0, runningCount - 1);
+      const state = outcome.state;
+      const message = state === 'success'
+        ? `${successMessage} · ${outcome.elapsed}`
+        : (state === 'timeout' ? `超过设定时间未完成 · ${outcome.elapsed}` : `${failureMessage} · ${outcome.elapsed}`);
+      setProbeState(name, state, message, endpoint);
+      if (runningCount === 0) setRunState('检测完成');
+    }
+
+    async function runEastmoney() {
+      const symbols = resolveSymbols();
+      if (!symbols) {
+        setProbeState('eastmoney', 'failure', '请输入 6 位证券代码，例如 600519。');
+        return;
+      }
+      const callbackName = nowToken('api_probe_em');
+      const endpoint = 'push2his.eastmoney.com / 历史 K 线 JSONP';
+      const params = new URLSearchParams({
+        secid: symbols.eastmoney,
+        fields1: 'f1,f2,f3,f4,f5,f6',
+        fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
+        klt: '101', fqt: '1', end: '20500101', lmt: '1000', cb: callbackName
+      });
+      setRunning('eastmoney', endpoint);
+      const outcome = await loadJsonp({
+        url: `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params}`,
+        callbackName,
+        timeoutMs: 8000,
+        validate: payload => Array.isArray(payload?.data?.klines) && payload.data.klines.length > 0
+      });
+      const count = Array.isArray(outcome.payload?.data?.klines) ? outcome.payload.data.klines.length : 0;
+      finishRun('eastmoney', outcome, `返回 ${count} 根历史 K 线`, '脚本加载失败或响应没有 K 线数据', endpoint);
+    }
+
+    async function runTencent() {
+      const symbols = resolveSymbols();
+      if (!symbols) {
+        setProbeState('tencent', 'failure', '请输入 6 位证券代码，例如 600519。');
+        return;
+      }
+      const variableName = nowToken('api_probe_tx');
+      const endpoint = 'web.ifzq.gtimg.cn / 历史 K 线 JSONP';
+      setRunning('tencent', endpoint);
+      const outcome = await loadScriptVariable({
+        url: `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbols.tencent},day,,,1000,qfq&_var=${variableName}`,
+        variableName,
+        timeoutMs: 5000,
+        validate: payload => {
+          const rows = payload?.data?.[symbols.tencent]?.qfqday || payload?.data?.[symbols.tencent]?.day;
+          return payload?.code === 0 && Array.isArray(rows) && rows.length > 0;
+        }
+      });
+      const rows = outcome.payload?.data?.[symbols.tencent]?.qfqday || outcome.payload?.data?.[symbols.tencent]?.day || [];
+      finishRun('tencent', outcome, `返回 ${rows.length} 根历史 K 线`, '脚本加载失败或响应没有 K 线数据', endpoint);
+    }
+
+    async function runSina() {
+      const callbackName = nowToken('api_probe_sina');
+      const callbackExpr = encodeURIComponent(`window[${JSON.stringify(callbackName)}]`);
+      const endpoint = 'quotes.sina.cn / 北证 50 历史 JSONP';
+      setRunning('sina', endpoint);
+      const outcome = await loadJsonp({
+        url: `https://quotes.sina.cn/cn/api/jsonp_v2.php/${callbackExpr}=/CN_MarketDataService.getKLineData?symbol=bj899050&scale=240&ma=no&datalen=1000`,
+        callbackName,
+        timeoutMs: 5000,
+        validate: payload => Array.isArray(payload) && payload.length > 0
+      });
+      const rows = Array.isArray(outcome.payload) ? outcome.payload.length : 0;
+      finishRun('sina', outcome, `返回 ${rows} 根北证 50 K 线`, '脚本加载失败或响应没有 K 线数据', endpoint);
+    }
+
+    async function runCustom() {
+      const url = customUrlInput.value.trim();
+      if (!/^https:\/\//i.test(url)) {
+        setProbeState('custom', 'failure', '请输入以 https:// 开头的 URL。');
+        return;
+      }
+      let host = url;
+      try { host = new URL(url).host; } catch (error) {}
+      const startedAt = performance.now();
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 8000);
+      setRunning('custom', host);
+      try {
+        const response = await fetch(url, { method: 'GET', cache: 'no-store', signal: controller.signal });
+        clearTimeout(timer);
+        const elapsed = formatDuration(startedAt);
+        runningCount = Math.max(0, runningCount - 1);
+        setProbeState('custom', response.ok ? 'success' : 'failure', `HTTP ${response.status} ${response.statusText || ''} · ${elapsed}`, host);
+      } catch (error) {
+        clearTimeout(timer);
+        runningCount = Math.max(0, runningCount - 1);
+        const state = error.name === 'AbortError' ? 'timeout' : 'cors';
+        const text = state === 'timeout' ? `超过设定时间未完成 · ${formatDuration(startedAt)}` : `浏览器无法读取响应（可能是 CORS 或网络失败）· ${formatDuration(startedAt)}`;
+        setProbeState('custom', state, text, host);
+      }
+      if (runningCount === 0) setRunState('检测完成');
+    }
+
+    function resetResults() {
+      runningCount = 0;
+      for (const name of Object.keys(probeCards)) {
+        const messages = {
+          eastmoney: '等待发起请求。',
+          tencent: '等待发起请求。',
+          sina: '固定测试北证 50，不受输入代码影响。',
+          custom: '未填写 URL。'
+        };
+        setProbeState(name, 'idle', messages[name]);
+      }
+      setRunState('等待检测');
+    }
+
+    async function runAll() {
+      runAllButton.disabled = true;
+      try {
+        await Promise.all([runEastmoney(), runTencent(), runSina()]);
+      } finally {
+        runAllButton.disabled = false;
+      }
+    }
+
+    document.querySelectorAll('[data-action]').forEach(button => {
+      button.addEventListener('click', () => {
+        const action = button.dataset.action;
+        if (action === 'eastmoney') runEastmoney();
+        if (action === 'tencent') runTencent();
+        if (action === 'sina') runSina();
+        if (action === 'custom') runCustom();
+      });
+    });
+    runAllButton.addEventListener('click', runAll);
+    resetButton.addEventListener('click', resetResults);
+  </script>
+</body>
+</html>
