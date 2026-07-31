@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260731-01"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260731-03"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260731-01">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260731-03">
 </head>
 <body>
 
@@ -210,15 +210,15 @@
         <div class="external-page-head">
             <div class="external-page-copy">
                 <div class="external-kicker">GLOBAL CONTEXT</div>
-                <h1>外部环境</h1>
-                <p>观察最近一轮中国资产情绪、海外风险偏好与汇率压力，只作 A 股背景参考，不作为买卖或仓位依据。</p>
+                <h1>隔夜外盘先行观察</h1>
+                <p>先看纳指、半导体、AI 与智能电动车等外盘主题，再映射 A 股可观察概念和代表标的；所有线索都要等 A 股开盘确认。</p>
             </div>
             <div class="external-page-actions">
                 <div id="externalMarketStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="外部环境行情尚未加载">
                     <span class="data-status-dot"></span>
                     <span class="data-status-label">等待更新</span>
                 </div>
-                <button id="externalRefreshBtn" type="button" class="icon-btn icon-btn-label" onclick="handleExternalMarketRefresh()" title="更新外部环境快照">
+                <button id="externalRefreshBtn" type="button" class="icon-btn icon-btn-label" onclick="handleExternalRefresh()" title="更新外部环境和隔夜主题快照">
                     <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                         <path d="M41 13V5M41 5H33M41 5L34.5 11.5C31.8 8.8 28.1 7 24 7C15.7 7 9 13.7 9 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                         <path d="M7 35V43M7 43H15M7 43L13.5 36.5C16.2 39.2 19.9 41 24 41C32.3 41 39 34.3 39 26" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
@@ -239,6 +239,17 @@
             <div id="externalEnvironmentSummary" class="external-summary-grid" aria-live="polite"></div>
         </section>
 
+        <section aria-labelledby="externalLeadTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">外盘 → A股</div>
+                    <h2 id="externalLeadTitle">隔夜主题映射</h2>
+                </div>
+                <div id="externalLeadMeta" class="external-snapshot-meta mono">等待隔夜外盘证据</div>
+            </div>
+            <div id="externalLeadThemes" class="external-lead-grid" aria-live="polite"></div>
+        </section>
+
         <section aria-labelledby="externalQuotesTitle">
             <div class="external-section-head">
                 <div>
@@ -251,17 +262,17 @@
 
         <div class="external-boundary-note">
             <strong>使用边界</strong>
-            <span>本页仅作外部背景观察，不参与大盘八指数、建仓门禁、仓位、B/S 或任何策略计算；公开行情接口可能延迟，缓存状态会明确标记。</span>
+            <span>本页外盘行情、主题映射和代表标的仅作只读观察，不参与大盘八指数、建仓门禁、仓位、B/S 或任何策略计算；“待 A 股开盘确认”不是必涨承诺，公开行情可能延迟，缓存状态会明确标记。</span>
         </div>
         <div class="chart-copyright-line external-copyright">© 2026 LINPO LAB · 仅供研究观察，不构成投资建议</div>
     </div>
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/01-config-ui.js?v=20260731-01"></script>
-<script src="assets/js/02-data.js?v=20260731-01"></script>
-<script src="assets/js/03-calculations.js?v=20260731-01"></script>
-<script src="assets/js/04-render.js?v=20260731-01"></script>
-<script src="assets/js/05-app.js?v=20260731-01"></script>
+<script src="assets/js/01-config-ui.js?v=20260731-03"></script>
+<script src="assets/js/02-data.js?v=20260731-03"></script>
+<script src="assets/js/03-calculations.js?v=20260731-03"></script>
+<script src="assets/js/04-render.js?v=20260731-03"></script>
+<script src="assets/js/05-app.js?v=20260731-03"></script>
 </body>
 </html>
