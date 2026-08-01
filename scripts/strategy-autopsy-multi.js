@@ -212,9 +212,9 @@ if (qi.length >= 2) {
     r += `- **最差行业**: ${qi[qi.length-1][0]} (${(qi[qi.length-1][1].filter(e=>e.success).length/qi[qi.length-1][1].length*100).toFixed(0)}%)\n`;
 }
 // Market impact
-const bearE = mktBuckets['全面弱势'] || []; const bullE = mktBuckets['核心偏强'] || [];
+const bearE = mktBuckets['核心宽基偏弱'] || []; const bullE = mktBuckets['核心宽基偏强'] || [];
 if (bearE.length && bullE.length) {
-    r += `- 全面弱势 ${(bearE.filter(e=>e.success).length/bearE.length*100).toFixed(0)}% vs 核心偏强 ${(bullE.filter(e=>e.success).length/bullE.length*100).toFixed(0)}%\n`;
+    r += `- 核心宽基偏弱 ${(bearE.filter(e=>e.success).length/bearE.length*100).toFixed(0)}% vs 核心宽基偏强 ${(bullE.filter(e=>e.success).length/bullE.length*100).toFixed(0)}%\n`;
 }
 // DD insight
 r += `- 失败组${(failed.filter(e=>e.dd60<-0.2).length/failed.length*100).toFixed(0)}% vs 成功组${(succE.filter(e=>e.dd60<-0.2).length/succE.length*100).toFixed(0)}% 在60日回撤>20%后入场\n`;

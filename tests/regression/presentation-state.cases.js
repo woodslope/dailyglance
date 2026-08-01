@@ -543,7 +543,7 @@ runTest('right panel computes temporary live conclusion instead of showing analy
     assert.ok(!result.analysisHtml.includes('分析同步中'), 'right panel should not expose the pending fallback for valid cached live data');
 });
 
-runTest('wave B quality exposes trial state without promoting it to a formal strong confirmation', () => {
+runTest('wave B quality stays hidden in production shadow while explicit research states remain testable', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext('function convertDailyToWeekly() { return []; }', context);
@@ -593,14 +593,14 @@ runTest('wave B quality exposes trial state without promoting it to a formal str
         var trialSummary = getNoviceDecisionSummary({ windowScore: 4, warningSignals: [], exitSignals: [], buySignals: ['B9'], allSignals: {}, windowSignals: [], inCooldown: false }, {
             position: 30, prevAdv: 0, bsMark: 'B', bQuality: 'trial',
             bQualityReasons: ['KDJ 金叉确认短期动量修复', '超跌止跌反弹确认修复形态'],
-            simpleAction: '轻仓建仓', market: { label: '核心分化' },
+            simpleAction: '轻仓建仓', market: { label: '核心宽基分化' },
             risk: { level: '低波动/偏离', score: 80, flags: [], stop: 10, pressure: 12 },
             exit: { level: '无明确离场' }, signalReady: true
         });
         var strongSummary = getNoviceDecisionSummary({ windowScore: 4, warningSignals: [], exitSignals: [], buySignals: ['B9'], allSignals: {}, windowSignals: [], inCooldown: false }, {
             position: 30, prevAdv: 0, bsMark: 'B', bQuality: 'strong',
             bQualityReasons: ['MACD底背离确认', '周线支撑共同确认'],
-            simpleAction: '轻仓建仓', market: { label: '核心分化' },
+            simpleAction: '轻仓建仓', market: { label: '核心宽基分化' },
             risk: { level: '低波动/偏离', score: 80, flags: [], stop: 10, pressure: 12 },
             exit: { level: '无明确离场' }, signalReady: true
         });
@@ -609,10 +609,8 @@ runTest('wave B quality exposes trial state without promoting it to a formal str
         bQuality: 'standard', bQualityReasons: [], bQualityRuleId: null
     });
     assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(configuredTrialQuality)', context)), {
-        bQuality: 'trial',
-        bQualityReasons: ['KDJ 金叉确认短期动量修复', '超跌止跌反弹确认修复形态'],
-        bQualityRuleId: 'wave-b-quality-20260730-02-b8-b17'
-    }, 'the configured B8+B17 trial must be visible without becoming formally approved');
+        bQuality: 'standard', bQualityReasons: [], bQualityRuleId: null
+    }, 'the configured B8+B17 ruleset stays shadow and is hidden by default');
     assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(shadowQuality)', context)), {
         bQuality: 'standard', bQualityReasons: [], bQualityRuleId: null
     }, 'shadow candidates must not change the user-visible B label');
@@ -647,16 +645,23 @@ runTest('wave B quality exposes trial state without promoting it to a formal str
 });
 
 runTest('build version is bumped consistently', () => {
-    assert.ok(configSource.includes("const APP_BUILD = '2026-07-31-03';"));
-    assert.ok(configSource.includes("const SIGNAL_VERSION = 'v4.2.12';"));
+    assert.ok(configSource.includes("const APP_BUILD = '2026-08-02-01';"));
+    assert.ok(configSource.includes("const SIGNAL_VERSION = 'v4.2.13';"));
     const versions = [...indexSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
     assert.ok(versions.length >= 7, 'expected vendor, CSS, and script version parameters');
-    assert.deepStrictEqual([...new Set(versions)], ['20260731-03']);
-    assert.ok(indexSource.includes('assets/vendor/chart.umd.min.js?v=20260731-03'), 'Chart.js should load from local vendor first');
+    assert.deepStrictEqual([...new Set(versions)], ['20260802-01']);
+    assert.ok(indexSource.includes('assets/vendor/chart.umd.min.js?v=20260802-01'), 'Chart.js should load from local vendor first');
     assert.ok(!indexSource.includes('https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>'), 'first Chart.js load should not depend on remote CDN');
     assert.ok(!indexSource.includes('fonts.googleapis') && !indexSource.includes('fonts.gstatic'), 'app shell should not block on external font hosts');
     assert.ok(cssSource.includes('font-family: -apple-system, BlinkMacSystemFont'), 'body should use system font stack');
     assert.ok(cssSource.includes('font-family: ui-monospace, SFMono-Regular'), 'monospace text should use system monospace stack');
+});
+
+runTest('production UI keeps offline strategy certification out of daily decisions', () => {
+    assert.ok(!configSource.includes('STRATEGY_HEALTH_MANIFEST'));
+    assert.ok(!configSource.includes('evaluateStrategyHealth'));
+    assert.ok(!appSource.includes('getStrategyHealth'));
+    assert.ok(!appSource.includes('健康等级'));
 });
 
 runTest('header and desktop sidebars keep fixed asymmetric columns', () => {
@@ -707,7 +712,7 @@ runTest('settings dialog keeps its body as the bounded scroll container', () => 
 runTest('decision evidence panel uses novice-readable why/action copy', () => {
     assert.ok(renderSource.includes('function getNoviceEvidenceCopy('), 'missing novice evidence copy helper');
     assert.ok(renderSource.includes('核心建仓门禁开放'), 'market evidence must explain the one-way risk gate');
-    assert.ok(renderSource.includes('本次新仓按个股信号执行，不受20%上限限制') && renderSource.includes('后续加仓仍暂停'), 'weak-market evidence must allow structural-market entries while preserving the add gate');
+    assert.ok(renderSource.includes('核心宽基偏弱') && renderSource.includes('普通机会') && renderSource.includes('标的自身独立走强') && renderSource.includes('marketGate.cap'), 'weak-market evidence must explain tiered increase caps');
     assert.ok(renderSource.includes('买入依据') && renderSource.includes('未买入原因'), 'signal evidence must explain buy/no-buy reason');
     assert.ok(renderSource.includes('风险依据') && renderSource.includes('防守位'), 'risk evidence must explain defensive basis');
     assert.ok(renderSource.includes('noviceEvidence.marketHint'), 'market hint must be rendered');
@@ -717,12 +722,12 @@ runTest('decision evidence panel uses novice-readable why/action copy', () => {
 
 runTest('market context UI exposes an increase gate instead of a position coefficient', () => {
     assert.ok(appSource.includes('核心建仓门禁'), 'market context card must name the core entry gate');
-    assert.ok(appSource.includes('新仓开放'), 'weak market gate must show that new entries remain open');
+    assert.ok(appSource.includes('market.increaseCaps') && appSource.includes('market.increaseCaps.ordinary') && appSource.includes('market.increaseCaps.independent'), 'weak market gate must show tiered increase caps');
     assert.ok(appSource.includes('门禁核心') && appSource.includes('仅观察'), 'index rows must distinguish gate inputs from observation-only indices');
     assert.ok(appSource.includes("renderLeftListHeader('市场与板块指数')"), 'left list title must cover market and board indices');
     assert.ok(cssSource.includes('.market-gate-panel') && cssSource.includes('.market-core-grid'), 'core gate module must use the compact layout');
     assert.ok(!appSource.includes('建议仓位上限'), 'market context must not present a holding cap');
-    assert.ok(indexSource.includes('全面弱势时新仓仍按个股或指数自身信号执行，不设20%上限') && indexSource.includes('个股说明门禁对本次新仓或加仓的实际影响'), 'help copy must explain stock/index gate semantics');
+    assert.ok(indexSource.includes('普通机会新增风险上限30%') && indexSource.includes('标的自身独立走强上限50%') && indexSource.includes('宽基只限制增加风险'), 'help copy must explain tiered stock/index gate semantics');
     assert.ok(!indexSource.includes('决定市场环境系数和仓位上限'), 'help copy must not describe the retired multiplier model');
 });
 
@@ -794,7 +799,7 @@ runTest('buy conclusion names the effective signal and keeps technical traceabil
             bsMark: 'B',
             simpleAction: '积极建仓',
             simpleColorClass: 'text-bull',
-            market: { label: '核心偏强', cls: 'bull' },
+            market: { label: '核心宽基偏强', cls: 'bull' },
             marketGate: { type: 'open', detail: '' },
             risk: { level: '低波动/偏离', score: 86, coef: 1, flags: [], stop: 96, pressure: 112 },
             exit: { level: '无明确离场', detail: '暂无明确离场依据' },
@@ -843,8 +848,8 @@ runTest('stock and index conclusions share decisions but use different product l
             bsMark: 'B',
             simpleAction: '积极建仓',
             simpleColorClass: 'text-bull',
-            market: { label: '全面弱势', cls: 'bear' },
-            marketGate: { type: 'open', detail: '' },
+            market: { label: '核心宽基偏弱', cls: 'bear', increaseCaps: { ordinary: 30, independent: 50 } },
+            marketGate: { type: 'increase-capped', cap: 50, strengthTier: 'independent', detail: '标的自身独立走强，新增风险上限50%' },
             risk: { level: '低波动/偏离', score: 86, coef: 1, flags: [], stop: 96, pressure: 112 },
             exit: { level: '无明确离场', detail: '暂无明确离场依据' },
             positionCap: null
@@ -870,10 +875,10 @@ runTest('stock and index conclusions share decisions but use different product l
     `, context);
     const stockText = vm.runInContext('stockText', context);
     const indexText = vm.runInContext('indexText', context);
-    assert.ok(stockText.includes('个股每日结论') && stockText.includes('当前建议仓位') && stockText.includes('买入依据'), stockText);
-    assert.ok(stockText.includes('核心建仓门禁') && stockText.includes('本次新仓按个股信号执行，不受20%上限限制'), stockText);
+    assert.ok(stockText.includes('个股每日结论') && stockText.includes('策略参考仓位') && stockText.includes('买入依据'), stockText);
+    assert.ok(stockText.includes('核心建仓门禁') && stockText.includes('标的自身独立走强') && stockText.includes('50%'), stockText);
     assert.ok(indexText.includes('大盘每日结论') && indexText.includes('当前风险仓位') && indexText.includes('动能依据'), indexText);
-    assert.ok(indexText.includes('核心市场环境') && indexText.includes('本次新建风险仓位按自身动能执行，不受20%上限限制'), indexText);
+    assert.ok(indexText.includes('核心市场环境') && indexText.includes('标的自身独立走强') && indexText.includes('50%'), indexText);
     assert.ok(indexText.includes('指数自身动能') && indexText.includes('市场风险/防守') && indexText.includes('风险仓位计算链'), indexText);
     assert.ok(!indexText.includes('个股信号') && !indexText.includes('买入依据') && !indexText.includes('持仓依据'), indexText);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
@@ -911,7 +916,7 @@ runTest('right panel explains a KDJ dead cross as a one-point soft invalidation 
             softSignalGrace: { applied: false, days: 0, signals: ['B8'], invalidations: [] },
             simpleAction: '轻仓持有',
             simpleColorClass: 'text-info',
-            market: { label: '核心分化', cls: 'neutral' },
+            market: { label: '核心宽基分化', cls: 'neutral' },
             marketGate: { type: 'open', detail: '' },
             risk: { level: '低波动/偏离', score: 86, coef: 1, flags: [], stop: 96, pressure: 112 },
             exit: { level: '无明确离场', detail: '暂无明确离场依据' },
@@ -995,7 +1000,7 @@ runTest('right panel explains a price-break hard invalidation with score delta a
             windowScore: 0, previousWindowScore: 7,
             softSignalGrace: { applied: false, days: 0, signals: [], invalidations: [] },
             simpleAction: '执行离场', simpleColorClass: 'text-bear',
-            market: { label: '核心分化', cls: 'neutral' },
+            market: { label: '核心宽基分化', cls: 'neutral' },
             marketGate: { type: 'open', detail: '' },
             risk: { level: '低波动/偏离', score: 86, coef: 1, flags: [], stop: 7.20, pressure: 8.66 },
             exit: { level: '无明确离场', detail: '暂无明确离场依据' },
@@ -1053,7 +1058,7 @@ runTest('right panel keeps a B11 trial on a local break and shows its structure 
                 localBreakDate: '2026-07-24', hardInvalidated: false
             },
             simpleAction: '轻仓持有', simpleColorClass: 'text-info',
-            market: { label: '核心分化', cls: 'neutral' }, marketGate: { type: 'open', detail: '' },
+            market: { label: '核心宽基分化', cls: 'neutral' }, marketGate: { type: 'open', detail: '' },
             risk: { level: '低波动/偏离', score: 86, coef: 1, flags: [], stop: 8.03, pressure: 9.75 },
             exit: { level: '无明确离场', detail: '暂无明确离场依据' }, positionCap: null
         };
@@ -1087,7 +1092,7 @@ runTest('B11 structure defense state invalidates the cached sidebar signature', 
     vm.runInContext(`
         var baseDecision = {
             simpleAction: '轻仓持有', position: 30,
-            market: { label: '核心分化' }, risk: { score: 86 }, exit: { level: '无明确离场' },
+            market: { label: '核心宽基分化' }, risk: { score: 86 }, exit: { level: '无明确离场' },
             b11StructureDefense: { structureLevel: 8.24, structureDate: '2026-07-10', localBreak: false }
         };
         var beforeLocalBreakSignature = getDecisionSignature(baseDecision);
@@ -1146,7 +1151,7 @@ runTest('hard invalidation copy follows the final entry or holding position', ()
             windowScore: 6,
             previousWindowScore: 3,
             simpleAction: '轻仓建仓',
-            market: { label: '全面弱势' },
+            market: { label: '核心宽基偏弱', increaseCaps: { ordinary: 30, independent: 50 } },
             marketGate: { type: 'open' },
             risk: { flags: [], coef: 1 },
             exit: { level: '无明确离场' }
@@ -1193,7 +1198,7 @@ runTest('novice copy explains the one-day soft-invalidation grace and its expiry
         var softDecision = {
             basePosition: 30, position: 30, prevAdv: 30, windowScore: 2, previousWindowScore: 3,
             softSignalGrace: { applied: true, days: 1, signals: ['B8'] },
-            simpleAction: '轻仓持有', market: { label: '核心分化' }, marketGate: {},
+            simpleAction: '轻仓持有', market: { label: '核心宽基分化' }, marketGate: {},
             risk: { flags: [], coef: 1 }, exit: { level: '无明确离场' }
         };
         var graceSummary = getNoviceDecisionSummary(softMeta, softDecision, 'stock');
@@ -1213,7 +1218,7 @@ runTest('novice copy explains the one-day soft-invalidation grace and its expiry
 runTest('product guide fixes the right panel copy standard', () => {
     assert.ok(productGuideSource.includes('右侧决策面板话术规范'), 'missing right-panel copy standard');
     assert.ok(productGuideSource.includes('结论 -> 推导依据 -> 技术细节'), 'copy standard must define the three-level writing order');
-    assert.ok(productGuideSource.includes('单向增仓门禁') && productGuideSource.includes('本次新仓按个股信号执行，不受20%上限限制'), 'copy standard must explain the one-way market gate');
+    assert.ok(productGuideSource.includes('只限制增加风险') && productGuideSource.includes('普通机会新增风险上限为30%') && productGuideSource.includes('标的自身独立走强') && productGuideSource.includes('上限为50%'), 'copy standard must explain the tiered market gate');
     assert.ok(productGuideSource.includes('买入依据') && productGuideSource.includes('持仓依据') && productGuideSource.includes('未买入原因'), 'copy standard must cover novice evidence language');
     assert.ok(productGuideSource.includes('信号发生日') && productGuideSource.includes('失效原因'), 'copy standard must expose historical signal timing and invalidation reason');
     assert.ok(productGuideSource.includes('不新增第二套策略判断'), 'copy standard must preserve the strategy boundary');
@@ -1263,7 +1268,7 @@ runTest('novice summary explains bullish market but defensive stock state withou
     assert.ok(vm.runInContext('summary.reason.startsWith("市场环境为全面多头")', context));
     assert.ok(vm.runInContext('summary.reason.includes("L1 跌破短期趋势")', context));
     assert.ok(vm.runInContext('summary.reason.includes("当前按减仓观察处理")', context));
-    assert.ok(vm.runInContext('summary.reason.includes("建议仓位降至 0%")', context));
+    assert.ok(vm.runInContext('summary.reason.includes("策略参考仓位降至 0%")', context));
     assert.ok(vm.runInContext('summary.reason.includes("先空仓防守")', context));
     assert.ok(vm.runInContext('!summary.reason.includes("；")', context), 'main reason should stay a single novice-readable sentence');
 });
@@ -1367,7 +1372,7 @@ runTest('strong-exit copy exposes repeated reset and cooldown progress', () => {
             prevAdv: 0,
             bsMark: null,
             simpleAction: '规避风险',
-            market: { label: '核心分化' },
+            market: { label: '核心宽基分化' },
             risk: { level: '中等波动/偏离', score: 70, flags: [], stop: 3.32, pressure: 4.54 },
             exit: { level: '强离场', detail: '触发核心破位防守：MACD 死叉' },
             signalReady: false
@@ -1388,7 +1393,7 @@ runTest('strong-exit copy exposes repeated reset and cooldown progress', () => {
             prevAdv: 0,
             bsMark: null,
             simpleAction: '持币观望',
-            market: { label: '核心分化' },
+            market: { label: '核心宽基分化' },
             risk: { level: '中等波动/偏离', score: 70, flags: [], stop: 3.32, pressure: 4.54 },
             exit: { level: '无明确离场', detail: '暂未看到新的强离场信号' },
             signalReady: false
@@ -1490,7 +1495,7 @@ runTest('novice summary attributes position compression to stock risk instead of
             prevAdv: 40,
             bsMark: 'S',
             simpleAction: '执行离场',
-            market: { label: '全面弱势', newPositionCap: null, allowAdd: false },
+            market: { label: '核心宽基偏弱', increaseCaps: { ordinary: 30, independent: 50 } },
             risk: { level: '极端波动风险', score: 30, coef: 0.25, flags: ['波动过高'], stop: 90, pressure: 110 },
             exit: { level: '无明确离场', detail: '暂未看到需要立即防守的核心离场信号' },
             signalReady: true

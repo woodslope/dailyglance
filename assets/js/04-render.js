@@ -644,13 +644,15 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const signalCause = getSignalCauseSummary(meta);
     const causeText = signalCause.text || '近窗有效信号';
 
-    let marketHint = '核心建仓门禁开放；是否开仓、持有、减仓或离场仍由个股/指数自身信号决定。';
-    if (marketGate.type === 'add-blocked') marketHint = `本次加仓被暂停，维持当前${position}%仓位；已有仓位不会因大盘被动减仓。`;
+    let marketHint = '核心建仓门禁开放；是否开仓、持有、减仓或离场仍由标的自身信号决定。';
+    if (marketGate.type === 'increase-capped') {
+        const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
+        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap}%，当前仓位不会因宽基状态被动降低。`;
+    }
     else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次开仓被暂停。';
-    else if (decision?.market?.label === '全面弱势') {
-        marketHint = previousPosition === 0
-            ? '核心宽基全面弱势；本次新仓按个股信号执行，不受20%上限限制，后续加仓仍暂停。'
-            : '核心宽基全面弱势；已有仓位不因大盘被动减仓，后续加仓仍暂停。';
+    else if (decision?.market?.label === '核心宽基偏弱') {
+        const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
+        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap ?? 30}%，本次未触发额外截断。`;
     }
     else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停开新仓和加仓；已有仓位仍按自身信号处理。';
 
@@ -683,12 +685,14 @@ function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const causeText = signalCause.text || '近窗有效指数信号';
 
     let marketHint = '核心宽基增仓环境开放；当前指数是否提高风险仓位，继续由自身动能和风险决定。';
-    if (marketGate.type === 'add-blocked') marketHint = `核心宽基全面弱势，本次暂停提高风险仓位并维持${position}%。`;
+    if (marketGate.type === 'increase-capped') {
+        const tierText = marketGate.strengthTier === 'independent' ? '指数自身独立走强' : '普通机会';
+        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap}%，已有风险仓位不会因此被动压缩。`;
+    }
     else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次暂停增加市场风险暴露。';
-    else if (decision?.market?.label === '全面弱势') {
-        marketHint = previousPosition === 0
-            ? '核心宽基全面弱势；本次新建风险仓位按自身动能执行，不受20%上限限制，后续提高风险仓位仍暂停。'
-            : '核心宽基全面弱势；已有风险仓位不因大盘被动压缩，后续提高风险仓位仍暂停。';
+    else if (decision?.market?.label === '核心宽基偏弱') {
+        const tierText = marketGate.strengthTier === 'independent' ? '指数自身独立走强' : '普通机会';
+        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap ?? 30}%，本次未触发额外截断。`;
     }
     else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停增加市场风险；已有风险仓位仍按指数自身信号处理。';
 
@@ -998,7 +1002,7 @@ function generateAnalysisHTML(idx, full, meta) {
     const evidenceTitle1 = isIndexMode ? '核心市场环境' : '核心建仓门禁';
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
     const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
-    const positionLabel = isIndexMode ? '当前风险仓位' : '当前建议仓位';
+    const positionLabel = isIndexMode ? '当前风险仓位' : '策略参考仓位';
     const hasB11StructureDefense = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel));
     const visibleDefenseLabel = hasB11StructureDefense ? '结构防守位' : '防守位';
     const visibleDefenseLevel = hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop;
@@ -1200,7 +1204,7 @@ function renderAnalysisPendingHTML(message = '信号正在同步，结论生成�
             <div class="action-line">
                 <div class="action-name text-dim">分析同步中</div>
                 <div class="action-cap">
-                    <span class="text-dim">${isIndexMode ? '当前风险仓位' : '当前建议仓位'}</span>
+                    <span class="text-dim">${isIndexMode ? '当前风险仓位' : '策略参考仓位'}</span>
                     <strong class="mono text-main">--</strong>
                 </div>
             </div>
@@ -1240,7 +1244,7 @@ function renderActiveSelectionStatus(status = 'loading') {
             <div class="action-line">
                 <div class="action-name text-dim">${stateText}</div>
                 <div class="action-cap">
-                    <span class="text-dim">${isIndexMode ? '当前风险仓位' : '当前建议仓位'}</span>
+                    <span class="text-dim">${isIndexMode ? '当前风险仓位' : '策略参考仓位'}</span>
                     <strong class="mono text-main">--</strong>
                 </div>
             </div>

@@ -3,7 +3,7 @@
   "generatedAt": "2026-07-10T00:00:00.000Z",
   "source": "DailyGlance production strategy chain over local strategy-cache fixtures",
   "appBuild": "2026-07-22-09",
-  "signalVersion": "v4.2.12",
+  "signalVersion": "v4.2.13",
   "note": "These snapshots pin observable production decisions for fixed cached samples. Update intentionally only when production strategy behavior changes.",
   "samples": [
     {
@@ -39,7 +39,7 @@
         "position": 0,
         "bsMark": "S",
         "simpleAction": "执行离场",
-        "marketLabel": "核心偏强",
+        "marketLabel": "核心宽基偏强",
         "riskLevel": "低波动/偏离",
         "exitLevel": "减仓观察"
       }
@@ -80,7 +80,7 @@
         "position": 80,
         "bsMark": null,
         "simpleAction": "积极持有",
-        "marketLabel": "核心偏强",
+        "marketLabel": "核心宽基偏强",
         "riskLevel": "低波动/偏离",
         "exitLevel": "无明确离场"
       }
@@ -116,7 +116,7 @@
         "position": 0,
         "bsMark": null,
         "simpleAction": "持币观望",
-        "marketLabel": "核心偏强",
+        "marketLabel": "核心宽基偏强",
         "riskLevel": "中等波动/偏离",
         "exitLevel": "无明确离场"
       }
@@ -153,7 +153,7 @@
         "position": 0,
         "bsMark": null,
         "simpleAction": "持币观望",
-        "marketLabel": "核心偏强",
+        "marketLabel": "核心宽基偏强",
         "riskLevel": "中等波动/偏离",
         "exitLevel": "无明确离场"
       }
@@ -196,7 +196,7 @@
         "position": 0,
         "bsMark": null,
         "simpleAction": "规避风险",
-        "marketLabel": "核心偏强",
+        "marketLabel": "核心宽基偏强",
         "riskLevel": "高偏离风险",
         "exitLevel": "强离场"
       }

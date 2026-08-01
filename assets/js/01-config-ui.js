@@ -6,7 +6,7 @@
 const rootStyle = getComputedStyle(document.documentElement);
 const getCssVar = (name) => rootStyle.getPropertyValue(name).trim();
 
-const APP_BUILD = '2026-07-31-03';
+const APP_BUILD = '2026-08-02-01';
 const SYS_CONFIG = {
     THROTTLE_MS: 30000,
     REQ_TIMEOUT: 5000,
@@ -129,10 +129,10 @@ const STRATEGIES = {
     '综合全能型': { buySignals: ['B1','B2','B3','B4','B5','B6','B7','B9','B10','B11','B12','B14','B15','B16','B17'], exitSignals: ['L1','L2','L3','L4','L5','L6','L9','L10'], warningSignals: ['W1'], scoreGroups: [['B1','B10','B15'],['B2','B12'],['B4','B14'],['B5','B6','B11','B16'],['B7'],['B17']], windowDays: 12, buyThreshold: 6, watchPosition: 30, watchPositionSignals: ['B5','B6','B7','B9','B11','B16','B17'], desc: '全量雷达观察模式，适合看全局信号，不建议直接等同交易指令' }
 };
 
-// Quality metadata only decorates an existing stock wave-bottom B; trial and approved states never change decisions.
+// Quality metadata stays in shadow until forward evidence and manual approval are complete.
 const WAVE_B_QUALITY_RULESET = Object.freeze({
-    id: 'wave-b-quality-20260730-03-trial-b8-b17',
-    status: 'trial',
+    id: 'wave-b-quality-20260730-02-b8-b17',
+    status: 'shadow',
     sourceRuleId: 'wave-b-quality-20260730-02-b8-b17',
     frozenAsOf: '2026-07-29',
     strategy: '波段抄底型',
@@ -330,7 +330,7 @@ function clearDerivedCaches() {
 }
 function clearLookupCacheOnly() { dateIndexCache.clear(); }
 
-const SIGNAL_VERSION = 'v4.2.12';
+const SIGNAL_VERSION = 'v4.2.13';
 window.__DG_BUILD__ = APP_BUILD;
 
 function getDecisionSignature(decision) {

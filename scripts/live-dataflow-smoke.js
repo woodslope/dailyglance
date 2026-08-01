@@ -5,9 +5,9 @@ const { createRequire } = require('module');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_URL = 'https://woodslope.github.io/dailyglance';
-const EXPECTED_RESOURCE_VERSION = '20260731-03';
-const EXPECTED_APP_BUILD = '2026-07-31-03';
-const EXPECTED_SIGNAL_VERSION = 'v4.2.12';
+const EXPECTED_RESOURCE_VERSION = '20260802-01';
+const EXPECTED_APP_BUILD = '2026-08-02-01';
+const EXPECTED_SIGNAL_VERSION = 'v4.2.13';
 const VALID_DISPLAY_MODES = ['confirmed', 'live-overlay', 'cached-live-overlay', 'post-close-pending', 'quote-only'];
 
 const args = new Map();

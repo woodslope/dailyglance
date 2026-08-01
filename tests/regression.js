@@ -70,7 +70,7 @@ function loadBaselineFixtures(snapshots) {
 function setupBaselineSnapshotContext({ includeRender = false } = {}) {
     const snapshots = loadStrategyBaselineSnapshots();
     assert.strictEqual(snapshots.schemaVersion, 1);
-    assert.strictEqual(snapshots.signalVersion, 'v4.2.12');
+    assert.strictEqual(snapshots.signalVersion, 'v4.2.13');
     assert.ok(Array.isArray(snapshots.samples) && snapshots.samples.length >= 5);
 
     const context = makeBrowserContext();

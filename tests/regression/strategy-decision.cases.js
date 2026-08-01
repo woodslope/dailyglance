@@ -531,7 +531,7 @@ runTest('same-day L10 and L3 keep the documented high-risk clear-out semantics',
     });
 });
 
-runTest('ten-point risk reduction remains covered by position hysteresis', () => {
+runTest('hard risk caps override ten-point position hysteresis', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext('function convertDailyToWeekly() { return []; }', context);
@@ -548,14 +548,14 @@ runTest('ten-point risk reduction remains covered by position hysteresis', () =>
             warningSignals: [], allSignals: {}, windowSignals: [], invalidatedWindowSignals: [], inCooldown: false
         };
         getSignalMeta = () => meta;
-        getMarketContext = () => ({ label: '核心分化', cls: 'neutral', allowAdd: true, newPositionCap: null });
+        getMarketContext = () => ({ label: '核心宽基分化', cls: 'neutral', increaseCaps: null });
         getRiskContext = () => ({ score: 30, level: '极端波动风险', coef: 0.25, flags: ['波动过高'], stop: 95, pressure: 110 });
         getExitSeverity = () => ({ level: '无明确离场', detail: '无' });
         getBasePosition = () => 80;
         var hysteresisDecision = computeDecisionForIndex(64, full, 30);
     `, context);
-    assert.strictEqual(vm.runInContext('hysteresisDecision.position', context), 30);
-    assert.strictEqual(vm.runInContext('hysteresisDecision.simpleAction', context), '轻仓持有');
+    assert.strictEqual(vm.runInContext('hysteresisDecision.position', context), 20);
+    assert.strictEqual(vm.runInContext('hysteresisDecision.simpleAction', context), '防守减仓');
 });
 
 runTest('wave B11 keeps a 30% trial after a local break and exits only below its confirmed structure low', () => {
@@ -577,7 +577,7 @@ runTest('wave B11 keeps a 30% trial after a local break and exits only below its
         full[70].low = 8.48; full[70].close = 8.71; full[70]._signals = ['B11'];
         full[71].low = 8.42; full[71].close = 8.42;
         full[72].low = 8.20; full[72].close = 8.20;
-        getMarketContext = () => ({ label: '核心分化', cls: 'neutral', allowAdd: true, newPositionCap: null });
+        getMarketContext = () => ({ label: '核心宽基分化', cls: 'neutral', increaseCaps: null });
         getRiskContext = () => ({ score: 100, level: '低波动/偏离', coef: 1, flags: [], stop: 8.03, pressure: 9.75 });
         getExitSeverity = () => ({ level: '无明确离场', detail: '无' });
         getBasePosition = (idx, rows, ind, meta) => meta.windowScore > 0 ? 30 : 0;
@@ -655,7 +655,7 @@ runTest('bottom-fishing trial position gets one soft-invalidation observation da
         });
         var activeMeta = makeMeta(1, 1, 'kdj-dead-cross');
         getSignalMeta = () => activeMeta;
-        getMarketContext = () => ({ label: '核心分化', cls: 'neutral', allowAdd: true, newPositionCap: null });
+        getMarketContext = () => ({ label: '核心宽基分化', cls: 'neutral', increaseCaps: null });
         getRiskContext = () => ({ score: 100, level: '低波动/偏离', coef: 1, flags: [], stop: 99, pressure: 110 });
         getExitSeverity = () => ({ level: '无明确离场', detail: '无' });
         getBasePosition = () => 0;
@@ -1055,7 +1055,7 @@ runTest('L7 and L8 remain visible take-profit observations without driving strat
     assert.strictEqual(vm.runInContext('exit.level', context), '无明确离场');
 });
 
-runTest('backtest summary applies position-sized returns and turnover costs', () => {
+runTest('backtest summary delays execution and compares the same-period buy-hold benchmark', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(appSourceNoInit, context);
@@ -1064,24 +1064,30 @@ runTest('backtest summary applies position-sized returns and turnover costs', ()
             { date: '2026-01-01', close: 100, _decision: { position: 0, simpleAction: '持币观望' } },
             { date: '2026-01-02', close: 100, _decision: { position: 50, simpleAction: '轻仓建仓' } },
             { date: '2026-01-03', close: 110, _decision: { position: 50, simpleAction: '轻仓持有' } },
-            { date: '2026-01-04', close: 105, _decision: { position: 0, simpleAction: '执行离场' } }
+            { date: '2026-01-04', close: 105, _decision: { position: 0, simpleAction: '执行离场' } },
+            { date: '2026-01-05', close: 105, _decision: { position: 0, simpleAction: '持币观望' } }
         ];
         var summary = calculateBacktestSummary(sample, {
-            startIdx: 0,
+            startIdx: 1,
             initialCapital: 10000,
-            costRate: 0.001
+            costRate: 0.001,
+            delayBars: 1
         });
     `, context);
     const summary = vm.runInContext('summary', context);
     assert.strictEqual(summary.totalTrades, 1);
-    assert.strictEqual(summary.winCount, 1);
+    assert.strictEqual(summary.winCount, 0);
     assert.strictEqual(summary.trades.length, 2);
-    assert.strictEqual(summary.trades[0].cost.toFixed(2), '5.00');
-    assert.strictEqual(summary.trades[1].cost.toFixed(2), '5.13');
-    assert.strictEqual(summary.ret, '2.51');
-    assert.strictEqual(summary.maxDrawdown, '2.32');
-    assert.strictEqual(summary.winRate, '100.0');
-    assert.strictEqual(summary.closedTradeReturns[0].toFixed(4), '0.0256');
+    assert.strictEqual(summary.trades[0].signalDate, '2026-01-02');
+    assert.strictEqual(summary.trades[0].executionDate, '2026-01-03');
+    assert.strictEqual(summary.trades[1].signalDate, '2026-01-04');
+    assert.strictEqual(summary.trades[1].executionDate, '2026-01-05');
+    assert.strictEqual(summary.delayBars, 1);
+    assert.strictEqual(summary.benchmarkRet, '4.90');
+    assert.strictEqual(summary.excessRet, '-7.27');
+    assert.strictEqual(summary.winRateQualified, false);
+    assert.strictEqual(summary.winRate, '0.0');
+    assert.strictEqual(summary.openPositionAtEnd, false);
 });
 
 runTest('strategy watch state only opens probe positions when the active strategy allows it', () => {
@@ -1159,7 +1165,7 @@ runTest('strategy watch state only opens probe positions when the active strateg
     assert.strictEqual(vm.runInContext('bottomWatchDecision.bsMark', context), 'B');
 });
 
-runTest('market context allows full new entries but pauses additions under broad weakness', () => {
+runTest('weak core breadth caps ordinary increases at 30 and independent strength at 50 without forcing reductions', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext('function convertDailyToWeekly() { return []; }', context);
@@ -1167,7 +1173,7 @@ runTest('market context allows full new entries but pauses additions under broad
     vm.runInContext(renderSource, context);
     vm.runInContext(`
         state.period = 'daily';
-        state.indicators = { ma: {}, macd: null, rsi: null, kdj: null };
+        state.indicators = { ma: { 20: Array(70).fill(101), 60: Array(70).fill(90) }, macd: null, rsi: null, kdj: null };
         setActiveStrategy('稳健趋势型');
         var full = Array.from({ length: 70 }, (_, i) => ({
             date: '2026-06-' + String(i + 1).padStart(2, '0'),
@@ -1189,11 +1195,10 @@ runTest('market context allows full new entries but pauses additions under broad
             daysSinceExit: Infinity
         };
         var gateMarket = {
-            label: '全面弱势',
+            label: '核心宽基偏弱',
             cls: 'bear',
-            newPositionCap: null,
-            allowAdd: false,
-            reason: '核心宽基多数空头，新仓按个股信号执行，已有仓位暂停加仓',
+            increaseCaps: { ordinary: 30, independent: 50 },
+            reason: '普通机会新增风险上限30%，标的独立走强上限50%',
             trends: []
         };
         var gateRisk = { score: 100, level: '低波动/偏离', coef: 1, flags: [], stop: 95, pressure: 110 };
@@ -1203,33 +1208,36 @@ runTest('market context allows full new entries but pauses additions under broad
         getRiskContext = () => gateRisk;
         getExitSeverity = () => gateExit;
 
-        var weakEntry = computeDecisionForIndex(64, full, 0);
-        var blockedAdd = computeDecisionForIndex(64, full, 30);
-        var weakEntrySummary = getNoviceDecisionSummary(gateMeta, weakEntry);
-        var blockedAddSummary = getNoviceDecisionSummary(gateMeta, blockedAdd);
-        var weakEntryEvidence = getNoviceEvidenceCopy(gateMeta, weakEntry, '未触发离场', '');
-        var blockedAddEvidence = getNoviceEvidenceCopy(gateMeta, blockedAdd, '未触发离场', '');
+        var ordinaryEntry = computeDecisionForIndex(64, full, 0);
+        var ordinaryEvidence = getNoviceEvidenceCopy(gateMeta, ordinaryEntry, '未触发离场', '');
+
+        state.indicators.ma[20][59] = 94;
+        state.indicators.ma[20][64] = 95;
+        state.indicators.ma[60][64] = 90;
+        var independentEntry = computeDecisionForIndex(64, full, 0);
+        var independentAdd = computeDecisionForIndex(64, full, 30);
+        var blockedAbove50 = computeDecisionForIndex(64, full, 50);
+        var heldAboveCap = computeDecisionForIndex(64, full, 80);
+        var independentEvidence = getNoviceEvidenceCopy(gateMeta, independentEntry, '未触发离场', '');
 
         gateRisk = { score: 30, level: '极端波动风险', coef: 0.25, flags: ['波动过高'], stop: 90, pressure: 110 };
         var riskLimitedEntry = computeDecisionForIndex(64, full, 0);
         gateRisk = { score: 100, level: '低波动/偏离', coef: 1, flags: [], stop: 95, pressure: 110 };
 
         gateMarket = {
-            label: '震荡分化',
+            label: '核心宽基分化',
             cls: 'neutral',
-            newPositionCap: null,
-            allowAdd: true,
-            reason: '市场未进入全面弱势',
+            increaseCaps: null,
+            reason: '市场未进入核心宽基偏弱',
             trends: []
         };
         var allowedEntry = computeDecisionForIndex(64, full, 0);
 
         gateMarket = {
-            label: '全面弱势',
+            label: '核心宽基偏弱',
             cls: 'bear',
-            newPositionCap: null,
-            allowAdd: false,
-            reason: '核心宽基多数空头，新仓按个股信号执行，已有仓位暂停加仓',
+            increaseCaps: { ordinary: 30, independent: 50 },
+            reason: '普通机会新增风险上限30%，标的独立走强上限50%',
             trends: []
         };
         gateRisk = { score: 30, level: '极端波动风险', coef: 0.25, flags: ['波动过高'], stop: 90, pressure: 110 };
@@ -1242,33 +1250,38 @@ runTest('market context allows full new entries but pauses additions under broad
 
         gateMeta = { ...gateMeta, type: '✅ 明确转强', buySignals: ['B1'], exitSignals: [], allSignals: { B1: { status: true } } };
         gateExit = { level: '无明确离场', detail: '暂无明确离场依据' };
-        gateMarket = { label: '环境未知', cls: 'neutral', newPositionCap: 0, allowAdd: false, reason: '市场温度数据不足', trends: [] };
+        gateMarket = { label: '环境未知', cls: 'neutral', increaseCaps: { ordinary: 0, independent: 0 }, reason: '市场温度数据不足', trends: [] };
         var unknownEntry = computeDecisionForIndex(64, full, 0);
-        gateMarket = { label: '环境待确认', cls: 'neutral', newPositionCap: 0, allowAdd: false, reason: '三项核心宽基尚未补齐', trends: [] };
+        gateMarket = { label: '环境待确认', cls: 'neutral', increaseCaps: { ordinary: 0, independent: 0 }, reason: '三项核心宽基尚未补齐', trends: [] };
         var pendingEntry = computeDecisionForIndex(64, full, 0);
     `, context);
 
-    const result = JSON.parse(vm.runInContext('JSON.stringify({ weakEntry, blockedAdd, weakEntrySummary, blockedAddSummary, weakEntryEvidence, blockedAddEvidence, riskLimitedEntry, allowedEntry, allowedReduce, allowedExit, unknownEntry, pendingEntry })', context));
-    assert.strictEqual(result.weakEntry.position, 80);
-    assert.strictEqual(result.weakEntry.bsMark, 'B');
-    assert.strictEqual(result.weakEntry.simpleAction, '积极建仓');
-    assert.strictEqual(result.weakEntry.marketGate.type, 'open');
-    assert.ok(!result.weakEntry.positionDriver.includes('新仓上限'), result.weakEntry.positionDriver);
-    assert.ok(result.weakEntrySummary.reason.includes('本次由空仓转为80%仓位'), result.weakEntrySummary.reason);
-    assert.ok(result.weakEntryEvidence.marketHint.includes('按个股信号执行') && result.weakEntryEvidence.marketHint.includes('不受20%上限限制') && result.weakEntryEvidence.marketHint.includes('后续加仓仍暂停'), result.weakEntryEvidence.marketHint);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ ordinaryEntry, ordinaryEvidence, independentEntry, independentAdd, blockedAbove50, heldAboveCap, independentEvidence, riskLimitedEntry, allowedEntry, allowedReduce, allowedExit, unknownEntry, pendingEntry })', context));
+    assert.strictEqual(result.ordinaryEntry.position, 30);
+    assert.strictEqual(result.ordinaryEntry.bsMark, 'B');
+    assert.strictEqual(result.ordinaryEntry.simpleAction, '轻仓建仓');
+    assert.strictEqual(result.ordinaryEntry.marketGate.type, 'increase-capped');
+    assert.strictEqual(result.ordinaryEntry.marketGate.cap, 30);
+    assert.strictEqual(result.ordinaryEntry.marketGate.strengthTier, 'ordinary');
+    assert.ok(result.ordinaryEvidence.marketHint.includes('普通机会') && result.ordinaryEvidence.marketHint.includes('30%'), result.ordinaryEvidence.marketHint);
+
+    assert.strictEqual(result.independentEntry.position, 50);
+    assert.strictEqual(result.independentEntry.bsMark, 'B');
+    assert.strictEqual(result.independentEntry.marketGate.strengthTier, 'independent');
+    assert.ok(result.independentEntry.marketGate.reasons.includes('买入积分达标'));
+    assert.ok(result.independentEntry.marketGate.reasons.includes('风险与离场检查通过'));
+    assert.strictEqual(result.independentAdd.position, 50);
+    assert.strictEqual(result.independentAdd.bsMark, null);
+    assert.strictEqual(result.independentAdd.simpleAction, '顺势加仓');
+    assert.strictEqual(result.blockedAbove50.position, 50);
+    assert.strictEqual(result.blockedAbove50.marketGate.type, 'increase-capped');
+    assert.strictEqual(result.heldAboveCap.position, 80);
+    assert.strictEqual(result.heldAboveCap.marketGate.type, 'open');
+    assert.ok(result.independentEvidence.marketHint.includes('标的自身独立走强') && result.independentEvidence.marketHint.includes('50%'), result.independentEvidence.marketHint);
 
     assert.strictEqual(result.riskLimitedEntry.position, 20);
     assert.strictEqual(result.riskLimitedEntry.bsMark, 'B');
     assert.strictEqual(result.riskLimitedEntry.marketGate.type, 'open');
-
-    assert.strictEqual(result.blockedAdd.position, 30);
-    assert.strictEqual(result.blockedAdd.bsMark, null);
-    assert.strictEqual(result.blockedAdd.simpleAction, '轻仓持有');
-    assert.ok(result.blockedAdd.positionDriver.includes('全面弱势暂停加仓'), result.blockedAdd.positionDriver);
-    assert.ok(result.blockedAddSummary.reason.includes('全面弱势暂停加仓'), result.blockedAddSummary.reason);
-    assert.ok(result.blockedAddSummary.reason.includes('维持30%'), result.blockedAddSummary.reason);
-    assert.ok(result.blockedAddSummary.invalidCondition.includes('全面弱势期间暂停加仓'), result.blockedAddSummary.invalidCondition);
-    assert.ok(result.blockedAddEvidence.marketHint.includes('不会因大盘被动减仓'), result.blockedAddEvidence.marketHint);
 
     assert.strictEqual(result.allowedEntry.position, 80);
     assert.strictEqual(result.allowedEntry.bsMark, 'B');
@@ -1306,15 +1319,12 @@ runTest('market gate uses only CSI 300, CSI 500 and CSI 1000 majority state', ()
     `, context);
     const result = JSON.parse(vm.runInContext('JSON.stringify({ splitCore, weakCore, pendingCore, coreIds: CORE_MARKET_INDEX_IDS })', context));
     assert.deepStrictEqual(result.coreIds, ['hs300', 'zz500', 'zz1000']);
-    assert.strictEqual(result.splitCore.label, '核心分化');
-    assert.strictEqual(result.splitCore.newPositionCap, null);
-    assert.strictEqual(result.splitCore.allowAdd, true);
-    assert.strictEqual(result.weakCore.label, '全面弱势');
-    assert.strictEqual(result.weakCore.newPositionCap, null);
-    assert.strictEqual(result.weakCore.allowAdd, false);
+    assert.strictEqual(result.splitCore.label, '核心宽基分化');
+    assert.strictEqual(result.splitCore.increaseCaps, null);
+    assert.strictEqual(result.weakCore.label, '核心宽基偏弱');
+    assert.deepStrictEqual(result.weakCore.increaseCaps, { ordinary: 30, independent: 50 });
     assert.strictEqual(result.pendingCore.label, '环境待确认');
-    assert.strictEqual(result.pendingCore.newPositionCap, 0);
-    assert.strictEqual(result.pendingCore.allowAdd, false);
+    assert.deepStrictEqual(result.pendingCore.increaseCaps, { ordinary: 0, independent: 0 });
 });
 
 runTest('hydrating non-active indices invalidates stale market-gated decisions without rebuilding stock indicators', () => {
@@ -1403,7 +1413,7 @@ runTest('hydrating non-active indices invalidates stale market-gated decisions w
     assert.strictEqual(result.beforeHydration.position, 0);
     assert.strictEqual(result.pendingModeAfterHydration, 'market-only');
     assert.strictEqual(result.calcCalls, 0);
-    assert.strictEqual(result.afterHydration.market.label, '核心偏强');
+    assert.strictEqual(result.afterHydration.market.label, '核心宽基偏强');
     assert.strictEqual(result.afterHydration.position, 80);
     assert.strictEqual(result.afterHydration.bsMark, 'B');
 });
@@ -1606,7 +1616,7 @@ runTest('right panel copy explains state action risk and invalidation for baseli
                 hasAction: state.mode === 'index'
                     ? (text.includes('增加风险') || text.includes('维持当前风险仓位') || text.includes('降低风险暴露') || text.includes('保持低风险暴露'))
                     : (text.includes(sample.expected.simpleAction) || text.includes('空仓观望') || text.includes('先不碰') || text.includes('继续持有') || text.includes('可积极关注')),
-                hasPosition: text.includes(state.mode === 'index' ? '当前风险仓位' : '当前建议仓位') && text.includes(String(sample.expected.position) + '%'),
+                hasPosition: text.includes(state.mode === 'index' ? '当前风险仓位' : '策略参考仓位') && text.includes(String(sample.expected.position) + '%'),
                 hasRisk: text.includes(state.mode === 'index' ? '市场风险/防守' : '风控/防守') && (text.includes(sample.expected.riskLevel) || text.includes(sample.expected.exitLevel) || text.includes('防守观察')),
                 hasInvalidCondition: text.includes('失效条件：') && (text.includes('买入积分') || text.includes('防守位') || text.includes('强离场信号')),
                 hasEvidence: text.includes('关键推导依据') && text.includes(state.mode === 'index' ? '核心市场环境' : '核心建仓门禁') && (text.includes(state.mode === 'index' ? '指数自身动能' : '个股信号')),

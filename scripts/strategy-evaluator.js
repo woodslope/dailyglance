@@ -48,6 +48,9 @@ function summarizePerformance(rows, options = {}) {
     let capital = 10000;
     let peak = capital;
     let maxDrawdown = 0;
+    let benchmarkCapital = 10000 * (1 - costRate);
+    let benchmarkPeak = benchmarkCapital;
+    let benchmarkMaxDrawdown = 0;
     let adjustments = 0;
     let turnover = 0;
     let holdingDays = 0;
@@ -61,6 +64,11 @@ function summarizePerformance(rows, options = {}) {
         const close = Number(rows[index]?.close);
         if (previousPosition > 0 && previousClose > 0 && close > 0) {
             capital *= 1 + ((close - previousClose) / previousClose) * (previousPosition / 100);
+        }
+        if (previousClose > 0 && close > 0) {
+            benchmarkCapital *= 1 + ((close - previousClose) / previousClose);
+            benchmarkPeak = Math.max(benchmarkPeak, benchmarkCapital);
+            benchmarkMaxDrawdown = Math.max(benchmarkMaxDrawdown, benchmarkPeak > 0 ? (benchmarkPeak - benchmarkCapital) / benchmarkPeak : 0);
         }
         if (position > 0) holdingDays++;
         if (position !== previousPosition) {
@@ -87,11 +95,15 @@ function summarizePerformance(rows, options = {}) {
     const grossProfit = wins.reduce((sum, value) => sum + value, 0);
     const grossLoss = Math.abs(losses.reduce((sum, value) => sum + value, 0));
     const ret = capital / 10000 - 1;
+    const benchmarkRet = benchmarkCapital / 10000 - 1;
     const annualizedReturn = eligibleDays > 0 && capital > 0
         ? Math.pow(capital / 10000, 252 / eligibleDays) - 1
         : NaN;
     return {
         ret: round(ret),
+        benchmarkRet: round(benchmarkRet),
+        excessRet: round(ret - benchmarkRet),
+        benchmarkMaxDrawdown: round(benchmarkMaxDrawdown),
         annualizedReturn: round(annualizedReturn),
         maxDrawdown: round(maxDrawdown),
         calmar: maxDrawdown > 0 ? round(annualizedReturn / maxDrawdown) : null,
@@ -129,9 +141,12 @@ function summarizeEvaluationRows(rows) {
         symbols: rows.length,
         performance: {
             avgStrategyRet: round(mean(rows.map(row => row.performance.ret))),
+            avgBenchmarkRet: round(mean(rows.map(row => row.performance.benchmarkRet))),
+            avgExcessRet: round(mean(rows.map(row => row.performance.excessRet))),
             medianStrategyRet: round(median(rows.map(row => row.performance.ret))),
             avgAnnualizedReturn: round(mean(rows.map(row => row.performance.annualizedReturn))),
             avgMaxDrawdown: round(mean(rows.map(row => row.performance.maxDrawdown))),
+            avgBenchmarkMaxDrawdown: round(mean(rows.map(row => row.performance.benchmarkMaxDrawdown))),
             avgCalmar: round(mean(rows.map(row => row.performance.calmar))),
             avgWinRate: round(mean(rows.map(row => row.performance.winRate))),
             avgPayoffRatio: round(mean(rows.map(row => row.performance.payoffRatio))),
@@ -162,6 +177,8 @@ function subtractSummaries(variant, baseline) {
     const variantTurnover = variant.trades?.turnover || 0;
     return {
         avgStrategyRet: round((variant.performance?.avgStrategyRet || 0) - (baseline.performance?.avgStrategyRet || 0)),
+        avgBenchmarkRet: round((variant.performance?.avgBenchmarkRet || 0) - (baseline.performance?.avgBenchmarkRet || 0)),
+        avgExcessRet: round((variant.performance?.avgExcessRet || 0) - (baseline.performance?.avgExcessRet || 0)),
         medianStrategyRet: round((variant.performance?.medianStrategyRet || 0) - (baseline.performance?.medianStrategyRet || 0)),
         avgAnnualizedReturn: round((variant.performance?.avgAnnualizedReturn || 0) - (baseline.performance?.avgAnnualizedReturn || 0)),
         avgMaxDrawdown: round((variant.performance?.avgMaxDrawdown || 0) - (baseline.performance?.avgMaxDrawdown || 0)),

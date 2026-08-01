@@ -164,7 +164,7 @@ process.stdout.write('🔬 生成报告...\n');
 let report = '';
 report += '# 策略尸检报告\n\n';
 report += `> 生成: ${new Date().toISOString().slice(0,19).replace('T',' ')} | 数据: 2021-01 ~ 2026-07\n`;
-report += `> 策略: 波段抄底型 v4.2.12 | ${processed}只股票 | ${bEvents.length}次B事件\n\n---\n\n`;
+report += `> 策略: 波段抄底型 v4.2.13 | ${processed}只股票 | ${bEvents.length}次B事件\n\n---\n\n`;
 
 // 1. Overall
 report += '## 1. 整体统计\n\n';
@@ -285,10 +285,10 @@ if (qInds.length >= 2) {
     report += `### 行业差异\n- **最高**: ${qInds[0][0]} (${(qInds[0][1].filter(e=>e.success).length/qInds[0][1].length*100).toFixed(0)}%)\n`;
     report += `- **最低**: ${qInds[qInds.length-1][0]} (${(qInds[qInds.length-1][1].filter(e=>e.success).length/qInds[qInds.length-1][1].length*100).toFixed(0)}%)\n\n`;
 }
-const bearEv = mktBuckets['全面弱势'] || [];
-const bullEv = mktBuckets['核心偏强'] || [];
+const bearEv = mktBuckets['核心宽基偏弱'] || [];
+const bullEv = mktBuckets['核心宽基偏强'] || [];
 if (bearEv.length && bullEv.length) {
-    report += `### 市场环境\n全面弱势成功率 ${(bearEv.filter(e=>e.success).length/bearEv.length*100).toFixed(0)}% vs 核心偏强 ${(bullEv.filter(e=>e.success).length/bullEv.length*100).toFixed(0)}%\n\n`;
+    report += `### 市场环境\n核心宽基偏弱成功率 ${(bearEv.filter(e=>e.success).length/bearEv.length*100).toFixed(0)}% vs 核心宽基偏强 ${(bullEv.filter(e=>e.success).length/bullEv.length*100).toFixed(0)}%\n\n`;
 }
 report += `### 入场形态\n`;
 report += `- 失败组 ${(failed.filter(e=>e.dd60<-0.2).length/failed.length*100).toFixed(0)}% vs 成功组 ${(succE.filter(e=>e.dd60<-0.2).length/succE.length*100).toFixed(0)}% 的B发生在60日回撤>20%后\n`;

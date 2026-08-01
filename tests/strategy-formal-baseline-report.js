@@ -34,9 +34,12 @@ for (const strategy of STRATEGIES) {
     if (!summary) throw new Error(`缺少策略：${strategy}`);
     if (summary.symbols !== report.scope.symbols) throw new Error(`${strategy} 标的覆盖不完整`);
     if (!Number.isFinite(summary.performance?.avgStrategyRet)) throw new Error(`${strategy} 缺少平均策略收益`);
+    if (!Number.isFinite(summary.performance?.avgBenchmarkRet)) throw new Error(`${strategy} 缺少同标的买入持有基准收益`);
+    if (!Number.isFinite(summary.performance?.avgExcessRet)) throw new Error(`${strategy} 缺少相对基准超额收益`);
     if (!Number.isFinite(summary.performance?.medianStrategyRet)) throw new Error(`${strategy} 缺少收益中位数`);
     if (!Number.isFinite(summary.performance?.avgAnnualizedReturn)) throw new Error(`${strategy} 缺少年化收益`);
     if (!Number.isFinite(summary.performance?.avgMaxDrawdown)) throw new Error(`${strategy} 缺少平均最大回撤`);
+    if (!Number.isFinite(summary.performance?.avgBenchmarkMaxDrawdown)) throw new Error(`${strategy} 缺少基准最大回撤`);
     if (!Number.isFinite(summary.performance?.avgExpectancy)) throw new Error(`${strategy} 缺少单笔期望`);
     if (!Number.isInteger(summary.bs?.b) || !Number.isInteger(summary.bs?.s)) throw new Error(`${strategy} 缺少 B/S 统计`);
     if (!Number.isFinite(summary.holding?.ratio)) throw new Error(`${strategy} 缺少持仓比例`);

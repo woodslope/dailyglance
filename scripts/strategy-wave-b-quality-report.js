@@ -53,7 +53,7 @@ const QUALITY_FEATURE_ARG = process.argv.find(arg => arg.startsWith('--quality-f
 const QUALITY_FEATURE_FILTER = QUALITY_FEATURE_ARG ? QUALITY_FEATURE_ARG.slice('--quality-feature='.length).trim() : null;
 const QUALITY_FEATURES = [
     { id: 'risk_ge_70', label: '风险系数不低于70', test: item => item.riskScore >= 70 },
-    { id: 'market_not_bear', label: '市场未处于全面弱势', test: item => item.marketLabel !== '全面弱势' },
+    { id: 'market_not_bear', label: '市场未处于核心宽基偏弱', test: item => item.marketLabel !== '核心宽基偏弱' },
     { id: 'vol_ge_20', label: '成交量不低于20日均量', test: item => item.volRel20 >= 1 },
     { id: 'weekly_support', label: '周线支撑未失守', test: item => item.weeklySupport },
     { id: 'drawdown_ge_10', label: '近60日回撤不少于10%', test: item => item.drawdown60 >= 0.10 },

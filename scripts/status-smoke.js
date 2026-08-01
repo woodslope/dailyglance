@@ -6,7 +6,7 @@ const { createRequire } = require('module');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_PORT = 8766;
-const EXPECTED_VERSION = '20260731-03';
+const EXPECTED_VERSION = '20260802-01';
 const VALID_DISPLAY_MODES = ['confirmed', 'live-overlay', 'cached-live-overlay', 'post-close-pending', 'quote-only'];
 
 const args = new Map();
