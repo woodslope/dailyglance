@@ -55,6 +55,8 @@ README 只做项目总览、入口索引和目录/发布边界，不承载策略
 - GitHub 的用途只是通过 GitHub Pages 展示和访问这个网页应用。
 - GitHub 只保存必要部署文件，不作为完整源码仓库、协作仓库或备份仓库。
 - GitHub Pages 部署包只需要 `index.html`、`assets/`、`.github/workflows/pages.yml`、`.gitignore`。
+- 本地完整项目在无远端跟踪的 `codex/full-project` 分支维护；`main` 只作为与 `origin/main` 同步的部署分支。
+- 发布时从 `origin/main` 建立独立 worktree，只同步上述四类路径并验证后推送；不推送 `codex/full-project`。
 - `.local/`、`.workbuddy/`、缓存、报告和临时备份不进入部署包。
 
 如果以后要把 GitHub 改成标准源码仓库，必须重新评估 `docs/`、`scripts/`、`tests/`、样本夹具和私有/临时数据边界。

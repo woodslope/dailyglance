@@ -1,6 +1,6 @@
 # DailyGlance 当前接续状态
 
-更新时间：2026-07-31（策略定位决策版）
+更新时间：2026-08-01（`20260731-03` 发布收口）
 
 ## 策略定位决策（2026-07-31）
 
@@ -17,10 +17,11 @@
 
 ## 当前本地状态
 
-- 本地最新：`HEAD=fe602cf`，`main` 比 `origin/main` 超前 2 个提交；`APP_BUILD=2026-07-31-03`、资源参数 `?v=20260731-03`、`SIGNAL_VERSION=v4.2.12`。代码审查修复当前尚未提交。
-- 已发布线上：`APP_BUILD=2026-07-31-01`、`?v=20260731-01`（远端 `main` 提交 `0d0dff7`）。
-- 新增「隔夜外盘主题映射」区块：东方财富外盘 ETF/个股行情 → 半导体与算力、AI 与云计算、智能电动车三个主题 → A 股可观察概念与代表标的。所有映射仅作只读观察，不参与策略计算。
-- 代码审查修复：CSS 字号统一、cooldown 去冗余、状态 pill 去重、可访问性符号、per-theme 阈值、缓存工厂函数、函数重命名。
+- 本地完整项目保留在无远端跟踪的 `codex/full-project` 分支；代码审查修复已提交为 `2c44480`。`main` 仅用于 GitHub Pages 部署。
+- 当前构建：`APP_BUILD=2026-07-31-03`、资源参数 `?v=20260731-03`、`SIGNAL_VERSION=v4.2.12`。
+- 已发布线上：远端 `main=90862c659532c008691b069107fcd437b9cb180e`，GitHub 仅保留 `index.html`、`assets/`、`.github/workflows/pages.yml` 和 `.gitignore`。
+- 「隔夜外盘主题映射」已上线：东方财富外盘 ETF/个股行情 → 半导体与算力、AI 与云计算、智能电动车三个主题 → A 股可观察概念与代表标的。所有映射仅作只读观察，不参与策略计算。
+- 代码审查修复已收口：恢复策略生命周期边界和高危清仓语义，撤回未验证仓位例外，修复 JSONP 取消清理与检查脚本误报通过问题。
 - 历史确认日 K 改由 TickFlow 主源提供，策略、仓位、信号与 `B/S` 不变。
 - 回测池为 `97` 只股票 + `8` 个指数，共同确认截止 `2026-07-29`；当前正式基线为 `.local/strategy-reports/formal-strategy-baseline-20260731T001654Z.json`。
 - 已否决的波段候选（已全部冻结，见上方策略定位决策）：
@@ -36,20 +37,17 @@
 ## 当前线上状态
 
 - 线上地址：https://woodslope.github.io/dailyglance/
-- 发布源为 `20260731-01 / v4.2.12`，远端 `main` 提交 `0d0dff76a5221709baab1a95530b1aa885f60d63`，`Deploy DailyGlance` run `30605751639` 已成功。
+- 发布源为 `20260731-03 / v4.2.12`，远端 `main` 提交 `90862c659532c008691b069107fcd437b9cb180e`。`Deploy DailyGlance` run `30699410088` 和 Pages run `30699409823` 均已成功。
+- 线上 `status-smoke` 与 `live-dataflow-smoke` 已通过；四张图表、右侧结论、数据状态、历史拖拽和恢复最新均正常。
 - 波段 B11 双层结构防守、核心宽基门禁和展示试用的 `B8+B17` 金色 B 已在线；金色 B 不改变仓位、动作、风险、离场或 `B/S`。
 - **金色 B 预期管理**：当前 `trial` 状态可能长期持续（历史成功率优势 `+14.81%` 差 `0.19` 个百分点、三段窗口仅 `1/3` 达标、前向影子观察 `0` 天）。`trial` 不等于正式强确认买点，右侧仅显示"试用中"。若试用状态停留过久，可选择撤回 trial 规则集等前向证据足够后一次性上线；当前保持现状不做变更。
 
 ## 待办与风险
 
-### 待修复
-
-- **GitHub 上传边界待收口**：本地 `main` 的提交 `fe602cf` 纳入了 `docs/`、`scripts/`、`tests/` 等 86 个非部署文件，与“远端仅保存 Pages 必要文件”的边界冲突。当前 `main` 不得直接推送；发布前必须从 `origin/main` 重组仅含 `index.html`、`assets/`、`.github/workflows/pages.yml`、`.gitignore` 的部署提交或部署分支。
-
 ### 待验证
 
 - TickFlow、腾讯、东方财富和新浪均为公开接口，没有正式 SLA；TickFlow 主源当前已通过真实数据流验证，后续仍需观察可用性和频率限制。
-- 当前终端网络路径访问 Pages 仍收到 `ERR_CONNECTION_RESET`，因此本次没有线上 DOM/canvas 自动化证据；GitHub Actions 成功且远端源码已确认新构建。
+- 当前终端网络路径访问 Pages 仍会偶发 `ERR_CONNECTION_RESET`，但重试后线上 DOM/canvas 和真实数据流 smoke 已成功；这是外部网络可用性风险，不是已确认的应用回归。
 
 ## 下一步
 
@@ -58,11 +56,11 @@
 - 若有新的明确策略问题，先检查是否属于「低位修复试探」范围。若是大仓/波段方向的新想法，应先注册为独立候选并确认是否满足重启条件，再决定是否跑 `--screen`；不在同一快照重复调参。
 - 白胖候选研究在稳定行业/板块相对强弱数据源就绪之前不重启；不通过手工标签或未经验证的均线过滤替代。
 - 建议每 1-2 周检查一次 `obs-*` 真实观察记录，积累 5 个案例后统一审视共性；优先从真实使用问题中生成候选，而非在旧快照上扫描信号。
-- 页面 `status-smoke`、`live-dataflow-smoke`、浏览器验收只在人工说”可以阶段测试”或”准备发布”后执行。
+- 本轮阶段测试和发布已完成；后续新修改仍只在人工说“可以阶段测试”或“准备发布”后再运行页面 smoke。
 - 后续若有独立于策略方向的前端改进（如性能、交互、展示），仍按正常开发流程处理，不受策略冻结影响。
 
 ## 历史入口
 
-- 最新历史记录：`docs/history/STABLE_VERSION_2026-07-31.md`
+- 最新历史记录：`docs/history/STABLE_VERSION_2026-08-01.md`
 - 策略候选与否决证据：[docs/history/strategy/STRATEGY_VALIDATION_LOG_2026-07.md](docs/history/strategy/STRATEGY_VALIDATION_LOG_2026-07.md)
 - 生产规则：[docs/strategy/STRATEGY_DECISION_RULES.md](docs/strategy/STRATEGY_DECISION_RULES.md)
