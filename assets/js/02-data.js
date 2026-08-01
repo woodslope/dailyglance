@@ -162,6 +162,15 @@ function getActiveSecurityTarget() {
 const cachedFetchRefreshJobs = new Map();
 let cachedFetchRefreshApplyTimer = 0;
 let pendingCachedFetchRefreshApplyId = '';
+
+// JSONP cleanup registry — prevents script tag and global callback leaks on page unload
+const _jsonpCleanupFns = new Set();
+function _registerJsonpCleanup(fn) { _jsonpCleanupFns.add(fn); }
+function _unregisterJsonpCleanup(fn) { _jsonpCleanupFns.delete(fn); }
+function _runJsonpCleanup() { Array.from(_jsonpCleanupFns).forEach(fn => { try { fn(); } catch(e) {} }); _jsonpCleanupFns.clear(); }
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pagehide', _runJsonpCleanup);
+}
 const historyRefreshMeta = new Map();
 const historySourceCircuits = new Map();
 const CN_MARKET_HOLIDAYS = new Set([
@@ -874,7 +883,7 @@ function getDataMutationMeta(prevData, nextData) {
 }
 
 // ==========================================
-// 外部环境快照：与 A 股历史、实时 overlay 和策略状态完全隔离
+// 外部环境与隔夜主题映射快照：与 A 股历史、实时 overlay 和策略状态完全隔离
 // ==========================================
 const EXTERNAL_MARKET_CONFIG = {
     CACHE_KEY: 'dg_external_market_snapshot_v1',
@@ -890,8 +899,77 @@ const EXTERNAL_MARKET_CONFIG = {
     }
 };
 
+const EXTERNAL_LEAD_CONFIG = {
+    CACHE_KEY: 'dg_external_lead_snapshot_v1',
+    COOLDOWN_MS: 60000,
+    REQUEST_TIMEOUT_MS: 5000,
+    MIN_SAME_DIRECTION: 2,
+    MIN_AVERAGE_CHANGE: 1,
+    PRIMARY_URL: 'https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields=f2,f3,f4,f12,f13,f14,f124&secids=105.SOXX,105.SMH,105.QQQ,105.MSFT,105.NVDA,105.AMD,105.TSLA,105.LI',
+    ITEMS: {
+        soxx: { code: 'SOXX', name: 'SOXX', decimals: 2 },
+        smh: { code: 'SMH', name: 'SMH', decimals: 2 },
+        qqq: { code: 'QQQ', name: 'QQQ', decimals: 2 },
+        msft: { code: 'MSFT', name: 'MSFT', decimals: 2 },
+        nvda: { code: 'NVDA', name: 'NVDA', decimals: 2 },
+        amd: { code: 'AMD', name: 'AMD', decimals: 2 },
+        tsla: { code: 'TSLA', name: 'TSLA', decimals: 2 },
+        li: { code: 'LI', name: 'LI', decimals: 2 }
+    },
+    THEMES: [
+        {
+            key: 'semiconductor-compute',
+            name: '半导体与算力',
+            evidenceKeys: ['soxx', 'smh', 'nvda', 'amd'],
+            concepts: ['芯片设计', '半导体设备', 'AI 算力'],
+            candidates: [
+                { code: '002371', name: '北方华创' },
+                { code: '603501', name: '韦尔股份' },
+                { code: '688041', name: '海光信息' }
+            ]
+        },
+        {
+            key: 'ai-cloud',
+            name: 'AI 与云计算',
+            evidenceKeys: ['qqq', 'msft'],
+            minSameDirection: 1,
+            concepts: ['AI 应用', '云计算', '光模块'],
+            candidates: [
+                { code: '002230', name: '科大讯飞' },
+                { code: '000977', name: '浪潮信息' },
+                { code: '300308', name: '中际旭创' }
+            ]
+        },
+        {
+            key: 'smart-ev',
+            name: '智能电动车',
+            evidenceKeys: ['tsla', 'li'],
+            minSameDirection: 1,
+            concepts: ['智能驾驶', '动力电池', '整车'],
+            candidates: [
+                { code: '002594', name: '比亚迪' },
+                { code: '300750', name: '宁德时代' },
+                { code: '002920', name: '德赛西威' }
+            ]
+        }
+    ]
+};
+
 const externalMarketState = {
     items: {},
+    source: '',
+    fetchedAt: 0,
+    lastAttemptAt: 0,
+    status: 'idle',
+    stale: false,
+    error: '',
+    inFlight: null,
+    cacheLoaded: false
+};
+
+const externalLeadState = {
+    items: {},
+    themes: [],
     source: '',
     fetchedAt: 0,
     lastAttemptAt: 0,
@@ -923,48 +1001,146 @@ function sanitizeExternalMarketItem(key, item) {
     };
 }
 
-function loadExternalMarketCache() {
-    if (externalMarketState.cacheLoaded) return externalMarketState;
-    externalMarketState.cacheLoaded = true;
-    try {
-        const raw = localStorage.getItem(EXTERNAL_MARKET_CONFIG.CACHE_KEY);
-        const cached = raw ? JSON.parse(raw) : null;
-        if (!cached || typeof cached !== 'object') return externalMarketState;
-        const items = {};
-        Object.keys(EXTERNAL_MARKET_CONFIG.ITEMS).forEach(key => {
-            const item = sanitizeExternalMarketItem(key, cached.items?.[key]);
-            if (item) items[key] = { ...item, stale: true };
-        });
-        externalMarketState.items = items;
-        externalMarketState.source = String(cached.source || '本地缓存');
-        externalMarketState.fetchedAt = Number(cached.fetchedAt) || 0;
-        externalMarketState.lastAttemptAt = Number(cached.lastAttemptAt) || 0;
-        externalMarketState.status = Object.keys(items).length ? 'cached' : 'idle';
-        externalMarketState.stale = Object.keys(items).length > 0;
-    } catch (error) {}
-    return externalMarketState;
+function normalizeExternalLeadQuoteAt(value) {
+    const quoteAt = Number(value);
+    if (!Number.isFinite(quoteAt) || quoteAt <= 0) return 0;
+    return quoteAt < 1e12 ? quoteAt * 1000 : quoteAt;
 }
 
-function saveExternalMarketCache() {
-    try {
-        localStorage.setItem(EXTERNAL_MARKET_CONFIG.CACHE_KEY, JSON.stringify({
-            version: 1,
-            items: externalMarketState.items,
-            source: externalMarketState.source,
-            fetchedAt: externalMarketState.fetchedAt,
-            lastAttemptAt: externalMarketState.lastAttemptAt
-        }));
-    } catch (error) {}
+function sanitizeExternalLeadItem(key, item) {
+    const config = EXTERNAL_LEAD_CONFIG.ITEMS[key];
+    const value = Number(item?.value ?? item?.f2);
+    const changePct = Number(item?.changePct ?? item?.f3);
+    if (!config || !Number.isFinite(value) || !Number.isFinite(changePct)) return null;
+    return {
+        key,
+        code: config.code,
+        name: config.name,
+        decimals: config.decimals,
+        value,
+        changePct,
+        change: Number.isFinite(Number(item?.change ?? item?.f4)) ? Number(item?.change ?? item?.f4) : 0,
+        quoteAt: normalizeExternalLeadQuoteAt(item?.quoteAt ?? item?.f124),
+        source: String(item?.source || ''),
+        stale: !!item?.stale
+    };
 }
+
+function buildExternalLeadThemes(items = {}) {
+    return EXTERNAL_LEAD_CONFIG.THEMES.map(theme => {
+        const evidence = theme.evidenceKeys.map(key => items[key]).filter(Boolean);
+        const availableCount = evidence.length;
+        const positiveCount = evidence.filter(item => item.changePct > 0).length;
+        const negativeCount = evidence.filter(item => item.changePct < 0).length;
+        const averageChangePct = availableCount
+            ? evidence.reduce((sum, item) => sum + item.changePct, 0) / availableCount
+            : null;
+        const minSameDirection = theme.minSameDirection ?? EXTERNAL_LEAD_CONFIG.MIN_SAME_DIRECTION;
+        let state = '信息不完整';
+        let tone = 'is-neutral';
+        if (availableCount >= minSameDirection) {
+            if (positiveCount >= minSameDirection && averageChangePct >= EXTERNAL_LEAD_CONFIG.MIN_AVERAGE_CHANGE) {
+                state = '隔夜偏强';
+                tone = 'is-positive';
+            } else if (negativeCount >= minSameDirection && averageChangePct <= -EXTERNAL_LEAD_CONFIG.MIN_AVERAGE_CHANGE) {
+                state = '隔夜偏弱';
+                tone = 'is-negative';
+            } else {
+                state = '隔夜分化';
+                tone = 'is-mixed';
+            }
+        }
+        return {
+            key: theme.key,
+            name: theme.name,
+            concepts: [...theme.concepts],
+            candidates: theme.candidates.map(candidate => ({ ...candidate })),
+            evidence,
+            expectedCount: theme.evidenceKeys.length,
+            availableCount,
+            averageChangePct,
+            state,
+            tone,
+            minEvidence: minSameDirection,
+            stale: evidence.some(item => item.stale),
+            quoteAt: evidence.reduce((latest, item) => Math.max(latest, item.quoteAt || 0), 0),
+            source: Array.from(new Set(evidence.map(item => item.source).filter(Boolean))).join(' + ')
+        };
+    });
+}
+
+function createExternalSnapshotCache({ config, state, sanitizeFn, onAfterLoad }) {
+    function load() {
+        if (state.cacheLoaded) return state;
+        state.cacheLoaded = true;
+        try {
+            const raw = localStorage.getItem(config.CACHE_KEY);
+            const cached = raw ? JSON.parse(raw) : null;
+            if (!cached || typeof cached !== 'object' || !cached.items || typeof cached.items !== 'object') return state;
+            const items = {};
+            Object.keys(config.ITEMS).forEach(key => {
+                const item = sanitizeFn(key, { ...(cached.items[key] || {}), stale: true });
+                if (item) items[key] = item;
+            });
+            state.items = items;
+            if (onAfterLoad) onAfterLoad(state, items);
+            state.source = String(cached.source || '本地缓存');
+            state.fetchedAt = Number(cached.fetchedAt) || 0;
+            state.lastAttemptAt = Number(cached.lastAttemptAt) || 0;
+            state.status = Object.keys(items).length ? 'cached' : 'idle';
+            state.stale = Object.keys(items).length > 0;
+        } catch (error) {}
+        return state;
+    }
+
+    function save() {
+        try {
+            localStorage.setItem(config.CACHE_KEY, JSON.stringify({
+                version: 1,
+                items: state.items,
+                source: state.source,
+                fetchedAt: state.fetchedAt,
+                lastAttemptAt: state.lastAttemptAt
+            }));
+        } catch (error) {}
+    }
+
+    return { load, save };
+}
+
+const _externalMarketCache = createExternalSnapshotCache({
+    config: EXTERNAL_MARKET_CONFIG,
+    state: externalMarketState,
+    sanitizeFn: sanitizeExternalMarketItem
+});
+function loadExternalMarketCache() { return _externalMarketCache.load(); }
+function saveExternalMarketCache() { _externalMarketCache.save(); }
+
+const _externalLeadCache = createExternalSnapshotCache({
+    config: EXTERNAL_LEAD_CONFIG,
+    state: externalLeadState,
+    sanitizeFn: sanitizeExternalLeadItem,
+    onAfterLoad: (state, items) => { state.themes = buildExternalLeadThemes(items); }
+});
+function loadExternalLeadCache() { return _externalLeadCache.load(); }
+function saveExternalLeadCache() { _externalLeadCache.save(); }
 
 function getExternalMarketCooldownRemaining(now = Date.now()) {
-    loadExternalMarketCache();
     return Math.max(0, EXTERNAL_MARKET_CONFIG.COOLDOWN_MS - (now - externalMarketState.lastAttemptAt));
+}
+
+function getExternalLeadCooldownRemaining(now = Date.now()) {
+    return Math.max(0, EXTERNAL_LEAD_CONFIG.COOLDOWN_MS - (now - externalLeadState.lastAttemptAt));
 }
 
 function notifyExternalMarketState() {
     if (state.tab !== 'external' || document.hidden) return;
     if (typeof renderExternalMarketSnapshot === 'function') renderExternalMarketSnapshot();
+}
+
+function notifyExternalLeadState() {
+    if (state.tab !== 'external' || document.hidden) return;
+    if (typeof renderExternalLeadSnapshot === 'function') renderExternalLeadSnapshot();
 }
 
 function normalizeExternalPrimaryItem(row) {
@@ -997,6 +1173,43 @@ async function fetchExternalMarketPrimary() {
             const item = normalizeExternalPrimaryItem(row);
             if (item) items[item.key] = item;
         });
+        return items;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function normalizeExternalLeadPrimaryItem(row) {
+    const key = Object.keys(EXTERNAL_LEAD_CONFIG.ITEMS).find(itemKey => EXTERNAL_LEAD_CONFIG.ITEMS[itemKey].code === String(row?.f12 || ''));
+    if (!key) return null;
+    return sanitizeExternalLeadItem(key, {
+        value: row.f2,
+        changePct: row.f3,
+        change: row.f4,
+        quoteAt: row.f124,
+        source: '东方财富',
+        stale: false
+    });
+}
+
+async function fetchExternalLeadPrimary() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EXTERNAL_LEAD_CONFIG.REQUEST_TIMEOUT_MS);
+    try {
+        const response = await fetch(EXTERNAL_LEAD_CONFIG.PRIMARY_URL, {
+            method: 'GET',
+            cache: 'no-store',
+            signal: controller.signal
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (payload?.rc !== 0 || !Array.isArray(payload?.data?.diff)) throw new Error('隔夜主题行情返回无效');
+        const items = {};
+        payload.data.diff.forEach(row => {
+            const item = normalizeExternalLeadPrimaryItem(row);
+            if (item) items[item.key] = item;
+        });
+        if (!Object.keys(items).length) throw new Error('隔夜主题行情为空');
         return items;
     } finally {
         clearTimeout(timer);
@@ -1127,6 +1340,68 @@ async function refreshExternalMarketSnapshot(options = {}) {
     return externalMarketState.inFlight;
 }
 
+async function refreshExternalLeadSnapshot(options = {}) {
+    loadExternalLeadCache();
+    if (externalLeadState.inFlight) return externalLeadState.inFlight;
+    if (state.tab !== 'external' || document.hidden) return externalLeadState;
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return externalLeadState;
+    if (getExternalLeadCooldownRemaining() > 0) {
+        notifyExternalLeadState();
+        return externalLeadState;
+    }
+
+    const task = (async () => {
+        const cachedItems = { ...externalLeadState.items };
+        externalLeadState.lastAttemptAt = Date.now();
+        externalLeadState.status = 'loading';
+        externalLeadState.error = '';
+        saveExternalLeadCache();
+        notifyExternalLeadState();
+
+        let freshItems = {};
+        let requestError = '';
+        try {
+            freshItems = await fetchExternalLeadPrimary();
+        } catch (error) {
+            requestError = error?.name === 'AbortError' ? '隔夜主题行情请求超时' : (error?.message || '隔夜主题行情请求失败');
+        }
+
+        const allKeys = Object.keys(EXTERNAL_LEAD_CONFIG.ITEMS);
+        const nextItems = { ...freshItems };
+        allKeys.forEach(key => {
+            if (!nextItems[key]) {
+                const cached = sanitizeExternalLeadItem(key, { ...(cachedItems[key] || {}), stale: true });
+                if (cached) nextItems[key] = cached;
+            }
+        });
+        const freshCount = Object.keys(freshItems).length;
+        const availableCount = Object.keys(nextItems).length;
+        externalLeadState.items = nextItems;
+        externalLeadState.themes = buildExternalLeadThemes(nextItems);
+        externalLeadState.stale = freshCount < allKeys.length;
+        externalLeadState.error = freshCount ? (freshCount < allKeys.length ? (requestError || `有 ${allKeys.length - freshCount} 项外盘行情暂未更新`) : '') : requestError;
+        if (freshCount === allKeys.length) externalLeadState.status = 'ready';
+        else if (freshCount > 0) externalLeadState.status = 'partial';
+        else if (availableCount > 0) externalLeadState.status = 'cached';
+        else externalLeadState.status = 'error';
+
+        if (freshCount > 0) {
+            externalLeadState.fetchedAt = Date.now();
+            externalLeadState.source = '东方财富';
+        } else if (!externalLeadState.source && availableCount > 0) {
+            externalLeadState.source = '本地缓存';
+        }
+        saveExternalLeadCache();
+        notifyExternalLeadState();
+        return externalLeadState;
+    })();
+
+    externalLeadState.inFlight = task.finally(() => {
+        externalLeadState.inFlight = null;
+    });
+    return externalLeadState.inFlight;
+}
+
 const requestManager = {
     limiters: new Map(),
     async fetchRealtimeWithThrottle(id) {
@@ -1134,9 +1409,9 @@ const requestManager = {
         const now = Date.now(), s = this.limiters.get(id) || { lastCall: 0, isFetching: false };
         if (s.isFetching) return null; if (now - s.lastCall < SYS_CONFIG.THROTTLE_MS) return null;
         s.isFetching = true; this.limiters.set(id, s);
-        try { const rt = await getRealtimePriceJSONP(id); s.lastCall = Date.now(); return rt; } 
-        catch (e) { return null; } 
-        finally { s.isFetching = false; this.limiters.set(id, s); }
+        try { const rt = await getRealtimePriceJSONP(id); return rt; }
+        catch (e) { return null; }
+        finally { s.lastCall = Date.now(); s.isFetching = false; this.limiters.set(id, s); }
     }
 };
 
@@ -1203,9 +1478,12 @@ function jsonpFetchEastmoneyKline(id) {
     return new Promise(resolve => {
         const secid = resolveSecid(id), cb = 'em_kline_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
         const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=1000&cb=${cb}`;
-        let cl = false; const cleanup = () => { if(cl) return; cl=true; clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        let cl = false, timer = 0, cancel = null;
+        const cleanup = () => { if(cl) return; cl=true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        cancel = () => { if (cl) return; cleanup(); resolve([]); };
+        _registerJsonpCleanup(cancel);
         const fail = () => { if (cl) return; recordHistorySourceTransportFailure('eastmoney'); cleanup(); resolve([]); };
-        const timer = setTimeout(fail, 8000);
+        timer = setTimeout(fail, 8000);
         window[cb] = data => { 
             recordHistorySourceSuccess('eastmoney'); cleanup();
             if(data && data.data && data.data.klines) resolve(normalizeConfirmedHistoryData(data.data.klines.map(l => { const p = l.split(','); return { date: p[0], open: p[1], close: p[2], high: p[3], low: p[4], vol: p[5], amt: p[6] }; }), id)); 
@@ -1220,9 +1498,12 @@ function jsonpFetchTencentKline(id) {
     return new Promise(resolve => {
         let symbol = resolveTencentSymbol(id);
         const cb = 'tx_kline_' + Date.now(), url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,1000,qfq&_var=${cb}`;
-        let cl = false; const cleanup = () => { if(cl) return; cl = true; clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        let cl = false, timer = 0, cancel = null;
+        const cleanup = () => { if(cl) return; cl = true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        cancel = () => { if (cl) return; cleanup(); resolve([]); };
+        _registerJsonpCleanup(cancel);
         const fail = () => { if (cl) return; recordHistorySourceTransportFailure('tencent'); cleanup(); resolve([]); };
-        const timer = setTimeout(fail, 5000); window[cb] = undefined;
+        timer = setTimeout(fail, 5000); window[cb] = undefined;
         const script = document.createElement('script'); script.id = cb; script.src = url;
         script.onload = () => { 
             if (cl) return;
@@ -1290,8 +1571,11 @@ function getRealtimePriceJSONP(id) {
     return new Promise(resolve => {
         const symbol = resolveTencentSymbol(id), varName = 'v_' + symbol;
         const script = document.createElement('script'); script.src = `https://qt.gtimg.cn/q=${symbol}`; script.charset = 'GBK';
-        let cl = false; const cleanup = () => { if(cl) return; cl = true; clearTimeout(timer); if(script.parentNode) script.remove(); };
-        const timer = setTimeout(() => { cleanup(); resolve(null); }, 5000);
+        let cl = false, timer = 0, cancel = null;
+        const cleanup = () => { if(cl) return; cl = true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); if(script.parentNode) script.remove(); };
+        cancel = () => { if (cl) return; cleanup(); resolve(null); };
+        _registerJsonpCleanup(cancel);
+        timer = setTimeout(() => { cleanup(); resolve(null); }, 5000);
         script.onload = () => { 
             cleanup(); 
             if(typeof window[varName] !== 'undefined') { 
@@ -1435,7 +1719,7 @@ async function syncDataIncremental(id) {
 }
 
 async function syncData(id) { 
-    const cached = await getCachedData(id); 
+    let cached = await getCachedData(id);
     const hasEnough = cached && cached.length >= 30; 
     const cachedLastDate = cached && cached.length ? (cached[cached.length - 1]?.date || '') : '';
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
@@ -1446,7 +1730,7 @@ async function syncData(id) {
     if(isMarketOpen()) { 
         if(hasEnough) { 
             const incremental = await syncDataIncremental(id); 
-            if(incremental && incremental.length > 0) { await dbSet(id, incremental); cached.length = 0; Array.prototype.push.apply(cached, incremental); } 
+            if(incremental && incremental.length > 0) { await dbSet(id, incremental); cached = incremental; }
             const rt = await requestManager.fetchRealtimeWithThrottle(id); 
             if (rt) applyRealtimeQuoteForSeries(id, cached, rt);
             else tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);
@@ -1743,6 +2027,7 @@ async function clearAllCache() {
     state.liveOverlayCache = {};
     try { localStorage.removeItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY); } catch(e) {}
     try { localStorage.removeItem(EXTERNAL_MARKET_CONFIG.CACHE_KEY); } catch(e) {}
+    try { localStorage.removeItem(EXTERNAL_LEAD_CONFIG.CACHE_KEY); } catch(e) {}
     derivedIndicatorCache.clear();
     localStorage.removeItem('quant_strategy'); 
     location.reload(); 

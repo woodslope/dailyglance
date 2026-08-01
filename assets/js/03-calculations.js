@@ -658,7 +658,7 @@ function strategyUsesUnconditionalExitCombo(strategy = STRATEGY) {
 
 function checkUnconditionalExit(idx, full, ind) {
     if(idx < 5 || !full[idx] || !strategyUsesUnconditionalExitCombo(STRATEGY) || !(full[idx]._signals || []).includes('L3')) return false;
-    for(let i = idx - 1; i >= Math.max(0, idx - 4); i--) if((full[i]?._signals || []).includes('L10')) return true;
+    for(let i = idx; i >= Math.max(0, idx - 4); i--) if((full[i]?._signals || []).includes('L10')) return true;
     return false;
 }
 
@@ -778,7 +778,7 @@ function getRiskContext(idx, full, ind) {
 
 function getExitSeverity(meta, idx, full, ind) {
     const exits = meta.exitSignals || [], raw = Object.keys(meta.allSignals || {});
-    if ((meta.type && meta.type.includes('清仓规避')) || (strategyUsesUnconditionalExitCombo(STRATEGY) && raw.includes('L10') && raw.includes('L3'))) return { level: '清仓防守', detail: '触发高危清仓信号' };
+    if (meta.type && meta.type.includes('清仓规避')) return { level: '清仓防守', detail: '触发高危清仓信号' };
     const strongExitSet = getStrongExitSignals(STRATEGY);
     const strongExitSignals = exits.filter(s => strongExitSet.has(s));
     if (strongExitSignals.length) return { level: '强离场', detail: `触发核心破位防守：${strongExitSignals.map(s => getUserSignalText(s)).join('+')}` };

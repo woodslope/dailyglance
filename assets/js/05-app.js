@@ -1887,45 +1887,155 @@ function renderExternalQuoteCards() {
     }).join('');
 }
 
+function getExternalLeadCopy(theme) {
+    const threshold = theme.minEvidence || EXTERNAL_LEAD_CONFIG.MIN_SAME_DIRECTION || 2;
+    if (theme.state === '隔夜偏强') return `至少${threshold}项外盘成分同向上涨且均值超过 +1%，列为开盘观察。`;
+    if (theme.state === '隔夜偏弱') return `至少${threshold}项外盘成分同向下跌且均值低于 -1%，不转化为 A 股卖出结论。`;
+    if (theme.state === '隔夜分化') return '外盘成分未形成满足阈值的一致方向，开盘不预设涨跌。';
+    return '外盘证据尚不完整，仅保留透明的映射清单。';
+}
+
+function getExternalLeadStateSymbol(state) {
+    if (state === '隔夜偏强') return '&#9650; ';   // ▲
+    if (state === '隔夜偏弱') return '&#9660; ';   // ▼
+    if (state === '隔夜分化') return '&#9670; ';   // ◆
+    return '&#9671; ';                              // ◇ 信息不完整
+}
+
+function renderExternalLeadCards() {
+    const container = document.getElementById('externalLeadThemes');
+    if (!container) return;
+    const themes = (externalLeadState.themes && externalLeadState.themes.length)
+        ? externalLeadState.themes
+        : buildExternalLeadThemes(externalLeadState.items || {});
+    container.innerHTML = themes.map(theme => {
+        const average = Number.isFinite(theme.averageChangePct) ? formatExternalSigned(theme.averageChangePct, 2, '%') : '--';
+        const changeClass = Number(theme.averageChangePct) > 0 ? 'up' : (Number(theme.averageChangePct) < 0 ? 'down' : 'flat');
+        const cacheTag = theme.stale ? '<span class="external-cache-tag">缓存</span>' : '';
+        const evidence = theme.evidence.length
+            ? theme.evidence.map(item => `${item.name} ${formatExternalSigned(item.changePct, 2, '%')}${item.stale ? '（缓存）' : ''}`).join(' · ')
+            : '等待外盘证据';
+        const conceptText = theme.concepts.join('、');
+        const candidateHtml = theme.candidates.map(candidate => `
+            <span class="external-lead-candidate"><span>${escapeHTML(candidate.name)}</span><span class="mono">${escapeHTML(candidate.code)}</span></span>
+        `).join('');
+        const metaText = `${theme.availableCount}/${theme.expectedCount} 项外盘证据 · ${theme.quoteAt ? `行情 ${formatExternalMarketTime(theme.quoteAt, true)}` : '行情时间 --'} · ${theme.source || '公开行情'}`;
+        const stateSymbol = getExternalLeadStateSymbol(theme.state);
+        return `
+            <article class="external-lead-card ${theme.tone}">
+                <div class="external-lead-head">
+                    <div>
+                        <div class="external-lead-name">${escapeHTML(theme.name)}${cacheTag}</div>
+                        <div class="external-lead-state">${stateSymbol}${escapeHTML(theme.state)}</div>
+                    </div>
+                    <div class="external-lead-average ${changeClass}"><strong class="mono">${average}</strong><span>成分均值</span></div>
+                </div>
+                <div class="external-lead-copy">${escapeHTML(getExternalLeadCopy(theme))}</div>
+                <div class="external-lead-detail">
+                    <span>外盘证据</span>
+                    <strong class="mono" title="${escapeHTML(evidence)}">${escapeHTML(evidence)}</strong>
+                </div>
+                <div class="external-lead-detail">
+                    <span>A 股可观察概念</span>
+                    <strong>${escapeHTML(conceptText)}</strong>
+                </div>
+                <div class="external-lead-candidates">
+                    <span>代表标的</span>
+                    <div>${candidateHtml}</div>
+                </div>
+                <div class="external-lead-meta mono" title="${escapeHTML(metaText)}">${escapeHTML(metaText)} · <span>待 A 股开盘确认</span></div>
+            </article>
+        `;
+    }).join('');
+}
+
+function updateExternalRefreshButton() {
+    const refreshBtn = document.getElementById('externalRefreshBtn');
+    if (!refreshBtn) return;
+    const isLoading = externalMarketState.status === 'loading' || externalLeadState.status === 'loading';
+    refreshBtn.disabled = isLoading;
+    const icon = refreshBtn.querySelector('svg');
+    const label = refreshBtn.querySelector('span');
+    if (icon) icon.classList.toggle('spin', isLoading);
+    if (label) label.textContent = isLoading ? '正在更新' : '更新快照';
+}
+
+function getExternalWorkspaceSnapshotStatus() {
+    const statuses = [externalMarketState.status, externalLeadState.status];
+    const error = [externalMarketState.error, externalLeadState.error].filter(Boolean).join('；');
+    if (statuses.includes('loading')) return { key: 'loading', error };
+    if (statuses.every(status => status === 'ready')) return { key: 'ready', error: '' };
+    if (statuses.every(status => status === 'error')) return { key: 'error', error };
+    if (statuses.every(status => status === 'idle')) return { key: 'idle', error: '' };
+    if (statuses.every(status => status === 'cached')) return { key: 'cached', error };
+    return { key: 'partial', error: error || '部分外部快照尚未更新' };
+}
+
+function renderExternalWorkspaceStatus() {
+    const statusEl = document.getElementById('externalMarketStatus');
+    if (!statusEl) return;
+    const snapshotStatus = getExternalWorkspaceSnapshotStatus();
+    const statusMap = {
+        idle: { label: '等待更新', tone: 'data-status-info', tooltip: '进入页面后将请求外部环境和隔夜主题行情' },
+        loading: { label: '正在更新', tone: 'data-status-info', tooltip: '正在批量更新外部环境和隔夜主题行情，请勿重复操作' },
+        ready: { label: '已更新', tone: 'data-status-ok', tooltip: '外部环境和隔夜主题行情已完成本轮更新' },
+        partial: { label: '部分更新', tone: 'data-status-warn', tooltip: snapshotStatus.error || '部分行情沿用最近缓存' },
+        cached: { label: '缓存快照', tone: 'data-status-warn', tooltip: snapshotStatus.error || '外部接口暂不可用，当前显示最近缓存' },
+        error: { label: '暂不可用', tone: 'data-status-warn', tooltip: snapshotStatus.error || '外部行情暂不可用' }
+    };
+    const status = statusMap[snapshotStatus.key] || statusMap.idle;
+    if (statusEl.dataset.currentStatusKey === snapshotStatus.key) return;
+    statusEl.dataset.currentStatusKey = snapshotStatus.key;
+    statusEl.classList.remove('data-status-ok', 'data-status-info', 'data-status-warn');
+    statusEl.classList.add(status.tone);
+    statusEl.dataset.tooltip = status.tooltip;
+    const label = statusEl.querySelector('.data-status-label');
+    if (label) label.textContent = status.label;
+}
+
 function renderExternalMarketSnapshot() {
     loadExternalMarketCache();
     renderExternalSummaryCards();
     renderExternalQuoteCards();
 
-    const statusEl = document.getElementById('externalMarketStatus');
     const metaEl = document.getElementById('externalSnapshotMeta');
-    const refreshBtn = document.getElementById('externalRefreshBtn');
-    const statusMap = {
-        idle: { label: '等待更新', tone: 'data-status-info', tooltip: '进入页面后将请求一批外部环境行情' },
-        loading: { label: '正在更新', tone: 'data-status-info', tooltip: '正在批量更新五项外部行情，请勿重复操作' },
-        ready: { label: '已更新', tone: 'data-status-ok', tooltip: '五项外部行情已完成本轮更新' },
-        partial: { label: '部分更新', tone: 'data-status-warn', tooltip: externalMarketState.error || '部分行情沿用最近缓存' },
-        cached: { label: '缓存快照', tone: 'data-status-warn', tooltip: externalMarketState.error || '外部接口暂不可用，当前显示最近缓存' },
-        error: { label: '暂不可用', tone: 'data-status-warn', tooltip: externalMarketState.error || '外部行情暂不可用' }
-    };
-    const status = statusMap[externalMarketState.status] || statusMap.idle;
-    if (statusEl) {
-        statusEl.classList.remove('data-status-ok', 'data-status-info', 'data-status-warn');
-        statusEl.classList.add(status.tone);
-        statusEl.dataset.tooltip = status.tooltip;
-        const label = statusEl.querySelector('.data-status-label');
-        if (label) label.textContent = status.label;
-    }
+    renderExternalWorkspaceStatus();
     if (metaEl) {
         metaEl.textContent = externalMarketState.fetchedAt
             ? `本页更新 ${formatExternalMarketTime(externalMarketState.fetchedAt, true)} · ${externalMarketState.source || '公开行情'}`
             : '尚无可用快照';
     }
-    if (refreshBtn) {
-        refreshBtn.disabled = externalMarketState.status === 'loading';
-        const icon = refreshBtn.querySelector('svg');
-        const label = refreshBtn.querySelector('span');
-        if (icon) icon.classList.toggle('spin', externalMarketState.status === 'loading');
-        if (label) label.textContent = externalMarketState.status === 'loading' ? '正在更新' : '更新快照';
+    updateExternalRefreshButton();
+}
+
+function renderExternalLeadSnapshot() {
+    loadExternalLeadCache();
+    if (!externalLeadState.themes.length) externalLeadState.themes = buildExternalLeadThemes(externalLeadState.items || {});
+    renderExternalLeadCards();
+    renderExternalWorkspaceStatus();
+
+    const metaEl = document.getElementById('externalLeadMeta');
+    if (metaEl) {
+        const prefix = externalLeadState.status === 'cached' ? '缓存于' : '本轮更新';
+        const timestamp = externalLeadState.fetchedAt ? formatExternalMarketTime(externalLeadState.fetchedAt, true) : '--';
+        const count = Object.keys(externalLeadState.items || {}).length;
+        metaEl.textContent = count
+            ? `${count}/${Object.keys(EXTERNAL_LEAD_CONFIG.ITEMS).length} 项外盘证据 · ${prefix} ${timestamp} · ${externalLeadState.source || '公开行情'}`
+            : (externalLeadState.status === 'loading' ? '正在更新隔夜外盘证据' : '等待隔夜外盘证据');
+        metaEl.title = externalLeadState.error || metaEl.textContent;
     }
+    updateExternalRefreshButton();
 }
 
 let externalReturnSelection = null;
+
+async function refreshExternalEnvironmentSnapshots(options = {}) {
+    const [market, leads] = await Promise.all([
+        refreshExternalMarketSnapshot(options),
+        refreshExternalLeadSnapshot(options)
+    ]);
+    return { market, leads };
+}
 
 function setPrimaryWorkspace(tab) {
     const marketWorkspace = document.getElementById('marketWorkspace');
@@ -1950,8 +2060,10 @@ function openExternalWorkspace() {
     state.isFrozen = false;
     setPrimaryWorkspace('external');
     loadExternalMarketCache();
+    loadExternalLeadCache();
     renderExternalMarketSnapshot();
-    refreshExternalMarketSnapshot({ reason: 'tab-enter' });
+    renderExternalLeadSnapshot();
+    refreshExternalEnvironmentSnapshots({ reason: 'tab-enter' });
 }
 
 function openMarketWorkspace(tab) {
@@ -1983,25 +2095,25 @@ function switchPrimaryTab(tab) {
     else openMarketWorkspace(tab);
 }
 
-async function handleExternalMarketRefresh() {
+async function handleExternalRefresh() {
     loadExternalMarketCache();
-    if (externalMarketState.inFlight) {
-        showToast('外部行情正在更新，已复用当前请求。', 'info', 1800);
-        return externalMarketState.inFlight;
-    }
-    const remaining = getExternalMarketCooldownRemaining();
+    loadExternalLeadCache();
+    const remaining = Math.max(
+        getExternalMarketCooldownRemaining(),
+        getExternalLeadCooldownRemaining()
+    );
     if (remaining > 0) {
         showToast(`为保护行情接口，请 ${Math.ceil(remaining / 1000)} 秒后再更新。`, 'info', 2200);
-        return externalMarketState;
+        return { market: externalMarketState, leads: externalLeadState };
     }
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
         showToast('另一页面正在负责行情更新，当前显示本地快照。', 'info', 2400);
-        return externalMarketState;
+        return { market: externalMarketState, leads: externalLeadState };
     }
-    const result = await refreshExternalMarketSnapshot({ reason: 'manual' });
-    if (result.status === 'ready') showToast('外部环境快照已更新。', 'success', 1800);
-    else if (result.status === 'partial' || result.status === 'cached') showToast('部分行情暂未更新，已保留最近快照。', 'warn', 2600);
-    else if (result.status === 'error') showToast('外部行情暂不可用，请稍后重试。', 'warn', 2600);
+    const result = await refreshExternalEnvironmentSnapshots({ reason: 'manual' });
+    const statuses = [result.market.status, result.leads.status];
+    if (statuses.every(status => status === 'ready')) showToast('外部环境和隔夜主题已更新。', 'success', 1800);
+    else if (statuses.some(status => ['partial', 'cached', 'error'].includes(status))) showToast('部分行情暂未更新，已保留最近快照。', 'warn', 2600);
     return result;
 }
 
@@ -2162,7 +2274,7 @@ async function init() {
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
         if (state.tab === 'external') {
-            refreshExternalMarketSnapshot({ reason: 'visibility' });
+            refreshExternalEnvironmentSnapshots({ reason: 'visibility' });
             return;
         }
         if (!isMarketOpen()) return;
