@@ -65,24 +65,19 @@ else fail(`${syntaxFail}/${jsFiles.length} 个文件失败（${syntaxOk} 通过�
 // ── 2. Strategy regression ──
 label('2. 策略回归');
 const regression = path.join(ROOT, 'tests', 'regression.js');
-// Pre-existing failures unrelated to strategy/core logic (external market page, build version)
-const KNOWN_FAILURES = new Set([
-    'external environment display stays a separate primary workspace',
-    'external lead display exposes overnight evidence',
-    'build version is bumped consistently',
-    'manual external refresh waits for the longer snapshot cooldown'
-]);
 if (fs.existsSync(regression)) {
     const reg = spawnSync(NODE, [regression], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     // TAP runner outputs failures to stderr, pass lines to stdout
     const combined = [(reg.stdout || ''), (reg.stderr || '')].join('\n');
     const failLines = combined.split('\n').filter(l => l.startsWith('not ok'));
     const passLines = combined.split('\n').filter(l => l.startsWith('ok'));
-    const newFailures = failLines.filter(l => ![...KNOWN_FAILURES].some(k => l.includes(k)));
-    if (newFailures.length > 0) {
-        fail(`${newFailures.length} 个新增失败:\n${newFailures.map(l => `    ${l}`).join('\n')}`);
-    } else if (failLines.length > 0) {
-        ok(`${passLines.length} 项通过，${failLines.length} 个已知问题（外部环境/构建版本，与策略无关）`);
+    if (reg.error) {
+        fail(`回归测试无法启动：${reg.error.message || reg.error}`);
+    } else if (reg.status !== 0 || failLines.length > 0) {
+        const details = failLines.length
+            ? failLines.map(line => `    ${line}`).join('\n')
+            : combined.trim().split('\n').slice(-6).map(line => `    ${line}`).join('\n');
+        fail(`${failLines.length || '未知数量'} 个回归失败：\n${details}`);
     } else {
         ok(`${passLines.length} 项全部通过`);
     }

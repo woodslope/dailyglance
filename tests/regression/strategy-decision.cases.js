@@ -478,6 +478,86 @@ runTest('price-break invalidation is permanent and a later signal must create a 
     assert.strictEqual(vm.runInContext('brokenMeta.invalidatedWindowSignals[0].invalidationLevel', context), 99);
 });
 
+runTest('monotonic buy-signal invalidation remains opt-in for formal strategies', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        var full = Array.from({ length: 66 }, (_, index) => ({
+            date: '2026-02-' + String(index + 1).padStart(2, '0'),
+            open: 100, high: 101, low: 99, close: 100, vol: 1000, _signals: []
+        }));
+        full[62]._signals = ['B1'];
+        full[63].close = 98;
+        full[64].close = 100;
+        var indicators = { kdj: { k: [], d: [] } };
+        var trendInvalidation = getWindowSignalInvalidation('B1', 62, 64, full, indicators, STRATEGIES['稳健趋势型']);
+        var waveInvalidation = getWindowSignalInvalidation('B1', 62, 64, full, indicators, STRATEGIES['波段抄底型']);
+    `, context);
+    assert.strictEqual(vm.runInContext('trendInvalidation', context), null);
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(waveInvalidation)', context)), {
+        signal: 'B1',
+        day: 62,
+        signalDate: '2026-02-63',
+        score: 3,
+        reason: 'price-break',
+        invalidationDay: 63,
+        invalidationDate: '2026-02-64',
+        invalidationLevel: 99
+    });
+});
+
+runTest('same-day L10 and L3 keep the documented high-risk clear-out semantics', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        setActiveStrategy('稳健趋势型');
+        var full = Array.from({ length: 65 }, (_, index) => ({
+            date: '2026-03-' + String(index + 1).padStart(2, '0'),
+            open: 100, high: 101, low: 99, close: 100, vol: 1000, _signals: []
+        }));
+        full[64]._signals = ['L3', 'L10'];
+        var indicators = { ma: {}, macd: {}, rsi: {}, kdj: { k: [], d: [] } };
+        var comboMeta = getSignalMeta(64, full, indicators);
+        var comboExit = getExitSeverity(comboMeta, 64, full, indicators);
+    `, context);
+    assert.strictEqual(vm.runInContext('comboMeta.type', context), '🛑 清仓规避');
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(comboExit)', context)), {
+        level: '清仓防守',
+        detail: '触发高危清仓信号'
+    });
+});
+
+runTest('ten-point risk reduction remains covered by position hysteresis', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        setActiveStrategy('稳健趋势型');
+        state.indicators = { ma: {}, macd: {}, rsi: {}, kdj: {} };
+        var full = Array.from({ length: 65 }, (_, index) => ({
+            date: '2026-04-' + String(index + 1).padStart(2, '0'),
+            open: 100, high: 101, low: 99, close: 100, vol: 1000
+        }));
+        var meta = {
+            type: '✅ 明确转强', windowScore: 6, buySignals: ['B1'], exitSignals: [],
+            warningSignals: [], allSignals: {}, windowSignals: [], invalidatedWindowSignals: [], inCooldown: false
+        };
+        getSignalMeta = () => meta;
+        getMarketContext = () => ({ label: '核心分化', cls: 'neutral', allowAdd: true, newPositionCap: null });
+        getRiskContext = () => ({ score: 30, level: '极端波动风险', coef: 0.25, flags: ['波动过高'], stop: 95, pressure: 110 });
+        getExitSeverity = () => ({ level: '无明确离场', detail: '无' });
+        getBasePosition = () => 80;
+        var hysteresisDecision = computeDecisionForIndex(64, full, 30);
+    `, context);
+    assert.strictEqual(vm.runInContext('hysteresisDecision.position', context), 30);
+    assert.strictEqual(vm.runInContext('hysteresisDecision.simpleAction', context), '轻仓持有');
+});
+
 runTest('wave B11 keeps a 30% trial after a local break and exits only below its confirmed structure low', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);

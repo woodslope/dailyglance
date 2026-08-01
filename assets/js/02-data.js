@@ -166,7 +166,8 @@ let pendingCachedFetchRefreshApplyId = '';
 // JSONP cleanup registry — prevents script tag and global callback leaks on page unload
 const _jsonpCleanupFns = new Set();
 function _registerJsonpCleanup(fn) { _jsonpCleanupFns.add(fn); }
-function _runJsonpCleanup() { _jsonpCleanupFns.forEach(fn => { try { fn(); } catch(e) {} }); _jsonpCleanupFns.clear(); }
+function _unregisterJsonpCleanup(fn) { _jsonpCleanupFns.delete(fn); }
+function _runJsonpCleanup() { Array.from(_jsonpCleanupFns).forEach(fn => { try { fn(); } catch(e) {} }); _jsonpCleanupFns.clear(); }
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('pagehide', _runJsonpCleanup);
 }
@@ -1477,10 +1478,12 @@ function jsonpFetchEastmoneyKline(id) {
     return new Promise(resolve => {
         const secid = resolveSecid(id), cb = 'em_kline_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
         const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=1000&cb=${cb}`;
-        let cl = false; const cleanup = () => { if(cl) return; cl=true; clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
-        _registerJsonpCleanup(cleanup);
+        let cl = false, timer = 0, cancel = null;
+        const cleanup = () => { if(cl) return; cl=true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        cancel = () => { if (cl) return; cleanup(); resolve([]); };
+        _registerJsonpCleanup(cancel);
         const fail = () => { if (cl) return; recordHistorySourceTransportFailure('eastmoney'); cleanup(); resolve([]); };
-        const timer = setTimeout(fail, 8000);
+        timer = setTimeout(fail, 8000);
         window[cb] = data => { 
             recordHistorySourceSuccess('eastmoney'); cleanup();
             if(data && data.data && data.data.klines) resolve(normalizeConfirmedHistoryData(data.data.klines.map(l => { const p = l.split(','); return { date: p[0], open: p[1], close: p[2], high: p[3], low: p[4], vol: p[5], amt: p[6] }; }), id)); 
@@ -1495,10 +1498,12 @@ function jsonpFetchTencentKline(id) {
     return new Promise(resolve => {
         let symbol = resolveTencentSymbol(id);
         const cb = 'tx_kline_' + Date.now(), url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,1000,qfq&_var=${cb}`;
-        let cl = false; const cleanup = () => { if(cl) return; cl = true; clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
-        _registerJsonpCleanup(cleanup);
+        let cl = false, timer = 0, cancel = null;
+        const cleanup = () => { if(cl) return; cl = true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
+        cancel = () => { if (cl) return; cleanup(); resolve([]); };
+        _registerJsonpCleanup(cancel);
         const fail = () => { if (cl) return; recordHistorySourceTransportFailure('tencent'); cleanup(); resolve([]); };
-        const timer = setTimeout(fail, 5000); window[cb] = undefined;
+        timer = setTimeout(fail, 5000); window[cb] = undefined;
         const script = document.createElement('script'); script.id = cb; script.src = url;
         script.onload = () => { 
             if (cl) return;
@@ -1566,9 +1571,11 @@ function getRealtimePriceJSONP(id) {
     return new Promise(resolve => {
         const symbol = resolveTencentSymbol(id), varName = 'v_' + symbol;
         const script = document.createElement('script'); script.src = `https://qt.gtimg.cn/q=${symbol}`; script.charset = 'GBK';
-        let cl = false; const cleanup = () => { if(cl) return; cl = true; clearTimeout(timer); if(script.parentNode) script.remove(); };
-        _registerJsonpCleanup(cleanup);
-        const timer = setTimeout(() => { cleanup(); resolve(null); }, 5000);
+        let cl = false, timer = 0, cancel = null;
+        const cleanup = () => { if(cl) return; cl = true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); if(script.parentNode) script.remove(); };
+        cancel = () => { if (cl) return; cleanup(); resolve(null); };
+        _registerJsonpCleanup(cancel);
+        timer = setTimeout(() => { cleanup(); resolve(null); }, 5000);
         script.onload = () => { 
             cleanup(); 
             if(typeof window[varName] !== 'undefined') { 

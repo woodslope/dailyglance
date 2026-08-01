@@ -35,6 +35,32 @@ runTest('history source circuit opens globally after repeated transport failures
     assert.strictEqual(result.circuitAfterReset, false);
 });
 
+runTest('jsonp cleanup registry releases completed jobs and settles cancelled jobs', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    await vm.runInContext(`
+        (async function() {
+            document.head.appendChild = function(script) { script.onerror(); };
+            await jsonpFetchEastmoneyKline('sh');
+            var completedRegistrySize = _jsonpCleanupFns.size;
+
+            document.head.appendChild = function() {};
+            var pendingRequest = jsonpFetchTencentKline('sz');
+            var pendingRegistrySize = _jsonpCleanupFns.size;
+            _runJsonpCleanup();
+            var cancelledResult = await pendingRequest;
+            var cancelledRegistrySize = _jsonpCleanupFns.size;
+            jsonpCleanupResult = { completedRegistrySize, pendingRegistrySize, cancelledResult, cancelledRegistrySize };
+        })()
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(jsonpCleanupResult)', context));
+    assert.strictEqual(result.completedRegistrySize, 0);
+    assert.strictEqual(result.pendingRegistrySize, 1);
+    assert.deepStrictEqual(result.cancelledResult, []);
+    assert.strictEqual(result.cancelledRegistrySize, 0);
+});
+
 runTest('valid history response with insufficient symbol coverage does not open the source circuit', async () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -457,7 +483,7 @@ runTest('manual external refresh waits for the longer snapshot cooldown', async 
             externalLeadState.lastAttemptAt = now - 10000;
             var toastMessage = '';
             showToast = function(message) { toastMessage = message; };
-            await handleExternalMarketRefresh();
+            await handleExternalRefresh();
             manualExternalCooldownResult = {
                 toastMessage,
                 marketLastAttemptAt: externalMarketState.lastAttemptAt,

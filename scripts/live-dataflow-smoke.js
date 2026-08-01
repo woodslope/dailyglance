@@ -5,8 +5,8 @@ const { createRequire } = require('module');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_URL = 'https://woodslope.github.io/dailyglance';
-const EXPECTED_RESOURCE_VERSION = '20260731-02';
-const EXPECTED_APP_BUILD = '2026-07-31-02';
+const EXPECTED_RESOURCE_VERSION = '20260731-03';
+const EXPECTED_APP_BUILD = '2026-07-31-03';
 const EXPECTED_SIGNAL_VERSION = 'v4.2.12';
 const VALID_DISPLAY_MODES = ['confirmed', 'live-overlay', 'cached-live-overlay', 'post-close-pending', 'quote-only'];
 
@@ -126,7 +126,12 @@ function validateDataflow(snapshot) {
 
 function validateDrag(drag) {
     assert(drag.during.drawViewportCount > 0, 'dragging should pan/redraw the viewport before release', drag);
-    assert(drag.during.transforms.length > 0 && drag.during.transforms.every(item => item.transform === 'translateX(0px)'), 'dragging should not shift chart containers with CSS transform', drag);
+    assert(
+        drag.during.transforms.length > 0
+            && drag.during.transforms.every(item => item.transform === '' || item.transform === 'translateX(0px)'),
+        'dragging should not shift chart containers with CSS transform',
+        drag
+    );
     assert(drag.after.drawViewportCount >= drag.during.drawViewportCount, 'drag release should preserve the panned viewport draw count', drag);
     assert(drag.after.badgeDisplay !== 'none', 'dragging to history should show the history badge', drag.after);
     assert(drag.after.latestButton.isHistory === true && drag.after.latestButton.active === false, 'latest button should show historical state after drag', drag.after);

@@ -467,8 +467,7 @@ function getWindowSignalInvalidation(signal, signalDay, currentDay, full, ind, s
     const b11Defense = signal === 'B11' ? getB11StructureDefense(signalDay, full, strategy) : null;
     const kValues = ind?.kdj?.k || [];
     const dValues = ind?.kdj?.d || [];
-    // Always check from signal trigger day onward; prevents signals from "recovering" after a price break.
-    const firstCheckDay = strategy?.monotonicSignalLifecycle === false ? currentDay : signalDay + 1;
+    const firstCheckDay = strategy?.monotonicSignalLifecycle ? signalDay + 1 : currentDay;
     let localBreak = null;
     for (let day = firstCheckDay; day <= currentDay; day++) {
         const close = Number(full?.[day]?.close);
@@ -659,7 +658,7 @@ function strategyUsesUnconditionalExitCombo(strategy = STRATEGY) {
 
 function checkUnconditionalExit(idx, full, ind) {
     if(idx < 5 || !full[idx] || !strategyUsesUnconditionalExitCombo(STRATEGY) || !(full[idx]._signals || []).includes('L3')) return false;
-    for(let i = idx - 1; i >= Math.max(0, idx - 4); i--) if((full[i]?._signals || []).includes('L10')) return true;
+    for(let i = idx; i >= Math.max(0, idx - 4); i--) if((full[i]?._signals || []).includes('L10')) return true;
     return false;
 }
 
@@ -1454,13 +1453,7 @@ function computeDecisionForIndex(idx, full, prevPos) {
     const positionCap = getPositionCap(meta, prevPos, position);
     if (positionCap) position = quantizePosition(Math.min(position, positionCap.limit));
 
-    // Hysteresis: suppress noise within 10%, but never override a reduction caused by exit/warning/risk signals.
-    if (Math.abs(position - prevPos) <= 10 && position !== 0) {
-        const wasReduced = position < prevPos &&
-            (exit.level === '减仓观察' || exit.level === '延续防守' ||
-             meta.warningSignals?.length || risk.score < 40 || positionCap);
-        if (!wasReduced) position = prevPos;
-    }
+    if (Math.abs(position - prevPos) <= 10 && position !== 0) position = prevPos;
     if (prevPos === 0 && position > 0 && meta.type === '📈 趋势抱单') position = 0;
     const marketGate = applyMarketRiskGate(market, prevPos, position);
     position = marketGate.position;

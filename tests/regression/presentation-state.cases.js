@@ -21,7 +21,7 @@ runTest('external environment display stays a separate primary workspace with sh
     assert.ok(indexSource.includes('id="externalLeadThemes"'), 'external workspace should expose a dedicated external-lead owner');
     assert.ok(indexSource.includes('隔夜主题映射'), 'external lead should have an explicit observation label');
     assert.ok(indexSource.includes('class="data-status-pill data-status-info"'), 'external status should reuse the shared status component');
-    assert.ok(indexSource.includes('class="icon-btn icon-btn-label" onclick="handleExternalMarketRefresh()"'), 'external refresh should reuse the shared labeled icon button');
+    assert.ok(indexSource.includes('class="icon-btn icon-btn-label" onclick="handleExternalRefresh()"'), 'external refresh should reuse the shared labeled icon button');
     assert.ok(dataSource.includes("CACHE_KEY: 'dg_external_market_snapshot_v1'"), 'external snapshot should use an independent cache key');
     assert.ok(dataSource.includes("CACHE_KEY: 'dg_external_lead_snapshot_v1'"), 'external lead should use its own independent cache key');
     assert.ok(dataSource.includes("state.tab !== 'external' || document.hidden"), 'inactive or hidden external workspace must not request data');
@@ -96,16 +96,17 @@ runTest('external lead display exposes overnight evidence, A-share mappings and 
         renderExternalLeadSnapshot();
         var externalLeadDisplayResult = {
             cards: document.getElementById('externalLeadThemes').innerHTML,
-            meta: document.getElementById('externalLeadMeta').textContent
+            meta: document.getElementById('externalLeadMeta').textContent,
+            states: externalLeadState.themes.map(theme => theme.state),
+            emptyStates: buildExternalLeadThemes({}).map(theme => theme.state)
         };
     `, context);
     const result = JSON.parse(vm.runInContext('JSON.stringify(externalLeadDisplayResult)', context));
     assert.strictEqual((result.cards.match(/external-lead-card/g) || []).length, 3);
     assert.ok(result.cards.includes('半导体与算力'));
     assert.ok(result.cards.includes('SOXX +3.00%'));
-    assert.ok(result.cards.includes('隔夜偏强'));
-    assert.ok(result.cards.includes('隔夜分化'));
-    assert.ok(result.cards.includes('信息不完整'));
+    assert.deepStrictEqual(result.states, ['隔夜偏强', '隔夜分化', '隔夜偏强']);
+    assert.ok(result.emptyStates.every(state => state === '信息不完整'));
     assert.ok(result.cards.includes('A 股可观察概念'));
     assert.ok(result.cards.includes('北方华创'));
     assert.ok(result.cards.includes('002371'));
@@ -646,12 +647,12 @@ runTest('wave B quality exposes trial state without promoting it to a formal str
 });
 
 runTest('build version is bumped consistently', () => {
-    assert.ok(configSource.includes("const APP_BUILD = '2026-07-31-02';"));
+    assert.ok(configSource.includes("const APP_BUILD = '2026-07-31-03';"));
     assert.ok(configSource.includes("const SIGNAL_VERSION = 'v4.2.12';"));
     const versions = [...indexSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
     assert.ok(versions.length >= 7, 'expected vendor, CSS, and script version parameters');
-    assert.deepStrictEqual([...new Set(versions)], ['20260731-02']);
-    assert.ok(indexSource.includes('assets/vendor/chart.umd.min.js?v=20260731-02'), 'Chart.js should load from local vendor first');
+    assert.deepStrictEqual([...new Set(versions)], ['20260731-03']);
+    assert.ok(indexSource.includes('assets/vendor/chart.umd.min.js?v=20260731-03'), 'Chart.js should load from local vendor first');
     assert.ok(!indexSource.includes('https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>'), 'first Chart.js load should not depend on remote CDN');
     assert.ok(!indexSource.includes('fonts.googleapis') && !indexSource.includes('fonts.gstatic'), 'app shell should not block on external font hosts');
     assert.ok(cssSource.includes('font-family: -apple-system, BlinkMacSystemFont'), 'body should use system font stack');

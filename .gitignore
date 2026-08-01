@@ -4,6 +4,7 @@
 # Local caches, reports, and backups
 /.local/
 /backups/
+/screenshots/
 
 # OS files
 .DS_Store
