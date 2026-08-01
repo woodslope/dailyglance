@@ -7,8 +7,15 @@ function calculateBacktestSummary(full, options = {}) {
     const initialCapital = options.initialCapital || 10000;
     const costRate = options.costRate ?? 0.001;
     const startIdx = Math.max(1, options.startIdx ?? 60);
+    const delayBars = Math.max(1, Number(options.delayBars) || 1);
+    const minimumTradesForWinRate = Math.max(1, Number(options.minimumTradesForWinRate) || 30);
     let capital = initialCapital, peakCapital = initialCapital, maxDrawdown = 0;
-    let prevAdv = full[startIdx - 1]?._decision?.position || 0;
+    let benchmarkCapital = initialCapital * (1 - costRate), benchmarkPeak = benchmarkCapital, benchmarkMaxDrawdown = 0;
+    const effectiveDecision = index => {
+        const signalIndex = Math.max(0, index - delayBars);
+        return { signalIndex, decision:full[signalIndex]?._decision || null };
+    };
+    let prevAdv = effectiveDecision(startIdx - 1).decision?.position || 0;
     let entryCapital = 0, winCount = 0, totalTrades = 0;
     const trades = [], closedTradeReturns = [];
 
@@ -20,28 +27,35 @@ function calculateBacktestSummary(full, options = {}) {
             const dailyRet = (item.close - prev.close) / prev.close;
             capital = capital * (1 + dailyRet * (prevAdv / 100));
         }
+        if (prev.close > 0) benchmarkCapital *= 1 + ((item.close - prev.close) / prev.close);
 
         if(capital > peakCapital) peakCapital = capital;
         const dd = (peakCapital - capital) / peakCapital;
         if(dd > maxDrawdown) maxDrawdown = dd;
+        if(benchmarkCapital > benchmarkPeak) benchmarkPeak = benchmarkCapital;
+        const benchmarkDd = (benchmarkPeak - benchmarkCapital) / benchmarkPeak;
+        if(benchmarkDd > benchmarkMaxDrawdown) benchmarkMaxDrawdown = benchmarkDd;
 
-        if (decision.position !== prevAdv) {
-            const turnover = Math.abs(decision.position - prevAdv) / 100;
+        const effective = effectiveDecision(i);
+        const effectivePosition = effective.decision?.position || 0;
+        if (effectivePosition !== prevAdv) {
+            const turnover = Math.abs(effectivePosition - prevAdv) / 100;
             const cost = capital * turnover * costRate;
             if (cost > 0) capital -= cost;
 
             trades.push({
-                date: item.date,
-                action: decision.simpleAction,
+                signalDate: full[effective.signalIndex]?.date || '',
+                executionDate: item.date,
+                action: effective.decision?.simpleAction || '仓位调整',
                 posFrom: prevAdv,
-                posTo: decision.position,
+                posTo: effectivePosition,
                 price: item.close,
                 cost
             });
 
-            if (prevAdv === 0 && decision.position > 0) {
+            if (prevAdv === 0 && effectivePosition > 0) {
                 entryCapital = capital;
-            } else if (decision.position === 0 && prevAdv > 0) {
+            } else if (effectivePosition === 0 && prevAdv > 0) {
                 totalTrades++;
                 const tradeRet = entryCapital ? (capital - entryCapital) / entryCapital : 0;
                 closedTradeReturns.push(tradeRet);
@@ -53,21 +67,32 @@ function calculateBacktestSummary(full, options = {}) {
             const postCostDd = (peakCapital - capital) / peakCapital;
             if(postCostDd > maxDrawdown) maxDrawdown = postCostDd;
         }
-        prevAdv = decision.position;
+        prevAdv = effectivePosition;
     }
 
+    const strategyReturn = (capital - initialCapital) / initialCapital * 100;
+    const benchmarkReturn = (benchmarkCapital - initialCapital) / initialCapital * 100;
     return {
         capital,
-        ret: ((capital - initialCapital) / initialCapital * 100).toFixed(2),
+        ret: strategyReturn.toFixed(2),
+        benchmarkRet: benchmarkReturn.toFixed(2),
+        excessRet: (strategyReturn - benchmarkReturn).toFixed(2),
         maxDrawdown: (maxDrawdown * 100).toFixed(2),
+        benchmarkMaxDrawdown: (benchmarkMaxDrawdown * 100).toFixed(2),
         winRate: totalTrades > 0 ? ((winCount / totalTrades) * 100).toFixed(1) : '0.0',
+        winRateQualified: totalTrades >= minimumTradesForWinRate,
+        minimumTradesForWinRate,
         winCount,
         totalTrades,
         trades,
         closedTradeReturns,
         costRate,
+        delayBars,
         startIdx,
-        sampleDays: Math.max(0, full.length - startIdx)
+        sampleDays: Math.max(0, full.length - startIdx),
+        startDate: full[startIdx]?.date || '',
+        endDate: full[full.length - 1]?.date || '',
+        openPositionAtEnd: prevAdv > 0
     };
 }
 
@@ -75,10 +100,10 @@ async function runBacktest() {
     if(state.mode !== 'stock' || !state.id) return customAlert("请先选择并查看一只具体的股票后再运行回测。");
     
     const full = state.rawData[state.id]; 
-    if(!full || full.length < 100) return customAlert("历史数据不足，无法完成精准回测。");
+    if(!full || full.length < 100) return customAlert("历史数据不足，无法生成可信的历史回放。");
     
     const prevPeriod = state.period; 
-    showLoading("策略沙盘高速推演中...");
+    showLoading("正在生成历史回放...");
 
     try {
         if (state.period !== 'daily') { 
@@ -89,8 +114,8 @@ async function runBacktest() {
         updateAllIndicators(); 
         await new Promise(r => setTimeout(r, 100)); 
         
-        const summary = calculateBacktestSummary(full, { startIdx: 60, costRate: 0.001 });
-        const { ret, winRate, maxDrawdown: md, winCount, totalTrades, trades } = summary;
+        const summary = calculateBacktestSummary(full, { startIdx: 60, costRate: 0.001, delayBars: 1 });
+        const { ret, benchmarkRet, excessRet, winRate, maxDrawdown: md, benchmarkMaxDrawdown, winCount, totalTrades, trades } = summary;
         
         hideLoading();
         
@@ -98,9 +123,9 @@ async function runBacktest() {
             const colorClass = t.posTo > t.posFrom ? 'text-bull' : 'text-bear';
             return `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px dashed var(--border-color); font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:11px;">
-                    <span class="text-dim" style="flex:1; text-align:left;">${t.date.length > 5 ? t.date.substring(5) : t.date}</span>
+                    <span class="text-dim" style="flex:1.35; text-align:left;">信号 ${t.signalDate.length > 5 ? t.signalDate.substring(5) : t.signalDate}</span>
                     <span class="${colorClass}" style="font-weight:bold; width:50px; text-align:center; flex-shrink:0;">${t.action.substring(0, 4)}</span>
-                    <span class="text-main" style="flex:1; text-align:right;">${t.price.toFixed(2)}</span>
+                    <span class="text-main" style="flex:1; text-align:right;">执行 ${t.executionDate.length > 5 ? t.executionDate.substring(5) : t.executionDate}</span>
                     <span class="text-dim" style="flex:1.2; text-align:right;">${t.posFrom}%➔${t.posTo}%</span>
                 </div>
             `;
@@ -112,31 +137,40 @@ async function runBacktest() {
 
         const reportHtml = `
             <div class="mono text-main" style="font-size:15px;font-weight:800;margin-bottom:16px;letter-spacing:0.5px;text-align:center;">
-                回测报告: ${state.stockId}
+                历史回放: ${state.stockId}
             </div>
             <div class="text-dim" style="font-size:12px;margin-bottom:20px;text-align:center;">
-                基于「${state.strategy}」过去 ${summary.sampleDays} 天日线推演，调仓成本按单边 ${(summary.costRate * 100).toFixed(2)}% 估算
+                基于「${state.strategy}」${summary.startDate} 至 ${summary.endDate} 的 ${summary.sampleDays} 根日线；信号确认后延迟 ${summary.delayBars} 根日K执行，单边成本 ${(summary.costRate * 100).toFixed(2)}%
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;text-align:left;">
                 <div class="terminal-block" style="padding:14px;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">策略总收益</div>
+                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">策略收益</div>
                     <div class="mono ${ret >= 0 ? 'text-bull' : 'text-bear'}" style="font-size:20px;font-weight:800;">${ret > 0 ? '+' : ''}${ret}%</div>
                 </div>
                 <div class="terminal-block" style="padding:14px;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">极限最大回撤</div>
+                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">买入持有收益</div>
+                    <div class="mono ${benchmarkRet >= 0 ? 'text-bull' : 'text-bear'}" style="font-size:20px;font-weight:800;">${benchmarkRet > 0 ? '+' : ''}${benchmarkRet}%</div>
+                </div>
+                <div class="terminal-block" style="padding:14px;">
+                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">超额收益</div>
+                    <div class="mono ${excessRet >= 0 ? 'text-bull' : 'text-bear'}" style="font-size:20px;font-weight:800;">${excessRet > 0 ? '+' : ''}${excessRet}%</div>
+                </div>
+                <div class="terminal-block" style="padding:14px;">
+                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">最大回撤</div>
                     <div class="mono text-main" style="font-size:20px;font-weight:800;">${md}%</div>
+                    <div class="text-dim" style="font-size:10px;margin-top:3px;">买入持有 ${benchmarkMaxDrawdown}%</div>
                 </div>
                 <div class="terminal-block" style="padding:14px;grid-column:1/-1;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">波段交易胜率</div>
+                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">完整交易样本</div>
                     <div style="display:flex;justify-content:space-between;align-items:end;">
-                        <div class="mono text-info" style="font-size:24px;font-weight:800;">${winRate}%</div>
-                        <div class="text-dim" style="font-size:12px;font-weight:500;">${totalTrades} 次清仓结算，获利 ${winCount} 次</div>
+                        <div class="mono ${summary.winRateQualified ? 'text-info' : 'text-dim'}" style="font-size:24px;font-weight:800;">${summary.winRateQualified ? `${winRate}%` : '样本不足'}</div>
+                        <div class="text-dim" style="font-size:12px;font-weight:500;">${totalTrades} 次清仓结算，获利 ${winCount} 次；${summary.openPositionAtEnd ? '期末仍有未平仓仓位' : '期末无未平仓仓位'}</div>
                     </div>
                 </div>
             </div>
             ${tradeListHtml}
             <div class="text-dim" style="margin-top:16px;font-size:10px;line-height:1.5;text-align:justify;">
-                注：交易记录按盘末收盘价触发，收益按实际仓位比例滚动计算，并扣除调仓成本；未模拟涨跌停无法成交、盘中滑点和 T+1 约束。主图 B/S 仅标注重大的开平仓转折点，中途加减仓仅在回测记录中展示。
+                注：收益按实际仓位比例滚动计算，买入持有基准按同区间满仓持有并计入一次入场成本。未完整模拟涨跌停无法成交、盘中滑点、冲击成本和 T+1 约束。主图 B/S 是策略决策标记，不代表实际成交点；中途加减仓仅在交易记录中展示。
             </div>
         `;
         
@@ -1163,9 +1197,9 @@ function updateLeftMarketContext(date) {
     const market = getMarketContext(date);
     const panelClass = market.cls === 'bull' ? 'panel-bull' : (market.cls === 'bear' ? 'panel-bear' : 'panel-info');
     const textClass = market.cls === 'bull' ? 'text-bull' : (market.cls === 'bear' ? 'text-bear' : 'text-main');
-    const gateText = Number.isFinite(market.newPositionCap) && market.newPositionCap <= 0
-        ? '关闭'
-        : (market.allowAdd === false ? '新仓开放' : '开放');
+    const gateText = market.increaseCaps
+        ? (market.increaseCaps.ordinary <= 0 ? '关闭' : `${market.increaseCaps.ordinary}% / ${market.increaseCaps.independent}%`)
+        : '开放';
 
     const detailHtml = market.trends.map(t => `
         <div class="market-core-state">

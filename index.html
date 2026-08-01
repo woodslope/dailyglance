@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260731-03"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260802-01"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260731-03">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260802-01">
 </head>
 <body>
 
@@ -57,12 +57,12 @@
         <div class="sg-body">
             <div class="terminal-block no-bg">
                 <div class="block-title" style="border:none; padding-bottom:0; margin-bottom:8px;">使用路径</div>
-                <div class="text-dim" style="font-size:13px; line-height:1.6;">系统严格遵循：<strong>左侧导航(选择) -> 中间图表(看盘) -> 右侧面板(决策)</strong>。右侧先给每日结论和仓位建议，再用三条关键依据解释结论来源；个股展示建议仓位，大盘与指数展示风险仓位。</div>
+                <div class="text-dim" style="font-size:13px; line-height:1.6;">系统严格遵循：<strong>左侧导航(选择) -> 中间图表(看盘) -> 右侧面板(决策)</strong>。右侧先给每日结论和策略参考仓位，再用三条关键依据解释结论来源；大盘与指数继续展示风险仓位。</div>
             </div>
             <div class="terminal-block no-bg">
                 <div class="block-title" style="border:none; padding-bottom:0; margin-bottom:8px;">多维度逻辑拆解</div>
                 <ul class="text-dim" style="margin:0 0 0 18px; font-size:13px; line-height:1.6; padding:0;">
-                    <li style="margin-bottom:8px;"><strong>核心市场环境 / 建仓门禁：</strong> 只由沪深300、中证500、中证1000的多数状态推导；全面弱势时新仓仍按个股或指数自身信号执行，不设20%上限，但已有仓位暂停加仓且不强制减仓。大盘与指数说明核心市场环境，个股说明门禁对本次新仓或加仓的实际影响。</li>
+                    <li style="margin-bottom:8px;"><strong>核心市场环境 / 建仓门禁：</strong> 只由沪深300、中证500、中证1000的多数状态推导；核心宽基偏弱时，普通机会新增风险上限30%，标的自身独立走强上限50%。宽基只限制增加风险，不主动压缩已有仓位。</li>
                     <li style="margin-bottom:8px;"><strong>指数动能 / 个股信号：</strong> 由策略窗口内的 B/L 技术信号积分推导，判断交易动能是否达标。</li>
                     <li><strong>市场风险 / 风控防守：</strong> 合并风险评分、L 类离场信号和近窗防守信号；个股还会结合持仓状态，用于控制极端风险与仓位纪律。</li>
                 </ul>
@@ -269,10 +269,10 @@
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/01-config-ui.js?v=20260731-03"></script>
-<script src="assets/js/02-data.js?v=20260731-03"></script>
-<script src="assets/js/03-calculations.js?v=20260731-03"></script>
-<script src="assets/js/04-render.js?v=20260731-03"></script>
-<script src="assets/js/05-app.js?v=20260731-03"></script>
+<script src="assets/js/01-config-ui.js?v=20260802-01"></script>
+<script src="assets/js/02-data.js?v=20260802-01"></script>
+<script src="assets/js/03-calculations.js?v=20260802-01"></script>
+<script src="assets/js/04-render.js?v=20260802-01"></script>
+<script src="assets/js/05-app.js?v=20260802-01"></script>
 </body>
 </html>

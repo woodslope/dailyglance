@@ -746,16 +746,21 @@ function getIndexTrend(id, date) {
 
 function getMarketContext(date) {
     const trends = CORE_MARKET_INDEX_IDS.map(id => getIndexTrend(id, date)).filter(Boolean);
-    if(!trends.length) return { label:'环境未知', cls:'neutral', newPositionCap:0, allowAdd:false, reason:'核心宽基数据不足，暂停开新仓和加仓', trends:[] };
-    if(trends.length < CORE_MARKET_INDEX_IDS.length) return { label:'环境待确认', cls:'neutral', newPositionCap:0, allowAdd:false, reason:'三项核心宽基尚未补齐，暂停开新仓和加仓', trends };
+    if(!trends.length) return { label:'环境未知', cls:'neutral', increaseCaps:{ ordinary:0, independent:0 }, reason:'核心宽基数据不足，暂停增加风险', trends:[] };
+    if(trends.length < CORE_MARKET_INDEX_IDS.length) return { label:'环境待确认', cls:'neutral', increaseCaps:{ ordinary:0, independent:0 }, reason:'三项核心宽基尚未补齐，暂停增加风险', trends };
     
     const bull = trends.filter(t => t.score > 0), bear = trends.filter(t => t.score < 0);
     
-    let label, cls, newPositionCap = null, allowAdd = true, reason;
-    if (bull.length >= 2) { label = '核心偏强'; cls = 'bull'; reason = '三项核心宽基多数走强，增仓门禁开放'; }
-    else if (bear.length >= 2) { label = '全面弱势'; cls = 'bear'; allowAdd = false; reason = '三项核心宽基多数空头；新仓按个股信号执行，已有仓位暂停加仓'; }
-    else { label = '核心分化'; cls = 'neutral'; reason = '三项核心宽基未形成多数空头，个股按自身信号和风控决定仓位'; }
-    return { label, cls, newPositionCap, allowAdd, reason, trends };
+    let label, cls, increaseCaps = null, reason;
+    if (bull.length >= 2) { label = '核心宽基偏强'; cls = 'bull'; reason = '三项核心宽基多数走强，增仓门禁开放'; }
+    else if (bear.length >= 2) {
+        label = '核心宽基偏弱';
+        cls = 'bear';
+        increaseCaps = { ordinary:30, independent:50 };
+        reason = '三项核心宽基多数空头；普通机会新增风险上限30%，标的独立走强上限50%';
+    }
+    else { label = '核心宽基分化'; cls = 'neutral'; reason = '三项核心宽基未形成多数空头，标的按自身信号和风控决定仓位'; }
+    return { label, cls, increaseCaps, reason, trends };
 }
 
 function getRiskContext(idx, full, ind) {
@@ -1021,9 +1026,9 @@ function getStockInvalidCondition(meta, decision, position, hasWarning) {
         return `${localHint}若收盘跌破结构防守位 ${structureLevel.toFixed(2)}${structureDateText}，或再出离场信号，降到 0%。`;
     }
 
-    if (marketGate.type === 'add-blocked') {
+    if (marketGate.type === 'increase-capped') {
         const stopGuard = canShowStop ? `若跌破防守位 ${stopText}，或再出离场信号，按个股规则减仓或离场。` : '若再出离场信号，按个股规则减仓或离场。';
-        return `全面弱势期间暂停加仓；待增仓门禁重新开放，且个股信号仍有效时，才考虑加仓。${stopGuard}`;
+        return `核心宽基偏弱期间新增风险上限为${marketGate.cap}%；只有标的自身条件继续改善且门禁允许时，才考虑提高仓位。${stopGuard}`;
     }
 
     if (position === 0) {
@@ -1063,9 +1068,9 @@ function getIndexInvalidCondition(meta, decision, position, hasWarning) {
         return '待沪深300、中证500和中证1000数据补齐并重新允许增加风险后，再结合当前指数动能决定是否提高风险仓位。';
     }
 
-    if (marketGate.type === 'add-blocked') {
+    if (marketGate.type === 'increase-capped') {
         const stopGuard = canShowStop ? `若跌破指数防守位 ${stopText}，或再出离场信号，继续降低风险暴露。` : '若再出离场信号，继续降低风险暴露。';
-        return `核心宽基全面弱势期间暂停提高风险仓位；待核心环境改善且指数动能仍有效时，才考虑恢复增加。${stopGuard}`;
+        return `核心宽基偏弱期间新增风险上限为${marketGate.cap}%；待核心环境改善且指数动能仍有效时，才考虑继续增加。${stopGuard}`;
     }
 
     if (position === 0) {
@@ -1110,7 +1115,7 @@ function getStockDecisionSummary(meta, decision) {
     const scoreBelowThreshold = Number.isFinite(threshold) && (meta?.windowScore ?? 0) < threshold;
     const basePosition = Number(decision?.basePosition);
     const basePositionIsEmpty = Number.isFinite(basePosition) ? basePosition <= 0 : scoreBelowThreshold;
-    const isFavorableMarket = ['核心偏强', '全面多头', '温和偏多'].includes(marketLabel);
+    const isFavorableMarket = ['核心宽基偏强', '全面多头', '温和偏多'].includes(marketLabel);
     let stateLabel = '弱势观察';
     let userAction = '先不碰';
     if (hasCriticalExit) {
@@ -1137,7 +1142,7 @@ function getStockDecisionSummary(meta, decision) {
     const formatExitSignal = signal => `${signal} ${getUserSignalText(signal)}`;
     const hasPreviousPosition = previousPosition > 0;
     const scoreIsEmpty = (meta?.windowScore ?? 0) <= 0;
-    const positionToZeroText = hasPreviousPosition ? `当前从${previousPosition}%降至 0%` : '建议仓位降至 0%';
+    const positionToZeroText = hasPreviousPosition ? `当前从${previousPosition}%降至 0%` : '策略参考仓位降至 0%';
     const positionPressure = [];
     if (Number(decision?.risk?.coef) < 1) positionPressure.push(`风险系数 ${Number(decision.risk.coef).toFixed(2)}`);
     const marketGate = decision?.marketGate || {};
@@ -1175,9 +1180,9 @@ function getStockDecisionSummary(meta, decision) {
     } else if (hasPositionExit && exitLevel === '无明确离场' && hasPreviousPosition) {
         const baseText = Number.isFinite(basePosition) ? `基础仓位原为 ${basePosition}%` : '基础仓位仍大于 0%';
         const pressureText = positionPressure.length ? positionPressure.join('、') : '个股风险限制';
-        reason = `买入积分为 ${scoreText}，${baseText}，但${pressureText}使建议仓位归零，${positionToZeroText}，先空仓防守`;
+        reason = `买入积分为 ${scoreText}，${baseText}，但${pressureText}使策略参考仓位归零，${positionToZeroText}，先空仓防守`;
     } else if (hasPositionExit && exitLevel === '无明确离场') {
-        reason = `市场环境为${marketLabel}，当前未满足开仓条件，建议仓位降至 0%，先空仓观察`;
+        reason = `市场环境为${marketLabel}，当前未满足开仓条件，策略参考仓位降至 0%，先空仓观察`;
     } else if (hasCriticalExit && strongExitSignals.length) {
         const strongText = strongExitSignals.map(formatExitSignal).join(' / ');
         const otherText = otherExitSignals.length ? `，同时出现 ${otherExitSignals.map(formatExitSignal).join(' / ')}` : '';
@@ -1191,8 +1196,9 @@ function getStockDecisionSummary(meta, decision) {
         reason = `市场环境为${marketLabel}，${exitReason}${zeroPositionText}`;
     } else if (marketGate.type === 'entry-blocked' && position === 0) {
         reason = `${buyCauseText}使买入积分达到 ${scoreText}，但${marketLabel}下增仓门禁关闭，仍暂不开新仓`;
-    } else if (marketGate.type === 'add-blocked') {
-        reason = `${buyCauseText}使买入积分维持在 ${scoreText}，但全面弱势暂停加仓，当前维持${position}%`;
+    } else if (marketGate.type === 'increase-capped') {
+        const tierText = marketGate.strengthTier === 'independent' ? '标的独立走强' : '普通机会';
+        reason = `${buyCauseText}使买入积分维持在 ${scoreText}，但核心宽基偏弱，${tierText}新增风险上限为${marketGate.cap}%，当前为${position}%`;
     } else if (isReduce) {
         const reduceCause = directExitSignals.length
             ? `出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
@@ -1312,8 +1318,9 @@ function getIndexDecisionSummary(meta, decision) {
         reason = `${exitReason}，${position === 0 ? riskPositionToZero : '当前优先处理市场风险'}`;
     } else if (marketGate.type === 'entry-blocked' && position === 0) {
         reason = `${causeText}使指数动能积分达到 ${scoreText}，但核心宽基数据未补齐，暂不增加市场风险暴露`;
-    } else if (marketGate.type === 'add-blocked') {
-        reason = `${causeText}使指数动能积分维持在 ${scoreText}，但核心宽基全面弱势，暂停提高风险仓位并维持${position}%`;
+    } else if (marketGate.type === 'increase-capped') {
+        const tierText = marketGate.strengthTier === 'independent' ? '指数自身独立走强' : '普通机会';
+        reason = `${causeText}使指数动能积分维持在 ${scoreText}，但核心宽基偏弱，${tierText}新增风险上限为${marketGate.cap}%，当前为${position}%`;
     } else if (isReduce) {
         const reduceCause = directExitSignals.length
             ? `指数出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
@@ -1365,25 +1372,58 @@ function getPositionCap(meta, prevPos, position) {
     return { limit: 50, reason: 'W4缩量上涨背离，高仓位上限50%' };
 }
 
-function applyMarketRiskGate(market, prevPos, targetPosition) {
+function getTargetStrengthTier(meta, idx, full, ind, risk, exit) {
+    const ma20 = Number(ind?.ma?.[20]?.[idx]);
+    const ma60 = Number(ind?.ma?.[60]?.[idx]);
+    const ma20Prev = Number(ind?.ma?.[20]?.[Math.max(0, idx - 5)]);
+    const close = Number(full?.[idx]?.close);
+    const hasTrendData = [close, ma20, ma60, ma20Prev].every(Number.isFinite);
+    const independent = meta?.type === '✅ 明确转强'
+        && hasTrendData
+        && close > ma20
+        && ma20 > ma60
+        && ma20 >= ma20Prev
+        && Number(risk?.score) >= 80
+        && !(meta?.warningSignals || []).length
+        && !(meta?.exitSignals || []).length
+        && !meta?.inCooldown
+        && exit?.level === '无明确离场';
+    return {
+        tier: independent ? 'independent' : 'ordinary',
+        label: independent ? '标的独立走强' : '普通机会',
+        reasons: independent ? ['买入积分达标', '收盘价与MA20/MA60保持多头结构', 'MA20未转弱', '风险与离场检查通过'] : []
+    };
+}
+
+function applyMarketRiskGate(market, prevPos, targetPosition, strength = { tier:'ordinary', label:'普通机会' }) {
     const previous = Math.max(0, Number(prevPos) || 0);
     const target = Math.max(0, Number(targetPosition) || 0);
     const label = market?.label || '环境未知';
-    const entryBlocked = Number.isFinite(market?.newPositionCap)
-        ? Number(market.newPositionCap) <= 0
-        : ['环境未知', '环境待确认'].includes(label);
-    const allowAdd = typeof market?.allowAdd === 'boolean'
-        ? market.allowAdd
-        : !['全面弱势', '环境未知', '环境待确认'].includes(label);
+    const caps = market?.increaseCaps;
+    const strengthTier = strength?.tier === 'independent' ? 'independent' : 'ordinary';
+    const cap = caps && Number.isFinite(Number(caps[strengthTier])) ? Number(caps[strengthTier]) : null;
+    const reasons = Array.isArray(strength?.reasons) ? [...strength.reasons] : [];
 
-    if (previous === 0 && entryBlocked && target > 0) {
-        return { position:0, applied:true, type:'entry-blocked', detail:`${label}增仓门禁关闭` };
+    if (target <= previous || cap == null) {
+        return { position:target, applied:false, type:'open', cap, strengthTier, strengthLabel:strength?.label || '普通机会', reasons, detail:'' };
     }
-    if (previous > 0 && target > previous && !allowAdd) {
-        const detail = label === '全面弱势' ? '全面弱势暂停加仓' : `${label}暂停加仓`;
-        return { position:previous, applied:true, type:'add-blocked', detail };
+    if (previous === 0 && cap <= 0) {
+        return { position:0, applied:true, type:'entry-blocked', cap, strengthTier, strengthLabel:strength?.label || '普通机会', reasons, detail:`${label}增仓门禁关闭` };
     }
-    return { position:target, applied:false, type:'open', detail:'' };
+    const cappedPosition = cap <= previous ? previous : Math.min(target, cap);
+    if (cappedPosition < target) {
+        return {
+            position:cappedPosition,
+            applied:true,
+            type:'increase-capped',
+            cap,
+            strengthTier,
+            strengthLabel:strength?.label || '普通机会',
+            reasons,
+            detail:`${label}下${strength?.label || '普通机会'}新增风险上限${cap}%`
+        };
+    }
+    return { position:target, applied:false, type:'open', cap, strengthTier, strengthLabel:strength?.label || '普通机会', reasons, detail:'' };
 }
 
 function getSoftSignalGraceContext(meta, prevPos, basePosition, exit, idx, strategy = STRATEGY) {
@@ -1453,9 +1493,10 @@ function computeDecisionForIndex(idx, full, prevPos) {
     const positionCap = getPositionCap(meta, prevPos, position);
     if (positionCap) position = quantizePosition(Math.min(position, positionCap.limit));
 
-    if (Math.abs(position - prevPos) <= 10 && position !== 0) position = prevPos;
+    if (position > prevPos && Math.abs(position - prevPos) <= 10) position = prevPos;
     if (prevPos === 0 && position > 0 && meta.type === '📈 趋势抱单') position = 0;
-    const marketGate = applyMarketRiskGate(market, prevPos, position);
+    const targetStrength = getTargetStrengthTier(meta, idx, full, state.indicators, risk, exit);
+    const marketGate = applyMarketRiskGate(market, prevPos, position, targetStrength);
     position = marketGate.position;
     const positionDriver = getPositionDriverText(meta, market, risk, exit, base, position, prevPos, positionCap, marketGate);
 
@@ -1482,6 +1523,7 @@ function computeDecisionForIndex(idx, full, prevPos) {
         prevAdv: prevPos,
         market,
         marketGate,
+        targetStrength,
         risk,
         exit,
         positionCap,
