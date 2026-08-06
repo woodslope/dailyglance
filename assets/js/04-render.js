@@ -637,8 +637,11 @@ function renderChartViewport(perfTrace) {
 
 function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const position = decision?.position ?? 0;
-    const scoreText = `${meta?.windowScore ?? 0}/${STRATEGY?.buyThreshold ?? '-'}`;
     const action = decision?.simpleAction || '';
+    const scoreReset = meta?.inCooldown
+        || ['强离场', '清仓防守'].includes(decision?.exit?.level)
+        || ['清仓离场', '规避风险'].includes(action);
+    const scoreText = `${scoreReset ? 0 : (meta?.windowScore ?? 0)}/${STRATEGY?.buyThreshold ?? '-'}`;
     const previousPosition = Number(decision?.prevAdv) || 0;
     const marketGate = decision?.marketGate || {};
     const signalCause = getSignalCauseSummary(meta);
@@ -656,12 +659,14 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     }
     else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停开新仓和加仓；已有仓位仍按自身信号处理。';
 
-    let signalHint = `未买入原因：买入积分只有 ${scoreText}，没有达到当前策略要求。`;
-    if (previousPosition === 0 && position > 0) {
+    let signalHint = scoreReset
+        ? `离场后积分：此前买入依据已失效，当前按 ${scoreText} 处理。`
+        : `未买入原因：买入积分只有 ${scoreText}，没有达到当前策略要求。`;
+    if (!scoreReset && previousPosition === 0 && position > 0) {
         signalHint = `买入依据：${causeText}使买入积分达到 ${scoreText}，本次由空仓转为持仓。`;
-    } else if (position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
+    } else if (!scoreReset && position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
         signalHint = `持仓依据：${causeText}使买入积分维持在 ${scoreText}，当前持仓依据仍在。`;
-    } else if (position > 0) {
+    } else if (!scoreReset && position > 0) {
         signalHint = `观察依据：买入积分为 ${scoreText}，当前仓位主要依赖已有趋势和风控约束。`;
     }
 
@@ -673,12 +678,16 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
         ? `风险依据：${riskText}。`
         : `风险依据：${riskText}；${hasStructureDefense ? '结构防守位' : '防守位'} ${stopText}。`;
 
-    return { marketHint, signalHint, guardHint: guardAction };
+    return { marketHint, signalHint, guardHint: guardAction, scoreText };
 }
 
 function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const position = decision?.position ?? 0;
-    const scoreText = `${meta?.windowScore ?? 0}/${STRATEGY?.buyThreshold ?? '-'}`;
+    const action = decision?.simpleAction || '';
+    const scoreReset = meta?.inCooldown
+        || ['强离场', '清仓防守'].includes(decision?.exit?.level)
+        || ['清仓离场', '规避风险'].includes(action);
+    const scoreText = `${scoreReset ? 0 : (meta?.windowScore ?? 0)}/${STRATEGY?.buyThreshold ?? '-'}`;
     const previousPosition = Number(decision?.prevAdv) || 0;
     const marketGate = decision?.marketGate || {};
     const signalCause = getSignalCauseSummary(meta);
@@ -696,12 +705,14 @@ function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     }
     else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停增加市场风险；已有风险仓位仍按指数自身信号处理。';
 
-    let signalHint = `动能不足：指数动能积分只有 ${scoreText}，没有达到当前策略要求。`;
-    if (previousPosition === 0 && position > 0) {
+    let signalHint = scoreReset
+        ? `离场后动能：此前动能依据已失效，当前按 ${scoreText} 处理。`
+        : `动能不足：指数动能积分只有 ${scoreText}，没有达到当前策略要求。`;
+    if (!scoreReset && previousPosition === 0 && position > 0) {
         signalHint = `动能依据：${causeText}使指数动能积分达到 ${scoreText}，支持开始增加风险暴露。`;
-    } else if (position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
+    } else if (!scoreReset && position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
         signalHint = `维持依据：${causeText}使指数动能积分维持在 ${scoreText}，当前风险仓位仍有动能支持。`;
-    } else if (position > 0) {
+    } else if (!scoreReset && position > 0) {
         signalHint = `观察依据：指数动能积分为 ${scoreText}，当前风险仓位主要依赖已有趋势和风控约束。`;
     }
 
@@ -711,7 +722,7 @@ function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
         ? `市场风险：${riskText}。`
         : `市场风险：${riskText}；指数防守位 ${stopText}。`;
 
-    return { marketHint, signalHint, guardHint: guardAction };
+    return { marketHint, signalHint, guardHint: guardAction, scoreText };
 }
 
 function getNoviceEvidenceCopy(meta, decision, displayExitLevel, guardHint, mode = 'stock') {
@@ -1072,7 +1083,7 @@ function generateAnalysisHTML(idx, full, meta) {
                 <div class="decision-evidence-row">
                     <div class="decision-evidence-head">
                         <span>${evidenceTitle2}</span>
-                        <strong class="text-main mono">${meta.windowScore}/${STRATEGY.buyThreshold}</strong>
+                        <strong class="text-main mono">${escapeHTML(noviceEvidence.scoreText)}</strong>
                     </div>
                     <div class="decision-evidence-copy">${escapeHTML(noviceEvidence.signalHint)}</div>
                 </div>

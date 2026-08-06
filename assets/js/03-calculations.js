@@ -972,12 +972,12 @@ function getPlainRiskAdjustmentText(risk = {}, basePosition, riskCoef, adjustedP
     const details = getRiskAdjustmentDetails(risk);
     if (Number(riskCoef) === 1 && Number.isFinite(adjustedPosition)) {
         return adjustedPosition === rawPosition
-            ? `当前风险没有额外压低仓位，基础仓位按${adjustedPosition}%档处理`
-            : `系统只使用固定仓位档位，基础仓位${rawText}落在${adjustedPosition}%档，不能按${rawText}执行`;
+            ? `风险评估未再下调，基础仓位按${adjustedPosition}%执行`
+            : `系统只用固定仓位档位，基础仓位${rawText}落在${adjustedPosition}%档，最终按${adjustedPosition}%执行`;
     }
     const reasonText = details.length ? details.join('、') : '当前风险偏高';
     if (Number.isFinite(adjustedPosition) && Number.isFinite(rawPosition) && adjustedPosition !== rawPosition) {
-        return `因${reasonText}，${positionLabel}先调整到${rawText}，再落到${adjustedPosition}%档执行`;
+        return `因${reasonText}，${positionLabel}先调到${rawText}，再按${adjustedPosition}%档执行`;
     }
     return `因${reasonText}，${positionLabel}调整到${rawText}`;
 }
@@ -1026,8 +1026,12 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
         } else {
             path.push(`${basePositionLabel}为${basePosition}%（信号计算结果），风险评估暂按原值处理`);
         }
+    } else if (signalCause?.text) {
+        path.push(`${basePositionLabel}由${signalCause.text}计算`);
+    } else if (position > 0) {
+        path.push(`当前没有新增${signalName}，${basePositionLabel}沿用现有持仓判断`);
     } else {
-        path.push(`${basePositionLabel}按当前有效${signalName}计算`);
+        path.push(isIndex ? '当前指数动能不足，基础风险仓位按0%处理' : '当前没有有效买入信号，基础仓位按0%处理');
     }
 
     const marketGate = decision?.marketGate || {};
@@ -1082,8 +1086,8 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
     }
     if (position === previousPosition && position > 0) {
         const sourceText = signalCause?.text || `此前形成的有效${signalName}`;
-        path.push(`${sourceText}仍支持当前${currentPositionLabel}，今天保留${position}%`);
-        if (!hasLimiter) path.push(`尚未出现足以跨入更高${currentPositionLabel}档位的新条件，暂不提高`);
+        const higherTierText = !hasLimiter ? `，但尚未满足进入更高${currentPositionLabel}档位的条件` : '';
+        path.push(`${sourceText}仍支持当前${currentPositionLabel}${higherTierText}`);
     } else if (position === previousPosition && position === 0) {
         path.push(isIndex ? '当前没有提高市场风险的依据，继续保持低风险' : '当前没有有效开仓依据，继续保持空仓');
     }
@@ -1096,7 +1100,7 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
             ? (position === 0 ? '最终保持0%空仓' : `最终由空仓转为${position}%`)
             : (position === previousPosition ? `最终维持${position}%`
                 : `最终由${previousPosition}%${position > previousPosition ? '提高至' : '降至'}${position}%`));
-    path.push(finalChangeText);
+    path.push(`因此${finalChangeText}`);
 
     let reason = '';
     if (isEntry) {
@@ -1345,16 +1349,24 @@ function getIndexInvalidCondition(meta, decision, position, hasWarning) {
 
 function getStockNextFocus(meta, decision, position, hasWarning) {
     const threshold = STRATEGY?.buyThreshold ?? '-';
+    const currentScore = Number(meta?.windowScore);
+    const numericThreshold = Number(threshold);
     const scoreText = threshold === '-' ? '买入积分重新达标' : `买入积分重新达到${threshold}/${threshold}`;
+    const addCondition = Number.isFinite(currentScore) && Number.isFinite(numericThreshold) && currentScore < numericThreshold
+        ? scoreText
+        : '出现新的有效买入信号';
     const marketGate = decision?.marketGate || {};
     const defense = decision?.b11StructureDefense;
     const stop = formatPriceLevel(decision?.risk?.stop);
     const stopText = stop === '--' ? '防守位' : `防守位${stop}`;
     if (decision?.exit?.level === '强离场' || decision?.exit?.level === '清仓防守') {
-        return `${getStrongExitCooldownText(meta)}且${scoreText}后，才重新考虑买入；若再次出现离场信号或跌破${stopText}，继续空仓防守。`;
+        const cooldownDays = Math.max(1, Number(meta?.cooldownDays) || 3);
+        return `完成${cooldownDays}个交易日冷静期、且${scoreText}后，才重新考虑买入；若再次出现离场信号或跌破${stopText}，继续空仓。`;
     }
     if (meta?.inCooldown) {
-        return `${getCooldownProgress(meta).label}结束且${scoreText}后，才重新考虑买入；若再次出现防守信号，继续空仓。`;
+        const progress = getCooldownProgress(meta);
+        const cooldownText = progress.remaining > 0 ? `等剩余${progress.remaining}个冷静期交易日走完` : '等今天冷静期结束';
+        return `${cooldownText}、且${scoreText}后，才重新考虑买入；若再次出现防守信号，继续空仓。`;
     }
     if (position === 0 && marketGate.type === 'entry-blocked') {
         return `核心宽基数据补齐、市场允许新增风险且${scoreText}后，才考虑开仓；若出现防守信号，继续空仓。`;
@@ -1363,54 +1375,63 @@ function getStockNextFocus(meta, decision, position, hasWarning) {
         return `${scoreText}且重新站回结构防守位后，才考虑买入或加仓；若再次收盘跌破结构防守位或出现离场信号，继续离场观察。`;
     }
     if (defense?.localBreak) {
-        return `价格回到局部防守位上方且买入信号继续改善，才考虑加仓；若收盘跌破结构防守位或出现离场信号，减仓或离场。`;
+        return `价格回到局部防守位上方、且${addCondition}后，才考虑加仓；若收盘跌破结构防守位或出现离场信号，减仓或离场。`;
     }
     if (decision?.softSignalGrace?.applied) {
-        return `观察期内价格不跌破防守位且信号重新改善，才考虑加仓；观察期结束仍未改善或跌破防守位，减仓或离场。`;
+        return `观察期内价格不跌破防守位、且${addCondition}后，才考虑加仓；若观察期结束仍未改善或跌破防守位，减仓或离场。`;
     }
     if (marketGate.type === 'increase-capped') {
-        return `个股信号继续改善且市场允许新增风险，才考虑提高仓位；若跌破${stopText}或出现离场信号，减仓或离场。`;
+        return `${addCondition}、且市场重新允许增加风险后，才考虑提高仓位；若跌破${stopText}或出现离场信号，减仓或离场。`;
     }
     if (position === 0) {
         return `${scoreText}后才考虑开仓；若继续出现防守信号或跌破${stopText}，继续空仓。`;
     }
     if (position <= 30) {
-        return `买入信号继续改善且风险降温，才考虑加仓；若跌破${stopText}或出现离场信号，降到0%。`;
+        const riskCondition = hasWarning ? '风险降温' : '风险保持稳定';
+        return `${addCondition}、且${riskCondition}后，才考虑加仓；若跌破${stopText}或出现离场信号，降到0%。`;
     }
     if (hasWarning) {
-        return `风险降温且不跌破${stopText}，才考虑提高仓位；若风险继续升高、跌破${stopText}或出现离场信号，降低仓位或离场。`;
+        return `风险降温、且当前买入信号仍有效后，才考虑提高仓位；若风险继续升高、跌破${stopText}或出现离场信号，降低仓位或离场。`;
     }
-    return `买入信号继续改善且风险保持稳定，才考虑提高仓位；若跌破${stopText}或出现离场信号，降低仓位或离场。`;
+    return `出现新的有效买入信号、且风险保持稳定后，才考虑提高仓位；若跌破${stopText}或出现离场信号，降低仓位或离场。`;
 }
 
 function getIndexNextFocus(meta, decision, position, hasWarning) {
     const threshold = STRATEGY?.buyThreshold ?? '-';
+    const currentScore = Number(meta?.windowScore);
+    const numericThreshold = Number(threshold);
     const scoreText = threshold === '-' ? '指数动能积分重新达标' : `指数动能积分重新达到${threshold}/${threshold}`;
+    const addCondition = Number.isFinite(currentScore) && Number.isFinite(numericThreshold) && currentScore < numericThreshold
+        ? scoreText
+        : '指数出现新的有效动能信号';
     const marketGate = decision?.marketGate || {};
     const stop = formatPriceLevel(decision?.risk?.stop);
     const stopText = stop === '--' ? '指数防守位' : `指数防守位${stop}`;
     if (decision?.exit?.level === '强离场' || decision?.exit?.level === '清仓防守') {
-        return `${getStrongExitCooldownText(meta)}且${scoreText}后，才重新考虑提高风险；若再次出现离场信号或跌破${stopText}，继续降低风险。`;
+        const cooldownDays = Math.max(1, Number(meta?.cooldownDays) || 3);
+        return `完成${cooldownDays}个交易日冷静期、且${scoreText}后，才重新考虑提高风险；若再次出现离场信号或跌破${stopText}，继续保持低风险。`;
     }
     if (meta?.inCooldown) {
-        return `${getCooldownProgress(meta).label}结束且${scoreText}后，才重新考虑提高风险；若再次出现防守信号，保持低风险。`;
+        const progress = getCooldownProgress(meta);
+        const cooldownText = progress.remaining > 0 ? `等剩余${progress.remaining}个冷静期交易日走完` : '等今天冷静期结束';
+        return `${cooldownText}、且${scoreText}后，才重新考虑提高风险；若再次出现防守信号，保持低风险。`;
     }
     if (marketGate.type === 'entry-blocked') {
         return `核心宽基数据补齐、市场允许新增风险且${scoreText}后，才考虑提高风险；若出现防守信号，保持低风险。`;
     }
     if (marketGate.type === 'increase-capped') {
-        return `核心市场环境改善且指数动能继续增强，才考虑超过当前新增风险上限；若跌破${stopText}或出现离场信号，降低风险。`;
+        return `核心市场环境改善、且${addCondition}后，才考虑超过当前新增风险上限；若跌破${stopText}或出现离场信号，降低风险。`;
     }
     if (position === 0) {
         return `${scoreText}后才考虑提高风险；若继续跌破${stopText}或出现防守信号，保持低风险。`;
     }
     if (position <= 30) {
-        return `指数动能继续改善且重新站回短期趋势，才考虑提高风险；若跌破${stopText}或出现离场信号，降到0%。`;
+        return `${addCondition}、且重新站回短期趋势后，才考虑提高风险；若跌破${stopText}或出现离场信号，降到0%。`;
     }
     if (hasWarning) {
-        return `市场风险降温且不跌破${stopText}，才考虑提高风险；若风险继续升高、跌破${stopText}或出现离场信号，降低风险。`;
+        return `市场风险降温、且当前指数动能仍有效后，才考虑提高风险；若风险继续升高、跌破${stopText}或出现离场信号，降低风险。`;
     }
-    return `指数动能继续增强且风险保持稳定，才考虑提高风险；若跌破${stopText}或出现离场信号，降低风险。`;
+    return `指数出现新的有效动能信号、且风险保持稳定后，才考虑提高风险；若跌破${stopText}或出现离场信号，降低风险。`;
 }
 
 function getStockDecisionSummary(meta, decision) {
@@ -1484,7 +1505,7 @@ function getStockDecisionSummary(meta, decision) {
 
     let reason = '';
     if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
-        reason = `${getCooldownProgress(meta).label}，买入积分为 ${scoreText}，${positionToZeroText}，先空仓观察`;
+        reason = `当前是${getCooldownProgress(meta).label}；买入积分为${scoreText}，仓位保持0%，继续空仓`;
     } else if (!hasCriticalExit && lifecycleTransition.text) {
         reason = lifecycleTransition.text;
     } else if (hasPositionExit && exitLevel === '无明确离场' && hasPreviousPosition && basePositionIsEmpty) {
@@ -1498,21 +1519,22 @@ function getStockDecisionSummary(meta, decision) {
         const pressureText = positionPressure.length ? positionPressure.join('、') : '个股风险限制';
         reason = `买入积分为 ${scoreText}，${baseText}，但${pressureText}使策略参考仓位归零，${positionToZeroText}，先空仓防守`;
     } else if (hasPositionExit && exitLevel === '无明确离场') {
-        reason = `市场环境为${marketLabel}，当前未满足开仓条件，策略参考仓位降至 0%，先空仓观察`;
+        reason = '当前没有满足开仓条件，策略参考仓位保持0%，继续空仓观察';
     } else if (hasCriticalExit && strongExitSignals.length) {
-        const strongText = strongExitSignals.map(formatExitSignal).join(' / ');
-        const otherText = otherExitSignals.length ? `，同时出现 ${otherExitSignals.map(formatExitSignal).join(' / ')}` : '';
+        const exitText = [...strongExitSignals, ...otherExitSignals].map(formatExitSignal).join('、');
         const triggerText = meta?.repeatedStrongExit ? '今日再次触发强离场' : '今日触发强离场';
-        reason = `${triggerText} ${strongText}${otherText}；强离场会让此前买入积分失效，当前清零为 ${scoreText}，${positionToZeroText}；${getStrongExitCooldownText(meta)}，先空仓防守`;
+        const positionAction = position === 0 ? positionToZeroText : `仓位降至${position}%防守`;
+        const resetScoreText = `0/${STRATEGY?.buyThreshold ?? '-'}`;
+        reason = `${triggerText}：${exitText}；此前买入依据失效，积分清零至${resetScoreText}，${positionAction}；${getStrongExitCooldownText(meta)}`;
     } else if (hasCriticalExit) {
         const exitReason = directExitSignals.length
-            ? `出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
+            ? `${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
             : (decision?.exit?.detail || `当前按${exitLevel}处理`);
         const zeroPositionText = position === 0 ? `，${positionToZeroText}，先空仓防守` : '，当前先处理风险';
-        reason = `市场环境为${marketLabel}，${exitReason}${zeroPositionText}`;
+        reason = `${exitReason}${zeroPositionText}`;
     } else if (hasPositionExit && hasPreviousPosition) {
         const exitReason = directExitSignals.length
-            ? `出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
+            ? `${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
             : (decision?.exit?.detail || `当前按${exitLevel}处理`);
         const positionAction = position === 0
             ? `${positionToZeroText}，先空仓防守`
@@ -1623,7 +1645,7 @@ function getIndexDecisionSummary(meta, decision) {
 
     let reason = '';
     if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
-        reason = `${getCooldownProgress(meta).label}，指数动能积分为 ${scoreText}，${riskPositionToZero}，暂不增加市场风险`;
+        reason = `当前是${getCooldownProgress(meta).label}；指数动能积分为${scoreText}，风险仓位保持0%`;
     } else if (!hasCriticalExit && lifecycleTransition.text) {
         reason = lifecycleTransition.text;
     } else if (hasPositionExit && exitLevel === '无明确离场' && previousPosition > 0 && basePositionIsEmpty) {
@@ -1635,13 +1657,13 @@ function getIndexDecisionSummary(meta, decision) {
         const pressureText = Number(decision?.risk?.coef) < 1 ? '指数当前风险偏高' : '指数自身风险限制';
         reason = `指数动能积分为 ${scoreText}，但${pressureText}使风险仓位归零，${riskPositionToZero}`;
     } else if (hasCriticalExit && strongExitSignals.length) {
-        const strongText = strongExitSignals.map(formatExitSignal).join(' / ');
-        const otherText = otherExitSignals.length ? `，同时出现 ${otherExitSignals.map(formatExitSignal).join(' / ')}` : '';
+        const exitText = [...strongExitSignals, ...otherExitSignals].map(formatExitSignal).join('、');
         const triggerText = meta?.repeatedStrongExit ? '今日指数再次触发强离场' : '今日指数触发强离场';
-        reason = `${triggerText} ${strongText}${otherText}，动能积分清零为 ${scoreText}，${riskPositionToZero}；${getStrongExitCooldownText(meta)}`;
+        const resetScoreText = `0/${STRATEGY?.buyThreshold ?? '-'}`;
+        reason = `${triggerText}：${exitText}；此前动能依据失效，积分清零至${resetScoreText}，${riskPositionToZero}；${getStrongExitCooldownText(meta)}`;
     } else if (hasCriticalExit) {
         const exitReason = directExitSignals.length
-            ? `指数出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
+            ? `指数${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
             : (decision?.exit?.detail || `当前指数按${exitLevel}处理`);
         reason = `${exitReason}，${position === 0 ? riskPositionToZero : '当前优先处理市场风险'}`;
     } else if (marketGate.type === 'entry-blocked' && position === 0) {
@@ -1651,7 +1673,7 @@ function getIndexDecisionSummary(meta, decision) {
         reason = `${causeText}使指数动能积分维持在 ${scoreText}，但核心宽基偏弱，${tierText}新增风险上限为${marketGate.cap}%，当前为${position}%`;
     } else if (isReduce) {
         const reduceCause = directExitSignals.length
-            ? `指数出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
+            ? `指数${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
             : (riskFlags.length ? `指数风险提示为${riskFlags.join('、')}` : (decision?.exit?.detail || '指数短线风险升高'));
         const reduceAction = position === 0 ? `当前风险仓位从${previousPosition}%降至 0%，保持低风险暴露` : `当前风险仓位从${previousPosition}%降至${position}%`;
         reason = `${reduceCause}，${reduceAction}`;
