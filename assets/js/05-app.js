@@ -1142,7 +1142,7 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
 
     document.querySelectorAll('#mainTabs .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === 'stock'));
     document.getElementById('indexNavList').style.display = 'none';
-    document.getElementById('stockNavList').style.display = 'block';
+    document.getElementById('stockNavList').style.display = 'flex';
     document.getElementById('btnBacktest').style.display = 'flex';
 
     resetIndicatorState();
@@ -2069,7 +2069,7 @@ function openMarketWorkspace(tab) {
         selectIndex(id || 'sh');
     } else {
         document.getElementById('indexNavList').style.display = 'none';
-        document.getElementById('stockNavList').style.display = 'block';
+        document.getElementById('stockNavList').style.display = 'flex';
         renderWatchlist();
         const savedTarget = returnSelection?.tab === 'stock'
             ? state.watchlist.find(item => item.code === returnSelection.stockId && isSupportedWatchlistSecurity(item))

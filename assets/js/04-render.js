@@ -967,7 +967,11 @@ function generateAnalysisHTML(idx, full, meta) {
     const baseNoviceSummary = getNoviceDecisionSummary(meta, decision, state.mode);
     const kdjScoreClarification = getHistoricalKdjScoreClarification(meta, idx, full, state.indicators);
     const noviceSummary = kdjScoreClarification
-        ? { ...baseNoviceSummary, reason: `${baseNoviceSummary.reason}。${kdjScoreClarification}` }
+        ? {
+            ...baseNoviceSummary,
+            why: `${baseNoviceSummary.why || baseNoviceSummary.reason}。${kdjScoreClarification}`,
+            reason: `${baseNoviceSummary.reason}。${kdjScoreClarification}`
+        }
         : baseNoviceSummary;
     const riskFlags = decision.risk.flags.length ? decision.risk.flags.join(' / ') : '处于安全空间，无明显偏离';
     const diagnosis = state.mode === 'stock' ? getHoldingDiagnosis(idx, full, state.indicators, meta, decision) : null;
@@ -1003,6 +1007,10 @@ function generateAnalysisHTML(idx, full, meta) {
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
     const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
     const positionLabel = isIndexMode ? '当前风险仓位' : '策略参考仓位';
+    const positionWhyLabel = isIndexMode ? '为什么是当前仓位' : `为什么是${noviceSummary.positionText}`;
+    const whyText = noviceSummary.why || noviceSummary.reason;
+    const positionWhyText = noviceSummary.positionWhy || noviceSummary.positionExplanation;
+    const nextFocusText = noviceSummary.nextFocus || noviceSummary.invalidCondition;
     const conclusionCopy = value => {
         const text = String(value ?? '').trim();
         return text && /[。！？；]$/.test(text) ? text : `${text}。`;
@@ -1029,16 +1037,16 @@ function generateAnalysisHTML(idx, full, meta) {
             </div>
             <div class="decision-reason-block">
                 <div class="decision-reason-row">
-                    <span>结论原因：</span>
-                    <div>${escapeHTML(conclusionCopy(noviceSummary.reason))}</div>
+                    <span>为什么这么做：</span>
+                    <div>${escapeHTML(conclusionCopy(whyText))}</div>
                 </div>
                 <div class="decision-reason-row">
-                    <span>仓位结果：</span>
-                    <div>${escapeHTML(conclusionCopy(noviceSummary.positionExplanation))}</div>
+                    <span>${escapeHTML(positionWhyLabel)}：</span>
+                    <div>${escapeHTML(conclusionCopy(positionWhyText))}</div>
                 </div>
                 <div class="decision-reason-row">
-                    <span>失效条件：</span>
-                    <div>${escapeHTML(conclusionCopy(noviceSummary.invalidCondition))}</div>
+                    <span>接下来关注：</span>
+                    <div>${escapeHTML(conclusionCopy(nextFocusText))}</div>
                 </div>
             </div>
             <div class="level-line">
@@ -1226,15 +1234,15 @@ function renderAnalysisPendingHTML(message = '信号正在同步，结论生成�
             </div>
             <div class="decision-reason-block">
                 <div class="decision-reason-row">
-                    <span>结论原因：</span>
+                    <span>为什么这么做：</span>
                     <div>${escapeHTML(message)}</div>
                 </div>
                 <div class="decision-reason-row">
-                    <span>仓位结果：</span>
+                    <span>为什么是当前仓位：</span>
                     <div>等待信号同步完成后再计算。</div>
                 </div>
                 <div class="decision-reason-row">
-                    <span>失效条件：</span>
+                    <span>接下来关注：</span>
                     <div>等待信号同步完成后再确认。</div>
                 </div>
             </div>
