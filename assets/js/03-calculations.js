@@ -972,12 +972,12 @@ function getPlainRiskAdjustmentText(risk = {}, basePosition, riskCoef, adjustedP
     const details = getRiskAdjustmentDetails(risk);
     if (Number(riskCoef) === 1 && Number.isFinite(adjustedPosition)) {
         return adjustedPosition === rawPosition
-            ? `当前风险没有额外压低仓位，按${adjustedPosition}%档处理`
-            : `系统只使用固定仓位档位，${rawText}落在${adjustedPosition}%档`;
+            ? `当前风险没有额外压低仓位，基础仓位按${adjustedPosition}%档处理`
+            : `系统只使用固定仓位档位，基础仓位${rawText}落在${adjustedPosition}%档，不能按${rawText}执行`;
     }
     const reasonText = details.length ? details.join('、') : '当前风险偏高';
     if (Number.isFinite(adjustedPosition) && Number.isFinite(rawPosition) && adjustedPosition !== rawPosition) {
-        return `因${reasonText}，${positionLabel}先调整到${rawText}，再落到${adjustedPosition}%档`;
+        return `因${reasonText}，${positionLabel}先调整到${rawText}，再落到${adjustedPosition}%档执行`;
     }
     return `因${reasonText}，${positionLabel}调整到${rawText}`;
 }
@@ -1021,10 +1021,10 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
         if (basePosition <= 0) {
             path.push(isIndex ? '当前指数动能不足，基础风险仓位为0%' : '当前没有满足开仓条件，基础仓位为0%');
         } else if (Number.isFinite(riskCoef)) {
-            path.push(`${basePositionLabel}为${basePosition}%`);
+            path.push(`${basePositionLabel}为${basePosition}%（信号计算结果）`);
             path.push(getPlainRiskAdjustmentText(decision?.risk, basePosition, riskCoef, adjustedPosition, basePositionLabel));
         } else {
-            path.push(`${basePositionLabel}为${basePosition}%，风险评估暂按原值处理`);
+            path.push(`${basePositionLabel}为${basePosition}%（信号计算结果），风险评估暂按原值处理`);
         }
     } else {
         path.push(`${basePositionLabel}按当前有效${signalName}计算`);
@@ -1108,7 +1108,7 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
         if (exitNames.length) drivers.push(`出现${exitNames.join('、')}`);
         if (warningNames.length) drivers.push(`出现${warningNames.join('、')}预警`);
         if (!exitNames.length && !warningNames.length && ['减仓观察', '延续防守'].includes(exitLevel) && decision?.exit?.detail) drivers.push(decision.exit.detail);
-        if (Number.isFinite(basePosition) && basePosition < previousPosition) drivers.push(`买入积分为 ${scoreText}，信号对应基础仓位回落至 ${basePosition}%`);
+        if (Number.isFinite(basePosition) && basePosition < previousPosition) drivers.push(`买入积分为${scoreText}，所以信号给出的基础仓位从${previousPosition}%降至${basePosition}%`);
         if (Number.isFinite(riskCoef) && riskCoef < 1) drivers.push(getPlainRiskAdjustmentText(decision?.risk, basePosition, riskCoef, adjustedPosition));
         if (Number(decision?.risk?.score) < 40) drivers.push('风险评分进入极端风险档');
         if (decision?.positionCap?.reason) drivers.push(getPlainPositionLimitText(decision.positionCap.reason));
