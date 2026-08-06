@@ -943,6 +943,7 @@ function generateAnalysisHTML(idx, full, meta) {
 
     const decision = full[idx]?._decision; 
     if (!decision) return ''; 
+    const kdjScoreClarification = getHistoricalKdjScoreClarification(meta, idx, full, state.indicators);
     if (state.period === 'daily') {
         const calculationTitle = isIndexMode ? '风险仓位计算链' : '仓位计算链';
         signalsHtmlBlock = `
@@ -956,6 +957,11 @@ function generateAnalysisHTML(idx, full, meta) {
                         ${UI.sectionTitle(calculationTitle, 'text-main')}
                         <div class="position-calculation-copy">${escapeHTML(getPositionCalculationCopy(meta, decision, state.mode))}</div>
                     </div>
+                    ${kdjScoreClarification ? `
+                    <div class="signal-compact">
+                        ${UI.sectionTitle('历史信号说明', 'text-main')}
+                        <div class="position-calculation-copy">${escapeHTML(kdjScoreClarification)}</div>
+                    </div>` : ''}
                     <div class="signal-compact">${ptsRawHtml}</div>
                     <div class="signal-compact">${ptsValidHtml}</div>
                     ${ptsInvalidHtml ? `<div class="signal-compact">${ptsInvalidHtml}</div>` : ''}
@@ -964,15 +970,7 @@ function generateAnalysisHTML(idx, full, meta) {
         `;
     }
     
-    const baseNoviceSummary = getNoviceDecisionSummary(meta, decision, state.mode);
-    const kdjScoreClarification = getHistoricalKdjScoreClarification(meta, idx, full, state.indicators);
-    const noviceSummary = kdjScoreClarification
-        ? {
-            ...baseNoviceSummary,
-            why: `${baseNoviceSummary.why || baseNoviceSummary.reason}。${kdjScoreClarification}`,
-            reason: `${baseNoviceSummary.reason}。${kdjScoreClarification}`
-        }
-        : baseNoviceSummary;
+    const noviceSummary = getNoviceDecisionSummary(meta, decision, state.mode);
     const riskFlags = decision.risk.flags.length ? decision.risk.flags.join(' / ') : '处于安全空间，无明显偏离';
     const diagnosis = state.mode === 'stock' ? getHoldingDiagnosis(idx, full, state.indicators, meta, decision) : null;
     const exitEvidence = getExitSignalEvidence(meta, decision);
@@ -1007,7 +1005,7 @@ function generateAnalysisHTML(idx, full, meta) {
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
     const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
     const positionLabel = isIndexMode ? '当前风险仓位' : '策略参考仓位';
-    const positionWhyLabel = isIndexMode ? '为什么是当前仓位' : `为什么是${noviceSummary.positionText}`;
+    const positionWhyLabel = `为什么是${noviceSummary.positionText}`;
     const whyText = noviceSummary.why || noviceSummary.reason;
     const positionWhyText = noviceSummary.positionWhy || noviceSummary.positionExplanation;
     const nextFocusText = noviceSummary.nextFocus || noviceSummary.invalidCondition;
