@@ -6,7 +6,7 @@
 const rootStyle = getComputedStyle(document.documentElement);
 const getCssVar = (name) => rootStyle.getPropertyValue(name).trim();
 
-const APP_BUILD = '2026-08-02-01';
+const APP_BUILD = '2026-08-06-01';
 const SYS_CONFIG = {
     THROTTLE_MS: 30000,
     REQ_TIMEOUT: 5000,
@@ -330,7 +330,7 @@ function clearDerivedCaches() {
 }
 function clearLookupCacheOnly() { dateIndexCache.clear(); }
 
-const SIGNAL_VERSION = 'v4.2.13';
+const SIGNAL_VERSION = 'v4.2.14';
 window.__DG_BUILD__ = APP_BUILD;
 
 function getDecisionSignature(decision) {

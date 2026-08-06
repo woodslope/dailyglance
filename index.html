@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260802-01"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260806-01"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260802-01">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260806-01">
 </head>
 <body>
 
@@ -162,7 +162,7 @@
                         <path d="M24 44C35.0457 44 44 35.0457 44 24C44 12.9543 35.0457 4 24 4C12.9543 4 4 12.9543 4 24C4 35.0457 12.9543 44 24 44Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
                         <path d="M20 24V17.0718L26 20.5359L32 24L26 27.4641L20 30.9282V24Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
                     </svg>
-                    <span>策略回测</span>
+                    <span>回测</span>
                 </button>
                 <button id="updateDataBtn" onclick="handleUpdateData()" title="强制更新数据" class="icon-btn">
                     <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -211,7 +211,6 @@
             <div class="external-page-copy">
                 <div class="external-kicker">GLOBAL CONTEXT</div>
                 <h1>隔夜外盘先行观察</h1>
-                <p>先看纳指、半导体、AI 与智能电动车等外盘主题，再映射 A 股可观察概念和代表标的；所有线索都要等 A 股开盘确认。</p>
             </div>
             <div class="external-page-actions">
                 <div id="externalMarketStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="外部环境行情尚未加载">
@@ -227,17 +226,6 @@
                 </button>
             </div>
         </div>
-
-        <section aria-labelledby="externalSummaryTitle">
-            <div class="external-section-head">
-                <div>
-                    <div class="external-section-kicker">背景判断</div>
-                    <h2 id="externalSummaryTitle">最近一轮外部线索</h2>
-                </div>
-                <div id="externalSnapshotMeta" class="external-snapshot-meta mono">尚无快照</div>
-            </div>
-            <div id="externalEnvironmentSummary" class="external-summary-grid" aria-live="polite"></div>
-        </section>
 
         <section aria-labelledby="externalLeadTitle">
             <div class="external-section-head">
@@ -256,6 +244,7 @@
                     <div class="external-section-kicker">行情快照</div>
                     <h2 id="externalQuotesTitle">五项外部观察</h2>
                 </div>
+                <div id="externalSnapshotMeta" class="external-snapshot-meta mono">尚无快照</div>
             </div>
             <div id="externalMarketQuotes" class="external-quote-grid" aria-live="polite"></div>
         </section>
@@ -269,10 +258,10 @@
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/01-config-ui.js?v=20260802-01"></script>
-<script src="assets/js/02-data.js?v=20260802-01"></script>
-<script src="assets/js/03-calculations.js?v=20260802-01"></script>
-<script src="assets/js/04-render.js?v=20260802-01"></script>
-<script src="assets/js/05-app.js?v=20260802-01"></script>
+<script src="assets/js/01-config-ui.js?v=20260806-01"></script>
+<script src="assets/js/02-data.js?v=20260806-01"></script>
+<script src="assets/js/03-calculations.js?v=20260806-01"></script>
+<script src="assets/js/04-render.js?v=20260806-01"></script>
+<script src="assets/js/05-app.js?v=20260806-01"></script>
 </body>
 </html>

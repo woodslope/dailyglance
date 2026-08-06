@@ -1003,6 +1003,10 @@ function generateAnalysisHTML(idx, full, meta) {
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
     const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
     const positionLabel = isIndexMode ? '当前风险仓位' : '策略参考仓位';
+    const conclusionCopy = value => {
+        const text = String(value ?? '').trim();
+        return text && /[。！？；]$/.test(text) ? text : `${text}。`;
+    };
     const hasB11StructureDefense = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel));
     const visibleDefenseLabel = hasB11StructureDefense ? '结构防守位' : '防守位';
     const visibleDefenseLevel = hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop;
@@ -1023,8 +1027,20 @@ function generateAnalysisHTML(idx, full, meta) {
                     <strong class="mono text-main">${escapeHTML(noviceSummary.positionText)}</strong>
                 </div>
             </div>
-            <div class="action-sub">${escapeHTML(noviceSummary.reason)}。</div>
-            <div class="decision-invalid"><span>失效条件：</span>${escapeHTML(noviceSummary.invalidCondition)}</div>
+            <div class="decision-reason-block">
+                <div class="decision-reason-row">
+                    <span>结论原因：</span>
+                    <div>${escapeHTML(conclusionCopy(noviceSummary.reason))}</div>
+                </div>
+                <div class="decision-reason-row">
+                    <span>仓位结果：</span>
+                    <div>${escapeHTML(conclusionCopy(noviceSummary.positionExplanation))}</div>
+                </div>
+                <div class="decision-reason-row">
+                    <span>失效条件：</span>
+                    <div>${escapeHTML(conclusionCopy(noviceSummary.invalidCondition))}</div>
+                </div>
+            </div>
             <div class="level-line">
                 <div class="level-pill">
                     <span>${visibleDefenseLabel}</span><strong class="mono">${fmt(visibleDefenseLevel)}</strong>
@@ -1208,8 +1224,20 @@ function renderAnalysisPendingHTML(message = '信号正在同步，结论生成�
                     <strong class="mono text-main">--</strong>
                 </div>
             </div>
-            <div class="action-sub">${escapeHTML(message)}</div>
-            <div class="decision-invalid"><span>失效条件：</span>等待信号同步完成后再确认。</div>
+            <div class="decision-reason-block">
+                <div class="decision-reason-row">
+                    <span>结论原因：</span>
+                    <div>${escapeHTML(message)}</div>
+                </div>
+                <div class="decision-reason-row">
+                    <span>仓位结果：</span>
+                    <div>等待信号同步完成后再计算。</div>
+                </div>
+                <div class="decision-reason-row">
+                    <span>失效条件：</span>
+                    <div>等待信号同步完成后再确认。</div>
+                </div>
+            </div>
         </div>
     `;
 }

@@ -1318,13 +1318,30 @@ function renderWatchlist() {
             <div class="stock-suggest" id="stockSuggest"></div>
         </div>
     `;
-    const renderStickyHead = headerHtml => `<div class="watchlist-sticky-head">${headerHtml}${sHtml}</div>`;
+    const updateWatchlistShell = (headerHtml, bodyHtml) => {
+        const stickyHead = container.querySelector('.watchlist-sticky-head');
+        const headerSlot = stickyHead?.querySelector('.watchlist-header-slot');
+        const searchBox = stickyHead?.querySelector('.stock-search');
+        const itemsSlot = container.querySelector('.watchlist-items');
+        if (headerSlot && searchBox && itemsSlot) {
+            headerSlot.innerHTML = headerHtml;
+            itemsSlot.innerHTML = bodyHtml;
+            return;
+        }
+        container.innerHTML = `
+            <div class="watchlist-sticky-head">
+                <div class="watchlist-header-slot">${headerHtml}</div>
+                ${sHtml}
+            </div>
+            <div class="watchlist-items">${bodyHtml}</div>
+        `;
+    };
     
     if(!state.watchlist.length) { 
-        container.innerHTML = `
-            ${renderStickyHead(renderLeftListHeader(`自选股池 · 0/${SYS_CONFIG.WATCHLIST_LIMIT}`, { showRefresh: false }))}
-            <div class="stock-empty"><strong>还没有自选股</strong><br/>在上方搜索并添加</div>
-        `; 
+        updateWatchlistShell(
+            renderLeftListHeader(`自选股池 · 0/${SYS_CONFIG.WATCHLIST_LIMIT}`, { showRefresh: false }),
+            '<div class="stock-empty"><strong>还没有自选股</strong><br/>在上方搜索并添加</div>'
+        );
         return; 
     }
     
@@ -1376,10 +1393,10 @@ function renderWatchlist() {
         `;
     }).join('');
     
-    container.innerHTML = `
-        ${renderStickyHead(renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`))}
-        <div>${lHtml}</div>
-    `;
+    updateWatchlistShell(
+        renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`),
+        `<div>${lHtml}</div>`
+    );
 }
 
 function refreshWatchlistQuotes() {
@@ -1826,69 +1843,11 @@ function formatExternalMarketTime(timestamp, includeDate = false) {
     return new Intl.DateTimeFormat('zh-CN', options).format(new Date(Number(timestamp)));
 }
 
-function formatExternalMarketDate(timestamp) {
-    if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return '--';
-    return new Intl.DateTimeFormat('zh-CN', {
-        timeZone: 'Asia/Shanghai',
-        month: '2-digit',
-        day: '2-digit'
-    }).format(new Date(Number(timestamp)));
-}
-
 function formatExternalSigned(value, decimals = 2, suffix = '') {
     const number = Number(value);
     if (!Number.isFinite(number)) return '--';
     const normalized = Math.abs(number) < Math.pow(10, -decimals) / 2 ? 0 : number;
     return `${normalized > 0 ? '+' : ''}${normalized.toFixed(decimals)}${suffix}`;
-}
-
-function getExternalPairSummary(keys, label, subject, dimension) {
-    const items = keys.map(key => externalMarketState.items[key]).filter(Boolean);
-    const factorText = items.length
-        ? items.map(item => `${item.name} ${formatExternalSigned(item.changePct, 2, '%')}（${formatExternalMarketDate(item.quoteAt)}）`).join(' · ')
-        : '等待行情数据';
-    if (items.length < keys.length) {
-        return { label, state: '信息不完整', tone: 'is-neutral', copy: `${subject}行情尚未完整返回，暂不判断${dimension}。`, factorText, count: `${items.length}/${keys.length} 项` };
-    }
-    if (items.every(item => item.changePct > 0)) {
-        return { label, state: '偏暖', tone: 'is-positive', copy: `${subject}最近一轮行情同向上涨，${dimension}线索相对偏暖。`, factorText, count: `${items.length}/${keys.length} 项` };
-    }
-    if (items.every(item => item.changePct < 0)) {
-        return { label, state: '偏压制', tone: 'is-negative', copy: `${subject}最近一轮行情同向下跌，${dimension}线索相对承压。`, factorText, count: `${items.length}/${keys.length} 项` };
-    }
-    return { label, state: '分化', tone: 'is-mixed', copy: `${subject}最近一轮行情方向不同，${dimension}暂未形成一致线索。`, factorText, count: `${items.length}/${keys.length} 项` };
-}
-
-function getExternalFxSummary() {
-    const item = externalMarketState.items.usdcnh;
-    if (!item) return { label: '汇率压力', state: '信息不完整', tone: 'is-neutral', copy: '离岸人民币行情尚未返回，暂不判断汇率方向。', factorText: '等待行情数据', count: '0/1 项' };
-    const factorText = `${item.name} ${formatExternalSigned(item.changePct, 2, '%')}（${formatExternalMarketDate(item.quoteAt)}）`;
-    if (item.changePct > 0.1) return { label: '汇率压力', state: '偏压制', tone: 'is-negative', copy: '最近一轮美元兑离岸人民币走高，人民币汇率环境相对承压。', factorText, count: '1/1 项' };
-    if (item.changePct < -0.1) return { label: '汇率压力', state: '偏舒缓', tone: 'is-positive', copy: '最近一轮美元兑离岸人民币走低，人民币汇率压力相对舒缓。', factorText, count: '1/1 项' };
-    return { label: '汇率压力', state: '波动有限', tone: 'is-neutral', copy: '最近一轮美元兑离岸人民币波动较小，汇率线索暂不突出。', factorText, count: '1/1 项' };
-}
-
-function renderExternalSummaryCards() {
-    const container = document.getElementById('externalEnvironmentSummary');
-    if (!container) return;
-    const summaries = [
-        getExternalPairSummary(['hstech', 'a50'], '中国资产情绪', '恒生科技与A50期指', '中国资产情绪'),
-        getExternalPairSummary(['spx', 'ndx'], '全球风险偏好', '标普500与纳斯达克', '全球风险偏好'),
-        getExternalFxSummary()
-    ];
-    container.innerHTML = summaries.map(summary => `
-        <article class="external-context-card ${summary.tone}">
-            <div class="external-context-head">
-                <div>
-                    <div class="external-context-label">${escapeHTML(summary.label)}</div>
-                    <div class="external-context-state">${escapeHTML(summary.state)}</div>
-                </div>
-                <div class="external-context-count mono">${escapeHTML(summary.count)}</div>
-            </div>
-            <div class="external-context-copy">${escapeHTML(summary.copy)}</div>
-            <div class="external-context-factors mono" title="${escapeHTML(summary.factorText)}">${escapeHTML(summary.factorText)}</div>
-        </article>
-    `).join('');
 }
 
 function renderExternalQuoteCards() {
@@ -2029,7 +1988,6 @@ function renderExternalWorkspaceStatus() {
 
 function renderExternalMarketSnapshot() {
     loadExternalMarketCache();
-    renderExternalSummaryCards();
     renderExternalQuoteCards();
 
     const metaEl = document.getElementById('externalSnapshotMeta');
