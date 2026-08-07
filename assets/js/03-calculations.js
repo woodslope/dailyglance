@@ -1514,7 +1514,7 @@ function getStockDecisionSummary(meta, decision) {
         userAction = '离场观察';
     }
     if (!hasCriticalExit && waveRejection.status === 'triggered') {
-        stateLabel = '冲高回落止盈';
+        stateLabel = waveRejection.eventType === 'fresh_entry_failure' ? '新仓失败离场' : '冲高回落止盈';
         userAction = position === 0 ? '离场观察' : '降低仓位';
     } else if (!hasCriticalExit && waveRejection.status === 'locked') {
         stateLabel = '风险恢复观察';
@@ -1529,7 +1529,9 @@ function getStockDecisionSummary(meta, decision) {
 
     let reason = '';
     if (!hasCriticalExit && waveRejection.status === 'triggered') {
-        reason = `已有浮盈遇到放量冲高回落，风险日实时分档止盈，当前从${previousPosition}%降至${position}%`;
+        reason = waveRejection.eventType === 'fresh_entry_failure'
+            ? `首次建仓后冲击压力位失败，盘中盈利大幅回吐并放量收长上影，风险日从${previousPosition}%降至${position}%`
+            : `已有浮盈遇到放量冲高回落，风险日实时分档止盈，当前从${previousPosition}%降至${position}%`;
     } else if (!hasCriticalExit && waveRejection.status === 'locked') {
         reason = `冲高回落风险尚未解除，事件前的旧积分不立即触发回补，当前保持${position}%防守仓位`;
     } else if (!hasCriticalExit && waveRejection.status === 'released') {
@@ -1604,7 +1606,9 @@ function getStockDecisionSummary(meta, decision) {
     const why = getPlainDisplayText(reason);
     let positionWhy = getPlainDisplayText(positionChange.positionExplanation);
     if (waveRejection.status === 'triggered') {
-        positionWhy = `冲高回落风险在当日直接降一档，策略参考仓位从${previousPosition}%降至${position}%`;
+        positionWhy = waveRejection.eventType === 'fresh_entry_failure'
+            ? `新仓冲击压力失败在当日直接触发防守，策略参考仓位从${previousPosition}%降至${position}%`
+            : `冲高回落风险在当日直接降一档，策略参考仓位从${previousPosition}%降至${position}%`;
     } else if (waveRejection.status === 'locked') {
         positionWhy = `风险事件尚未解除，只阻止该标的旧积分立即回补，策略参考仓位保持${position}%`;
     } else if (['released', 'recovery_started', 'recovery_hold'].includes(waveRejection.status)) {
@@ -1927,6 +1931,52 @@ function getLowerWavePositionStep(position, steps = [0, 30, 50, 80]) {
     return eligible.length ? eligible[eligible.length - 1] : 0;
 }
 
+function getRecentConfirmedPressureHigh(idx, full, lookbackDays = 20, pivotDays = 2) {
+    const start = Math.max(pivotDays, idx - Math.max(1, lookbackDays));
+    for (let day = idx - pivotDays - 1; day >= start; day--) {
+        const value = Number(full?.[day]?.high);
+        if (!Number.isFinite(value)) continue;
+        let confirmed = true;
+        for (let offset = 1; offset <= pivotDays; offset++) {
+            if (Number(full?.[day - offset]?.high) >= value || Number(full?.[day + offset]?.high) >= value) {
+                confirmed = false;
+                break;
+            }
+        }
+        if (confirmed) return { day, value };
+    }
+    return null;
+}
+
+function getWaveFreshEntryPressureContext(idx, full, indicators, config = {}) {
+    const item = full?.[idx] || {};
+    const high = Number(item.high);
+    const close = Number(item.close);
+    const tolerance = Math.max(0, Number(config.pressureToleranceRatio) || 0);
+    const closeTolerance = Math.max(0, Number(config.pressureCloseToleranceRatio) || 0);
+    const sources = [];
+    const pivot = getRecentConfirmedPressureHigh(
+        idx,
+        full,
+        Math.max(1, Number(config.pressureLookbackDays) || 20),
+        Math.max(1, Number(config.pivotConfirmationDays) || 2)
+    );
+    if (pivot && high >= pivot.value * (1 - tolerance) && close <= pivot.value * (1 + closeTolerance)) {
+        sources.push({ type: 'pivot', period: null, level: pivot.value, day: pivot.day });
+    }
+    const slopeDays = Math.max(1, Number(config.movingAverageSlopeLookbackDays) || 5);
+    for (const period of config.movingAveragePeriods || []) {
+        const series = indicators?.ma?.[period] || [];
+        const level = Number(series[idx]);
+        const previousLevel = Number(series[idx - slopeDays]);
+        if (!Number.isFinite(level) || !Number.isFinite(previousLevel) || level > previousLevel) continue;
+        if (high >= level * (1 - tolerance) && close <= level * (1 + closeTolerance)) {
+            sources.push({ type: 'ma', period, level, day: idx });
+        }
+    }
+    return { matched: sources.length > 0, sources };
+}
+
 function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosition, strategy = STRATEGY) {
     const config = strategy?.waveRejectionProtection;
     const empty = { active: false, status: 'none', targetPosition };
@@ -2028,12 +2078,41 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
     const profitRatio = close / entryClose - 1;
     const volumeRatio = averageVolume > 0 ? volume / averageVolume : 0;
     const nearPressure = previousHigh > 0 && high >= previousHigh * Number(config.pressureToleranceRatio);
-    const triggered = Number.isFinite(profitRatio)
+    const freshEntryConfig = config.freshEntryFailure;
+    let entryDay = null;
+    for (let day = idx - 1; day >= 0; day--) {
+        const priorDecision = full?.[day]?._decision;
+        if (!priorDecision || Number(priorDecision.position) <= 0) break;
+        if (Number(priorDecision.prevAdv) === 0 || priorDecision.bsMark === 'B') {
+            entryDay = day;
+            break;
+        }
+    }
+    const entryAge = Number.isInteger(entryDay) ? idx - entryDay : null;
+    const intradayProfitRatio = high / entryClose - 1;
+    const givebackRatio = high > entryClose ? (high - close) / (high - entryClose) : 0;
+    const upperShadowRangeRatio = range > 0 ? upperShadow / range : 0;
+    const freshEntryPressure = freshEntryConfig
+        ? getWaveFreshEntryPressureContext(idx, full, state.indicators, freshEntryConfig)
+        : { matched: false, sources: [] };
+    const freshEntryFailureTriggered = freshEntryConfig
+        && Number.isInteger(entryAge)
+        && entryAge >= 1
+        && entryAge <= Math.max(1, Number(freshEntryConfig.maximumEntryAgeTradingDays) || 2)
+        && intradayProfitRatio >= Number(freshEntryConfig.minimumIntradayProfitRatio)
+        && profitRatio <= Number(freshEntryConfig.maximumCloseProfitRatio)
+        && givebackRatio >= Number(freshEntryConfig.minimumGivebackRatio)
+        && volumeRatio >= Number(freshEntryConfig.minimumVolumeRatio)
+        && upperShadowRangeRatio >= Number(freshEntryConfig.minimumUpperShadowRangeRatio)
+        && closeLocation <= Number(freshEntryConfig.maximumCloseLocation)
+        && freshEntryPressure.matched;
+    const matureProfitRejectionTriggered = Number.isFinite(profitRatio)
         && profitRatio >= Number(config.minimumProfitRatio)
         && volumeRatio >= Number(config.minimumVolumeRatio)
         && nearPressure
         && upperShadow >= Math.max(body * Number(config.minimumUpperShadowBodyRatio), 0)
         && closeLocation <= Number(config.maximumCloseLocation);
+    const triggered = freshEntryFailureTriggered || matureProfitRejectionTriggered;
     if (!triggered) return empty;
     return {
         active: true,
@@ -2044,10 +2123,17 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
         triggerLow: low,
         triggerClose: close,
         entryClose,
+        entryDay,
+        entryAge,
+        eventType: freshEntryFailureTriggered ? 'fresh_entry_failure' : 'mature_profit_rejection',
         profitRatio,
+        intradayProfitRatio,
+        givebackRatio,
         volumeRatio,
         upperShadowBodyRatio: body > 0 ? upperShadow / body : null,
+        upperShadowRangeRatio,
         closeLocation,
+        pressureSources: freshEntryFailureTriggered ? freshEntryPressure.sources : [{ type: 'recent_high', period: null, level: previousHigh, day: null }],
         sourcePosition: prevPos,
         targetPosition: Math.min(targetPosition, getLowerWavePositionStep(prevPos, config.positionSteps)),
         recoveryPending: false,
@@ -2090,7 +2176,9 @@ function computeDecisionForIndex(idx, full, prevPos) {
         marketGate = { ...marketGate, position };
     }
     const waveDriver = waveRejectionProtection.status === 'triggered'
-        ? '已有浮盈遇放量冲高回落，当日分档保护利润'
+        ? (waveRejectionProtection.eventType === 'fresh_entry_failure'
+            ? '首次建仓后冲击压力失败，当日提前防守'
+            : '已有浮盈遇放量冲高回落，当日分档保护利润')
         : (waveRejectionProtection.status === 'locked'
             ? '冲高回落风险尚未解除，局部阻止旧积分立即回补'
             : (['released', 'recovery_pending'].includes(waveRejectionProtection.status)
