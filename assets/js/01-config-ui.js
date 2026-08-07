@@ -6,7 +6,7 @@
 const rootStyle = getComputedStyle(document.documentElement);
 const getCssVar = (name) => rootStyle.getPropertyValue(name).trim();
 
-const APP_BUILD = '2026-08-07-01';
+const APP_BUILD = '2026-08-07-02';
 const SYS_CONFIG = {
     THROTTLE_MS: 30000,
     REQ_TIMEOUT: 5000,
@@ -124,7 +124,7 @@ const MA_COLORS = { 5: '#ffffff', 10: '#f5a623', 20: '#c084fc', 30: '#60a5fa', 6
 
 const STRATEGIES = {
     '稳健趋势型': { buySignals: ['B1','B2','B3','B4','B10','B12','B13','B14','B15'], exitSignals: ['L1','L2','L3','L4','L9','L10'], warningSignals: ['W1'], scoreGroups: [['B1','B10','B13','B15'],['B2','B12'],['B4','B14']], windowDays: 12, buyThreshold: 5, watchPosition: 0, desc: '关注趋势结构、MACD动能和突破确认，适合中期趋势跟随' },
-    '波段抄底型': { buySignals: ['B5','B6','B7','B8','B9','B11','B16','B17'], exitSignals: ['L3','L5','L10'], warningSignals: ['W1','L9'], scoreGroups: [['B5','B6','B11','B16'],['B7','B8'],['B17']], windowSignalGuards: { B8: { recentDays: 3, companionSignals: ['B5','B6','B9','B11','B16','B17'] } }, windowDays: 10, buyThreshold: 4, holdThreshold: 3, watchPosition: 30, softInvalidationGraceDays: 1, monotonicSignalLifecycle: true, b11StructureDefense: { lookbackDays: 20, pivotDays: 2 }, desc: '关注超卖、背离、大级别支撑和回踩企稳，适合回调末端的修复观察' },
+    '波段抄底型': { buySignals: ['B5','B6','B7','B8','B9','B11','B16','B17'], exitSignals: ['L3','L5','L10'], warningSignals: ['W1','L9'], scoreGroups: [['B5','B6','B11','B16'],['B7','B8'],['B17']], windowSignalGuards: { B8: { recentDays: 3, companionSignals: ['B5','B6','B9','B11','B16','B17'] } }, windowDays: 10, buyThreshold: 4, holdThreshold: 3, watchPosition: 30, softInvalidationGraceDays: 1, monotonicSignalLifecycle: true, b11StructureDefense: { lookbackDays: 20, pivotDays: 2 }, waveRejectionProtection: { minimumProfitRatio: 0.08, minimumVolumeRatio: 1.5, minimumUpperShadowBodyRatio: 1.5, maximumCloseLocation: 0.5, pressureLookbackDays: 20, pressureToleranceRatio: 0.98, minimumLockTradingDays: 2, blockingSignals: ['W2','W3'], recoveryPositionCap: 30, recoveryHoldTradingDays: 1, positionSteps: [0,30,50,80] }, desc: '关注超卖、背离、大级别支撑和回踩企稳，适合回调末端的修复观察' },
     '突破追涨型': { buySignals: ['B3','B4','B14'], exitSignals: ['L4','L5','L6','L9'], warningSignals: ['W1','L10'], signalWeights: {'B3':1,'B4':3,'B14':4}, scoreGroups: [['B4','B14']], windowDays: 8, buyThreshold: 4, watchPosition: 0, desc: '专注放量突破和平台突破，适合强势行情里的右侧确认' },
     '综合全能型': { buySignals: ['B1','B2','B3','B4','B5','B6','B7','B9','B10','B11','B12','B14','B15','B16','B17'], exitSignals: ['L1','L2','L3','L4','L5','L6','L9','L10'], warningSignals: ['W1'], scoreGroups: [['B1','B10','B15'],['B2','B12'],['B4','B14'],['B5','B6','B11','B16'],['B7'],['B17']], windowDays: 12, buyThreshold: 6, watchPosition: 30, watchPositionSignals: ['B5','B6','B7','B9','B11','B16','B17'], desc: '全量雷达观察模式，适合看全局信号，不建议直接等同交易指令' }
 };
@@ -330,7 +330,7 @@ function clearDerivedCaches() {
 }
 function clearLookupCacheOnly() { dateIndexCache.clear(); }
 
-const SIGNAL_VERSION = 'v4.2.14';
+const SIGNAL_VERSION = 'v4.2.15';
 window.__DG_BUILD__ = APP_BUILD;
 
 function getDecisionSignature(decision) {
