@@ -1091,7 +1091,7 @@ async function _selectIndexImpl(id) {
     resetViewportToLatest(null);
 
     document.querySelectorAll('#mainTabs .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === 'index'));
-    document.getElementById('indexNavList').style.display = 'block';
+    document.getElementById('indexNavList').style.display = 'flex';
     document.getElementById('stockNavList').style.display = 'none';
     document.getElementById('btnBacktest').style.display = 'none';
 
@@ -1276,9 +1276,11 @@ function renderIndexList() {
     }).join('');
     
     container.innerHTML = `
-        ${renderLeftListHeader('市场与板块指数')}
-        <div>${html}</div>
-        <div id="leftMarketContext"></div>
+        <div class="index-list-sticky-head">${renderLeftListHeader('市场与板块指数')}</div>
+        <div class="index-list-items">
+            <div>${html}</div>
+            <div id="leftMarketContext"></div>
+        </div>
     `;
     
     const rd = getActiveData();
@@ -2064,7 +2066,7 @@ function openMarketWorkspace(tab) {
     setPrimaryWorkspace(tab);
     if (tab === 'index') {
         const id = returnSelection?.tab === 'index' ? returnSelection.id : 'sh';
-        document.getElementById('indexNavList').style.display = 'block';
+        document.getElementById('indexNavList').style.display = 'flex';
         document.getElementById('stockNavList').style.display = 'none';
         selectIndex(id || 'sh');
     } else {
