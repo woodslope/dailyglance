@@ -781,18 +781,15 @@ function getPositionCalculationCopy(meta, decision, mode = 'stock') {
     const parts = [];
     const basePosition = Number(decision?.basePosition);
     const finalPosition = Number(decision?.position) || 0;
-    const riskCoef = Number(decision?.risk?.coef);
     const positionName = mode === 'index' ? '风险仓位' : '仓位';
     if (Number.isFinite(basePosition)) parts.push(`基础${positionName} ${basePosition}%`);
-    if (Number.isFinite(riskCoef) && riskCoef !== 1) {
-        const adjusted = Number.isFinite(basePosition) ? quantizePosition(basePosition * riskCoef) : null;
-        parts.push(`风险系数 ×${riskCoef.toFixed(2)}${adjusted == null ? '' : `（${adjusted}%）`}`);
-    }
+    const riskCap = typeof getRiskPositionCap === 'function' ? getRiskPositionCap(decision?.risk) : null;
+    if (Number.isFinite(riskCap) && Number.isFinite(basePosition) && basePosition > riskCap) parts.push(`风险最高允许${riskCap}%`);
     if (meta?.inCooldown) parts.push('离场冷静期归零');
     if (['清仓防守', '强离场'].includes(decision?.exit?.level)) parts.push(decision.exit.level);
     else if (['减仓观察', '延续防守'].includes(decision?.exit?.level)) parts.push('离场防守上限30%');
-    if ((meta?.warningSignals || []).length) parts.push('风险预警上限40%');
-    if (Number(decision?.risk?.score) < 40) parts.push(mode === 'index' ? '指数高风险上限20%' : '个股高风险上限20%');
+    if ((meta?.warningSignals || []).length) parts.push('风险预警上限30%');
+    if (Number(decision?.risk?.score) < 40) parts.push('极端风险归零防守');
     const b11Defense = decision?.b11StructureDefense;
     if (Number.isFinite(Number(b11Defense?.structureLevel))) {
         const structureDate = b11Defense?.structureDate ? `（${b11Defense.structureDate}确认）` : '';

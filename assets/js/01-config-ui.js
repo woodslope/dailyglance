@@ -6,7 +6,7 @@
 const rootStyle = getComputedStyle(document.documentElement);
 const getCssVar = (name) => rootStyle.getPropertyValue(name).trim();
 
-const APP_BUILD = '2026-08-07-05';
+const APP_BUILD = '2026-08-08-01';
 const SYS_CONFIG = {
     THROTTLE_MS: 30000,
     REQ_TIMEOUT: 5000,
@@ -128,6 +128,9 @@ const STRATEGIES = {
     '突破追涨型': { buySignals: ['B3','B4','B14'], exitSignals: ['L4','L5','L6','L9'], warningSignals: ['W1','L10'], signalWeights: {'B3':1,'B4':3,'B14':4}, scoreGroups: [['B4','B14']], windowDays: 8, buyThreshold: 4, watchPosition: 0, desc: '专注放量突破和平台突破，适合强势行情里的右侧确认' },
     '综合全能型': { buySignals: ['B1','B2','B3','B4','B5','B6','B7','B9','B10','B11','B12','B14','B15','B16','B17'], exitSignals: ['L1','L2','L3','L4','L5','L6','L9','L10'], warningSignals: ['W1'], scoreGroups: [['B1','B10','B15'],['B2','B12'],['B4','B14'],['B5','B6','B11','B16'],['B7'],['B17']], windowDays: 12, buyThreshold: 6, watchPosition: 30, watchPositionSignals: ['B5','B6','B7','B9','B11','B16','B17'], desc: '全量雷达观察模式，适合看全局信号，不建议直接等同交易指令' }
 };
+
+// 四个正式策略共用同一套可解释仓位档位；策略之间只区分信号入口和是否允许试探。
+const POSITION_STEPS = [0, 30, 50, 80];
 
 // Quality metadata stays in shadow until forward evidence and manual approval are complete.
 const WAVE_B_QUALITY_RULESET = Object.freeze({
@@ -330,7 +333,7 @@ function clearDerivedCaches() {
 }
 function clearLookupCacheOnly() { dateIndexCache.clear(); }
 
-const SIGNAL_VERSION = 'v4.2.18';
+const SIGNAL_VERSION = 'v4.2.19';
 window.__DG_BUILD__ = APP_BUILD;
 
 function getDecisionSignature(decision) {

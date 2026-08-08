@@ -714,13 +714,13 @@ function getReadyPositionForStrategy(strategy, meta, fallback) {
 }
 
 function getBasePosition(idx, full, ind, meta) {
-    if (meta.type === '✅ 明确转强') return getReadyPositionForStrategy(STRATEGY, meta, 80);
-    if (meta.type === '⚠️ 谨慎看多') return Number(STRATEGY.cautiousPosition || 0) || 50;
-    if (meta.type === '👀 关注异动') return getWatchPositionForStrategy(STRATEGY, meta);
+    if (meta.type === '✅ 明确转强') return quantizePosition(getReadyPositionForStrategy(STRATEGY, meta, 80));
+    if (meta.type === '⚠️ 谨慎看多') return quantizePosition(Number(STRATEGY.cautiousPosition || 0) || 50);
+    if (meta.type === '👀 关注异动') return quantizePosition(getWatchPositionForStrategy(STRATEGY, meta));
     if (meta.type === '📈 趋势抱单') {
         const holdPosition = Number(STRATEGY.holdPosition || 0);
-        if (holdPosition > 0) return holdPosition;
-        return (ind.ma?.[20]?.[idx] && ind.ma?.[60]?.[idx] && ind.ma[20][idx] > ind.ma[60][idx]) ? 60 : 40;
+        if (holdPosition > 0) return quantizePosition(holdPosition);
+        return 50;
     }
     return 0;
 }
@@ -867,7 +867,8 @@ function getPositionDriverText(meta, market, risk, exit, base, position, prevPos
     }
 
     const pieces = [`基础 ${base}%`];
-    if ((risk?.coef ?? 1) !== 1) pieces.push(`风险系数 ${risk.coef.toFixed(2)}`);
+    const riskCap = getRiskPositionCap(risk);
+    if (base > riskCap) pieces.push(`风险最高允许 ${riskCap}%`);
     if (positionCap?.reason) pieces.push(positionCap.reason);
     if (marketGate?.detail) pieces.push(marketGate.detail);
     pieces.push(position === prevPos ? `维持 ${position}%` : `调整至 ${position}%`);
@@ -970,34 +971,24 @@ function getPlainDisplayText(text = '') {
 }
 
 function getPlainRiskAdjustmentText(risk = {}, basePosition, riskCoef, adjustedPosition, positionLabel = '基础仓位') {
-    const rawPosition = Number.isFinite(Number(basePosition)) && Number.isFinite(Number(riskCoef))
-        ? Number(basePosition) * Number(riskCoef)
-        : null;
-    const rawText = Number.isFinite(rawPosition)
-        ? `${Number.isInteger(rawPosition) ? rawPosition : rawPosition.toFixed(1)}%`
-        : '当前基础仓位';
+    const base = Number(basePosition);
+    const cap = getRiskPositionCap(risk);
     const details = getRiskAdjustmentDetails(risk);
-    if (Number(riskCoef) === 1 && Number.isFinite(adjustedPosition)) {
-        return adjustedPosition === rawPosition
-            ? `风险评估未再下调，基础仓位按${adjustedPosition}%执行`
-            : `系统只用固定仓位档位，基础仓位${rawText}落在${adjustedPosition}%档，最终按${adjustedPosition}%执行`;
-    }
+    if (!Number.isFinite(base) || base <= cap) return `风险评估未限制，${positionLabel}按${Number.isFinite(base) ? `${base}%` : '当前档位'}执行`;
     const reasonText = details.length ? details.join('、') : '当前风险偏高';
-    if (Number.isFinite(adjustedPosition) && Number.isFinite(rawPosition) && adjustedPosition !== rawPosition) {
-        return `因${reasonText}，${positionLabel}先调到${rawText}，再按${adjustedPosition}%档执行`;
-    }
-    return `因${reasonText}，${positionLabel}调整到${rawText}`;
+    return cap > 0
+        ? `因${reasonText}，${positionLabel}最高按${cap}%档执行`
+        : `因${reasonText}，${positionLabel}归零防守`;
 }
 
 function getRiskCoefficientText(risk = {}) {
-    const coef = Number(risk.coef);
-    if (!Number.isFinite(coef)) return '风险系数未提供';
+    const cap = getRiskPositionCap(risk);
     const score = Number(risk.score);
     const details = getRiskAdjustmentDetails(risk);
     const evidence = [...details];
     if (Number.isFinite(score)) evidence.push(`风险评分 ${score}/100`);
     if (!evidence.length && risk.level && risk.level !== '未知') evidence.push(risk.level);
-    return `风险系数 ${coef.toFixed(2)}${evidence.length ? `（${evidence.join('、')}）` : ''}`;
+    return `风险最高允许${cap}%${evidence.length ? `（${evidence.join('、')}）` : ''}`;
 }
 
 function getStockPositionChangeDetails(meta, decision, signalCause, previousPosition, position, mode = 'stock') {
@@ -1010,6 +1001,7 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
     const causeText = signalCause?.text || `当前有效${signalName}`;
     const basePosition = Number(decision?.basePosition);
     const riskCoef = Number(decision?.risk?.coef);
+    const riskCap = getRiskPositionCap(decision?.risk);
     const exitLevel = decision?.exit?.level || '无明确离场';
     const directExitSignals = meta?.exitSignals || [];
     const warningSignals = meta?.warningSignals || [];
@@ -1020,9 +1012,8 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
     const isReduce = previousPosition > 0 && position > 0 && position < previousPosition;
     const isExit = previousPosition > 0 && position === 0;
     const path = [];
-    let hasLimiter = Number.isFinite(riskCoef) && riskCoef < 1;
-    const rawPosition = Number.isFinite(basePosition) && Number.isFinite(riskCoef) ? basePosition * riskCoef : null;
-    const adjustedPosition = Number.isFinite(rawPosition) ? quantizePosition(rawPosition) : null;
+    let hasLimiter = Number.isFinite(basePosition) && basePosition > riskCap;
+    const adjustedPosition = Number.isFinite(basePosition) ? quantizePosition(Math.min(basePosition, riskCap)) : null;
 
     if (Number.isFinite(basePosition)) {
         if (basePosition <= 0) {
@@ -1070,11 +1061,11 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
             path.push(`${triggerText}，${currentPositionLabel}防守上限为30%`);
         } else if (warningNames.length) {
             hasLimiter = true;
-            path.push(`出现${warningNames.join('、')}预警，风险上限为 40%，按仓位档位落至 30%`);
+            path.push(`出现${warningNames.join('、')}预警，仓位最高按30%档执行`);
         }
         if (Number(decision?.risk?.score) < 40) {
             hasLimiter = true;
-            path.push(`当前风险较高，${currentPositionLabel}最多20%`);
+            path.push(`当前风险进入极端档，${currentPositionLabel}归零防守`);
         }
         if (!isIndex && decision?.positionCap?.reason) {
             hasLimiter = true;
@@ -1120,7 +1111,7 @@ function getStockPositionChangeDetails(meta, decision, signalCause, previousPosi
         if (warningNames.length) drivers.push(`出现${warningNames.join('、')}预警`);
         if (!exitNames.length && !warningNames.length && ['减仓观察', '延续防守'].includes(exitLevel) && decision?.exit?.detail) drivers.push(decision.exit.detail);
         if (Number.isFinite(basePosition) && basePosition < previousPosition) drivers.push(`买入积分为${scoreText}，所以信号给出的基础仓位从${previousPosition}%降至${basePosition}%`);
-        if (Number.isFinite(riskCoef) && riskCoef < 1) drivers.push(getPlainRiskAdjustmentText(decision?.risk, basePosition, riskCoef, adjustedPosition));
+        if (Number.isFinite(basePosition)) drivers.push(getPlainRiskAdjustmentText(decision?.risk, basePosition, riskCoef, position));
         if (Number(decision?.risk?.score) < 40) drivers.push('风险评分进入极端风险档');
         if (decision?.positionCap?.reason) drivers.push(getPlainPositionLimitText(decision.positionCap.reason));
         reason = `${drivers.length ? [...new Set(drivers)].slice(0, 3).join('；') : `当前信号对应基础仓位为${Number.isFinite(basePosition) ? `${basePosition}%` : `${position}%`}`}`;
@@ -1502,7 +1493,7 @@ function getStockDecisionSummary(meta, decision) {
     const scoreIsEmpty = (meta?.windowScore ?? 0) <= 0;
     const positionToZeroText = hasPreviousPosition ? `当前从${previousPosition}%降至 0%` : '策略参考仓位降至 0%';
     const positionPressure = [];
-    if (Number(decision?.risk?.coef) < 1) positionPressure.push(getPlainRiskAdjustmentText(decision.risk, basePosition, Number(decision.risk.coef), quantizePosition(basePosition * Number(decision.risk.coef))));
+    if (Number.isFinite(basePosition)) positionPressure.push(getPlainRiskAdjustmentText(decision.risk, basePosition, Number(decision.risk.coef), position, '基础仓位'));
     const marketGate = decision?.marketGate || {};
     const signalCause = getSignalCauseSummary(meta);
     const buyCauseText = signalCause.text || '当前有效买入信号';
@@ -1792,7 +1783,19 @@ function getNoviceDecisionSummary(meta, decision, mode = 'stock') {
     };
 }
 
-function quantizePosition(val) { const steps = [0, 10, 20, 30, 50, 80, 100]; return steps.reduce((prev, curr) => Math.abs(curr - val) < Math.abs(prev - val) ? curr : prev); }
+function quantizePosition(val) {
+    const steps = Array.isArray(POSITION_STEPS) && POSITION_STEPS.length ? POSITION_STEPS : [0, 30, 50, 80];
+    return steps.reduce((prev, curr) => Math.abs(curr - val) < Math.abs(prev - val) ? curr : prev);
+}
+
+function getRiskPositionCap(risk = {}) {
+    const score = Number(risk?.score);
+    if (!Number.isFinite(score)) return 50;
+    if (score >= 80) return 80;
+    if (score >= 60) return 50;
+    if (score >= 40) return 30;
+    return 0;
+}
 
 function getStockTrendPositionCap(idx, full, ind, position) {
     if (state.mode !== 'stock') return null;
@@ -2214,16 +2217,17 @@ function computeDecisionForIndex(idx, full, prevPos) {
     if (softSignalGrace.applied) base = prevPos;
     if (localStructureDefense.applied) base = prevPos;
 
-    let rawPosition = base * risk.coef, position = quantizePosition(rawPosition);
+    // 风险评估只决定最高允许档位，不再把仓位连续缩放成10%、20%、40%等中间值。
+    let rawPosition = base, position = quantizePosition(rawPosition);
     let isCriticalExit = (rawExit.level === '清仓防守' || rawExit.level === '强离场'
         || (meta.type || '').includes('规避') || (meta.type || '').includes('破位')) && !waveL10TrendHandoff.eligible;
 
     if (isCriticalExit || meta.inCooldown) position = 0;
     else if (exit.level === '减仓观察' || exit.level === '延续防守') position = quantizePosition(Math.min(position, 30));
 
-    if (meta.warningSignals?.length) position = quantizePosition(Math.min(position, 40));
+    if (meta.warningSignals?.length) position = quantizePosition(Math.min(position, 30));
     if (waveL10TrendHandoff.eligible) position = quantizePosition(Math.min(position, waveL10TrendHandoff.targetPositionCap));
-    if (risk.score < 40) position = quantizePosition(Math.min(position, 20));
+    position = quantizePosition(Math.min(position, getRiskPositionCap(risk)));
 
     const positionCap = getPositionCap(meta, prevPos, position, idx, full, state.indicators);
     if (positionCap) position = quantizePosition(Math.min(position, positionCap.limit));
