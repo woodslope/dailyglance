@@ -2023,7 +2023,10 @@ function renderSectorConceptHighlights() {
                 <div><span>今日</span><strong class="mono ${getSectorTrendMetricClass(concept.changePct)}">${formatSectorTrendSigned(concept.changePct, 2, '%')}</strong></div>
                 <div><span>5日</span><strong class="mono ${getSectorTrendMetricClass(concept.return5)}">${formatSectorTrendSigned(concept.return5, 2, '%')}</strong></div>
                 <div><span>10日</span><strong class="mono ${getSectorTrendMetricClass(concept.return10)}">${formatSectorTrendSigned(concept.return10, 2, '%')}</strong></div>
-                <div><span>代表股</span><strong>${leader ? `${escapeHTML(leader.name)} <span class="sector-concept-leader-code mono">${escapeHTML(leader.code)}</span>` : '--'}</strong></div>
+                <div>
+                    <span>代表股</span>
+                    <span class="sector-concept-leader">${leader ? `<span class="sector-concept-leader-name">${escapeHTML(leader.name)}</span><span class="sector-concept-leader-code mono">${escapeHTML(leader.code)}</span>` : '--'}</span>
+                </div>
             </article>
         `;
     }).join('');

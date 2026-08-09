@@ -1702,6 +1702,8 @@ function getIndexDecisionSummary(meta, decision) {
     const signalCause = getSignalCauseSummary(meta);
     const causeText = signalCause.text || '当前有效指数动能信号';
     const lifecycleTransition = getSignalLifecycleTransition(meta, decision, 'index');
+    const waveRejection = decision?.waveRejectionProtection || { status: 'none', active: false };
+    const isFreshEntryDownsideFailure = ['fresh_entry_downside_failure', 'fresh_entry_hard_break'].includes(waveRejection.eventType);
     const waveExpiryHandoff = decision?.waveExpiryHandoff || { applied: false };
     const isEntry = previousPosition === 0 && position > 0;
     const isIncrease = position > previousPosition;
@@ -1727,7 +1729,10 @@ function getIndexDecisionSummary(meta, decision) {
         userAction = isReduce ? '降低风险暴露' : '维持当前风险仓位';
     }
 
-    if (!hasCriticalExit && waveExpiryHandoff.applied) {
+    if (!hasCriticalExit && waveRejection.status === 'triggered' && isFreshEntryDownsideFailure) {
+        stateLabel = position === 0 ? '指数新仓失败离场' : '指数新仓下跌防守';
+        userAction = position === 0 ? '保持低风险暴露' : '降低风险暴露';
+    } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
         stateLabel = '反弹接管观察';
         userAction = '保持低风险暴露';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'hard' && !isIncrease) {
@@ -1742,7 +1747,11 @@ function getIndexDecisionSummary(meta, decision) {
     }
 
     let reason = '';
-    if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
+    if (!hasCriticalExit && waveRejection.status === 'triggered' && isFreshEntryDownsideFailure) {
+        reason = waveRejection.eventType === 'fresh_entry_hard_break'
+            ? `指数首次提高风险后两日内收盘跌破买入日最低价，新仓硬失效，风险仓位从${previousPosition}%降至${position}%`
+            : `指数首次提高风险后两日内盘中跌破买入日最低价，收盘虽收回但仍是贴近防守位的弱势阴线，风险仓位从${previousPosition}%降至${position}%`;
+    } else if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
         reason = `当前是${getCooldownProgress(meta).label}；指数动能积分为${scoreText}，风险仓位保持0%`;
     } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
         const momentumText = (waveExpiryHandoff.momentumSignals || []).join('、') || '短线动能继续改善';
@@ -1806,6 +1815,8 @@ function getIndexDecisionSummary(meta, decision) {
         .replace(/试探仓/g, '低风险仓位');
     if (waveExpiryHandoff.applied) {
         positionWhy = `本次积分下降来自时间窗口自然到期，不是真实破位；一日接管规则将风险仓位维持在${position}%，不生成S`;
+    } else if (waveRejection.status === 'triggered' && isFreshEntryDownsideFailure) {
+        positionWhy = `指数新仓下跌失败在风险日直接触发防守，最终风险仓位由${previousPosition}%降至${position}%`;
     }
     const nextFocus = waveExpiryHandoff.applied
         ? `下一交易日需由趋势抱单或新的有效指数动能信号接管；若未接管、跌破原买点防守位${Number(waveExpiryHandoff.entryLow).toFixed(2)}或出现离场信号，风险仓位降至0%。`
@@ -2053,7 +2064,10 @@ function getWaveFreshEntryPressureContext(idx, full, indicators, config = {}) {
 function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosition, strategy = STRATEGY) {
     const config = strategy?.waveRejectionProtection;
     const empty = { active: false, status: 'none', targetPosition };
-    if (state.strategy !== '波段抄底型' || state.mode !== 'stock' || state.period !== 'daily' || !config) return empty;
+    const isStock = state.mode === 'stock';
+    const isIndex = state.mode === 'index';
+    const indexDownsideConfig = isIndex ? config?.indexFreshEntryDownsideFailure : null;
+    if (state.strategy !== '波段抄底型' || state.period !== 'daily' || !config || (!isStock && !indexDownsideConfig)) return empty;
 
     const item = full?.[idx] || {};
     const close = Number(item.close);
@@ -2152,8 +2166,8 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
     const profitRatio = close / entryClose - 1;
     const volumeRatio = averageVolume > 0 ? volume / averageVolume : 0;
     const nearPressure = previousHigh > 0 && high >= previousHigh * Number(config.pressureToleranceRatio);
-    const freshEntryConfig = config.freshEntryFailure;
-    const downsideConfig = config.freshEntryDownsideFailure;
+    const freshEntryConfig = isStock ? config.freshEntryFailure : null;
+    const downsideConfig = isIndex ? indexDownsideConfig : config.freshEntryDownsideFailure;
     let entryDay = null;
     for (let day = idx - 1; day >= 0; day--) {
         const priorDecision = full?.[day]?._decision;
@@ -2212,7 +2226,7 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
         && downsideBearBodyRangeRatio >= Number(downsideConfig.minimumBearBodyRangeRatio)
         && closeLocation <= Number(downsideConfig.maximumCloseLocation)
         && volumeRatio >= Number(downsideConfig.minimumVolumeRatio);
-    const matureProfitRejectionTriggered = Number.isFinite(profitRatio)
+    const matureProfitRejectionTriggered = isStock && Number.isFinite(profitRatio)
         && profitRatio >= Number(config.minimumProfitRatio)
         && volumeRatio >= Number(config.minimumVolumeRatio)
         && nearPressure
