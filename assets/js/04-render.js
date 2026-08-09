@@ -652,6 +652,7 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
         const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
         marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap}%，当前仓位不会因宽基状态被动降低。`;
     }
+    else if (marketGate.type === 'wave-expiry-b11-exception') marketHint = '核心宽基偏弱，但本次属于到期防守观察成功后的新B11接管，只允许已有30%增加20%波段仓；普通机会30%上限仍对其他事件生效。';
     else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次开仓被暂停。';
     else if (decision?.market?.label === '核心宽基偏弱') {
         const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
