@@ -272,6 +272,11 @@ function onSearchInput() {
 function closeSuggestions() { 
     const el = document.getElementById('stockSuggest'); 
     if(el) el.style.display = 'none'; 
+    const inp = document.getElementById('stockSearchInput');
+    if (inp) {
+        inp.setAttribute?.('aria-expanded', 'false');
+        inp.removeAttribute?.('aria-activedescendant');
+    }
     suggestActiveIdx = -1; 
 }
 
@@ -281,7 +286,7 @@ async function fetchSuggestions() {
     if(!inp || !sug) return;
     
     const q = inp.value.trim(); 
-    if(!q) { sug.style.display = 'none'; return; }
+    if(!q) { closeSuggestions(); return; }
     
     const seq = ++suggestSeq; 
     let res = searchLocalStocks(q).slice(0, 20); 
@@ -292,6 +297,7 @@ async function fetchSuggestions() {
     if(!res.length) { 
         sug.innerHTML = '<div class="stock-suggest-empty">无匹配结果</div>'; 
         sug.style.display = 'block'; 
+        inp.setAttribute?.('aria-expanded', 'true');
         suggestActiveIdx = -1; 
         return; 
     }
@@ -306,6 +312,7 @@ async function searchAndShowInSuggest(q) {
     
     sug.innerHTML = '<div class="stock-suggest-empty">搜索中...</div>'; 
     sug.style.display = 'block';
+    if (inp) inp.setAttribute?.('aria-expanded', 'true');
     
     const seq = ++suggestSeq; 
     let res = await jsonpSearch(query); 
@@ -315,6 +322,7 @@ async function searchAndShowInSuggest(q) {
     
     if(!res.length) { 
         sug.innerHTML = '<div class="stock-suggest-empty">无匹配结果</div>'; 
+        if (inp) inp.setAttribute?.('aria-expanded', 'true');
         suggestActiveIdx = -1; 
         return; 
     } 
@@ -322,25 +330,30 @@ async function searchAndShowInSuggest(q) {
 }
 
 function renderSuggest(container, res) {
-    container.innerHTML = res.map(x => {
+    container.innerHTML = res.map((x, index) => {
         const target = normalizeSecurityTarget(x);
         const isSupported = isSupportedWatchlistSecurity(x);
         if (!isSupported) {
             return `
-        <div class="stock-suggest-item is-unsupported" onclick="showUnsupportedSecurityNotice()">
+        <div id="stockSuggestOption${index}" class="stock-suggest-item is-unsupported" role="option" aria-selected="false" onclick="showUnsupportedSecurityNotice()">
             <span class="ss-name">${escapeHTML(target.name)}</span>
             <span class="ss-meta"><span class="ss-code mono">${escapeHTML(target.code)}</span><span class="ss-support">暂不支持</span></span>
         </div>
     `;
         }
         return `
-        <div class="stock-suggest-item" onclick="selectSuggestItem('${escapeJSArg(target.code)}','${escapeJSArg(target.name)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')">
+        <div id="stockSuggestOption${index}" class="stock-suggest-item" role="option" aria-selected="false" onclick="selectSuggestItem('${escapeJSArg(target.code)}','${escapeJSArg(target.name)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')">
             <span class="ss-name">${escapeHTML(target.name)}</span>
             <span class="ss-code mono">${escapeHTML(target.code)}</span>
         </div>
     `;
     }).join('');
     container.style.display = 'block';
+    const inp = document.getElementById('stockSearchInput');
+    if (inp) {
+        inp.setAttribute?.('aria-expanded', 'true');
+        inp.removeAttribute?.('aria-activedescendant');
+    }
     suggestActiveIdx = -1;
 }
 
@@ -390,10 +403,13 @@ function onSearchKeydown(e) {
             suggestActiveIdx = (suggestActiveIdx - 1 + items.length) % items.length;
         }
         
-        items.forEach((item, idx) => { 
-            if (idx === suggestActiveIdx) { 
+        items.forEach((item, idx) => {
+            const isActive = idx === suggestActiveIdx;
+            item.setAttribute('aria-selected', String(isActive));
+            if (isActive) {
                 item.classList.add('active'); 
                 item.scrollIntoView({ block: 'nearest' }); 
+                inp.setAttribute?.('aria-activedescendant', item.id);
             } else {
                 item.classList.remove('active'); 
             }
@@ -533,6 +549,13 @@ async function handleWatchlistDragKeydown(event, code) {
     if (!target) return;
     await moveWatchlistItem(code, target.code, offset > 0);
     document.querySelector(`#stockNavList .wl-drag-handle[data-code="${code}"]`)?.focus?.();
+}
+
+function handleWatchlistSelectKeydown(event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget?.click?.();
 }
 
 function getSupportedWatchlistTargets() {
@@ -1260,7 +1283,7 @@ function renderIndexList() {
         const priceHtml = `<span class="lprice mono ${quoteDisplay.cl}" data-code="${id}">${quoteDisplay.priceText}</span><span class="lchange mono ${quoteDisplay.cl}" data-code="${id}">${quoteDisplay.changeText}</span>`;
             
         return `
-            <div class="nav-list-item ${active}" onclick="selectIndex('${id}')">
+            <button type="button" class="nav-list-item ${active}" onclick="selectIndex('${id}')">
                 <div class="nav-list-main">
                     <div class="lname-wrap">
                         <span class="lname">${config.name}</span>
@@ -1271,7 +1294,7 @@ function renderIndexList() {
                     <span class="lcode mono">${escapeHTML(indexCode)}</span>
                     <div class="lquote">${priceHtml}</div>
                 </div>
-            </div>
+            </button>
         `;
     }).join('');
     
@@ -1316,8 +1339,8 @@ function renderWatchlist() {
     
     const sHtml = `
         <div class="stock-search">
-            <input id="stockSearchInput" placeholder="输入股票代码或名称" autocomplete="off" oninput="onSearchInput()" onkeydown="onSearchKeydown(event)">
-            <div class="stock-suggest" id="stockSuggest"></div>
+            <input id="stockSearchInput" placeholder="输入股票代码或名称" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="stockSuggest" aria-expanded="false" oninput="onSearchInput()" onkeydown="onSearchKeydown(event)">
+            <div class="stock-suggest" id="stockSuggest" role="listbox" aria-label="股票搜索建议"></div>
         </div>
     `;
     const updateWatchlistShell = (headerHtml, bodyHtml) => {
@@ -1367,15 +1390,21 @@ function renderWatchlist() {
         const dragTargetAttrs = s._pendingRemove
             ? ''
             : `ondragover="updateWatchlistDragTarget(event,'${escapeJSArg(target.code)}')" ondrop="dropWatchlistItem(event,'${escapeJSArg(target.code)}')"`;
+        const selectAction = isSupported
+            ? `selectStock('${escapeJSArg(target.code)}','${escapeJSArg(displayName)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')`
+            : 'showUnsupportedSecurityNotice()';
+        const selectTargetAttrs = s._pendingRemove
+            ? ''
+            : `role="button" tabindex="0" aria-label="查看 ${escapeHTML(displayName)}" onclick="event.stopPropagation();${selectAction}" onkeydown="handleWatchlistSelectKeydown(event)"`;
         
         return `
-            <div class="nav-list-item watchlist-item ${isSupported ? '' : 'is-unsupported '}${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${target.code}" ${dragTargetAttrs} ${s._pendingRemove ? '' : (isSupported ? `onclick="selectStock('${escapeJSArg(target.code)}','${escapeJSArg(displayName)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')"` : 'onclick="showUnsupportedSecurityNotice()"')}>
+            <div class="nav-list-item watchlist-item ${isSupported ? '' : 'is-unsupported '}${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${target.code}" ${dragTargetAttrs} ${s._pendingRemove ? '' : `onclick="${selectAction}"`}>
                 <div class="nav-list-main">
                     ${s._pendingRemove ? '' : `
                     <button type="button" class="wl-drag-handle" data-code="${target.code}" draggable="true" title="拖动调整顺序" aria-label="拖动或使用上下方向键调整 ${escapeHTML(displayName)} 的顺序" onclick="event.stopPropagation()" ondragstart="startWatchlistDrag(event,'${escapeJSArg(target.code)}')" ondragend="finishWatchlistDrag()" onkeydown="handleWatchlistDragKeydown(event,'${escapeJSArg(target.code)}')">
                         <svg viewBox="0 0 12 18" aria-hidden="true"><circle cx="3" cy="3" r="1.2"></circle><circle cx="9" cy="3" r="1.2"></circle><circle cx="3" cy="9" r="1.2"></circle><circle cx="9" cy="9" r="1.2"></circle><circle cx="3" cy="15" r="1.2"></circle><circle cx="9" cy="15" r="1.2"></circle></svg>
                     </button>`}
-                    <div class="lname-wrap">
+                    <div class="lname-wrap watchlist-select-target" ${selectTargetAttrs}>
                         <span class="lname" title="${escapeHTML(displayName)}">${escapeHTML(shortName)}</span>
                         <span class="wl-status ${rowStatus.toneClass}" title="${escapeHTML(statusTitle)}">${rowStatus.label}</span>
                         ${positionChangeHtml}
@@ -1523,9 +1552,25 @@ function resetLatest() {
     }
 }
 
-function toggleHelp() { 
-    const o = document.getElementById('helpOverlay'); 
-    if(o) o.classList.toggle('show'); 
+function toggleDialogOverlay(overlay, { beforeOpen, fallbackFocus } = {}) {
+    if (!overlay) return;
+    const opening = !overlay.classList.contains('show');
+    if (opening) {
+        beforeOpen?.();
+        const currentFocus = document.activeElement;
+        overlay._returnFocus = currentFocus?.offsetParent !== null ? currentFocus : fallbackFocus;
+        overlay.classList.add('show');
+        requestAnimationFrame(() => overlay.querySelector('.sg-close, button, [href], input, [tabindex]:not([tabindex="-1"])')?.focus());
+        return;
+    }
+    overlay.classList.remove('show');
+    const returnFocus = overlay._returnFocus || fallbackFocus;
+    overlay._returnFocus = null;
+    requestAnimationFrame(() => returnFocus?.isConnected !== false && returnFocus?.focus?.());
+}
+
+function toggleHelp() {
+    toggleDialogOverlay(document.getElementById('helpOverlay'), { fallbackFocus: document.getElementById('btnHelp') });
 }
 
 function isHeaderMoreMenuOpen() {
@@ -1698,8 +1743,8 @@ function renderPerfPanel() {
 
     panel.innerHTML = `
         <div class="sg-header">
-            <h2>性能诊断</h2>
-            <button class="sg-close" onclick="togglePerfPanel()">×</button>
+            <h2 id="perfDialogTitle">性能诊断</h2>
+            <button type="button" class="sg-close" onclick="togglePerfPanel()" title="关闭性能诊断" aria-label="关闭性能诊断">×</button>
         </div>
         <div class="sg-body">
             <div class="perf-toolbar">
@@ -1723,8 +1768,10 @@ function renderPerfPanel() {
 function togglePerfPanel() {
     const overlay = document.getElementById('perfOverlay');
     if (!overlay) return;
-    if (!overlay.classList.contains('show')) renderPerfPanel();
-    overlay.classList.toggle('show');
+    toggleDialogOverlay(overlay, {
+        beforeOpen: renderPerfPanel,
+        fallbackFocus: document.getElementById('btnMore')
+    });
 }
 
 async function copyPerfSummary() {
@@ -1807,8 +1854,8 @@ function renderSettings() {
 
     panel.innerHTML = `
         <div class="sg-header">
-            <h2>系统设置</h2>
-            <button class="sg-close" onclick="toggleSettings()">×</button>
+            <h2 id="settingsDialogTitle">系统设置</h2>
+            <button type="button" class="sg-close" onclick="toggleSettings()" title="关闭设置" aria-label="关闭设置">×</button>
         </div>
         <div class="sg-body">
             <div class="terminal-block" style="padding:12px 16px;">
@@ -1828,16 +1875,13 @@ function renderSettings() {
 }
 
 function toggleSettings() { 
-    const o = document.getElementById('settingsOverlay'); 
-    if(o) { 
-        if (!o.classList.contains('show')) { 
-            renderSettings(); 
-        } 
-        o.classList.toggle('show'); 
-    } 
+    toggleDialogOverlay(document.getElementById('settingsOverlay'), {
+        beforeOpen: renderSettings,
+        fallbackFocus: document.getElementById('btnSettings')
+    });
 }
 
-function formatExternalMarketTime(timestamp, includeDate = false) {
+function formatSectorTrendTime(timestamp, includeDate = false) {
     if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return '--';
     const options = includeDate
         ? { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }
@@ -1845,100 +1889,195 @@ function formatExternalMarketTime(timestamp, includeDate = false) {
     return new Intl.DateTimeFormat('zh-CN', options).format(new Date(Number(timestamp)));
 }
 
-function formatExternalSigned(value, decimals = 2, suffix = '') {
+function formatExternalLeadTradingDate(timestamp) {
+    if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return '';
+    const parts = {};
+    new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(new Date(Number(timestamp))).forEach(part => { parts[part.type] = part.value; });
+    return parts.month && parts.day ? `${parts.month}/${parts.day}` : '';
+}
+
+function formatSectorTrendSigned(value, decimals = 2, suffix = '') {
     const number = Number(value);
     if (!Number.isFinite(number)) return '--';
     const normalized = Math.abs(number) < Math.pow(10, -decimals) / 2 ? 0 : number;
     return `${normalized > 0 ? '+' : ''}${normalized.toFixed(decimals)}${suffix}`;
 }
 
-function renderExternalQuoteCards() {
-    const container = document.getElementById('externalMarketQuotes');
+function formatSectorTrendAmount(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount <= 0) return '--';
+    if (amount >= 1e8) return `${(amount / 1e8).toFixed(amount >= 1e10 ? 0 : 1)}亿`;
+    if (amount >= 1e4) return `${(amount / 1e4).toFixed(0)}万`;
+    return amount.toFixed(0);
+}
+
+function getSectorTrendMetricClass(value) {
+    const number = Number(value);
+    return number > 0 ? 'up' : (number < 0 ? 'down' : 'flat');
+}
+
+function renderExternalLeadStrip() {
+    loadExternalLeadStripCache();
+    const container = document.getElementById('externalLeadStrip');
     if (!container) return;
-    const quoteOrder = ['hstech', 'a50', 'spx', 'ndx', 'usdcnh'];
-    container.innerHTML = quoteOrder.map(key => {
-        const config = EXTERNAL_MARKET_CONFIG.ITEMS[key];
-        const item = externalMarketState.items[key];
-        if (!item) {
-            return `
-                <article class="external-quote-card">
-                    <div class="external-quote-head"><div class="external-quote-name">${escapeHTML(config.name)}</div><div class="external-quote-region">${escapeHTML(config.region)}</div></div>
-                    <div class="external-quote-value mono">--</div>
-                    <div class="external-quote-change text-dim">等待行情</div>
-                    <div class="external-quote-meta mono">行情时间 --</div>
-                </article>
-            `;
-        }
-        const changeClass = item.changePct > 0 ? 'up' : (item.changePct < 0 ? 'down' : 'flat');
-        const cacheTag = item.stale ? '<span class="external-cache-tag">缓存</span>' : '';
+    const themes = externalLeadStripState.themes.length
+        ? externalLeadStripState.themes
+        : buildExternalLeadStripThemes(externalLeadStripState.items || {});
+    container.innerHTML = themes.map(theme => {
+        const average = Number.isFinite(theme.averageChangePct)
+            ? formatSectorTrendSigned(theme.averageChangePct, 2, '%')
+            : '--';
+        const changeClass = getSectorTrendMetricClass(theme.averageChangePct);
+        const symbol = theme.state === '隔夜偏强' ? '▲' : (theme.state === '隔夜偏弱' ? '▼' : (theme.state === '隔夜分化' ? '◆' : '◇'));
+        const anchorKeys = new Set((theme.anchorEvidence || []).map(item => item.key));
+        const evidence = theme.evidence.length
+            ? theme.evidence.map(item => `${anchorKeys.has(item.key) ? '主' : '确认'} ${item.name} ${formatSectorTrendSigned(item.changePct, 2, '%')}${item.stale ? '（缓存）' : ''}`).join(' · ')
+            : '等待美股行情证据';
+        const industries = theme.industries.join('、');
+        const shortIndustries = theme.shortIndustries.join('/');
+        const title = `${theme.name}｜${evidence}｜主方向加权变化 ${average} → ${theme.direction}：${industries}｜仅作外部环境推测，待 A 股确认`;
         return `
-            <article class="external-quote-card">
-                <div class="external-quote-head"><div class="external-quote-name">${escapeHTML(item.name)}${cacheTag}</div><div class="external-quote-region">${escapeHTML(item.region)}</div></div>
-                <div class="external-quote-value mono">${item.value.toFixed(item.decimals)}</div>
-                <div class="external-quote-change mono ${changeClass}">${formatExternalSigned(item.changePct, 2, '%')} <span class="text-dim">${formatExternalSigned(item.change, item.decimals)}</span></div>
-                <div class="external-quote-meta mono" title="${escapeHTML(item.source || '公开行情')} · ${formatExternalMarketTime(item.quoteAt, true)}">行情 ${formatExternalMarketTime(item.quoteAt, true)} · ${escapeHTML(item.source || '公开行情')}</div>
+            <div class="external-env-strip-item ${theme.tone}" title="${escapeHTML(title)}" aria-label="${escapeHTML(title)}">
+                <span class="external-env-strip-theme">${escapeHTML(theme.shortName)}</span>
+                <span class="external-env-strip-change mono ${changeClass}">${symbol} ${average}</span>
+                <span class="external-env-strip-arrow">→</span>
+                <span class="external-env-strip-industries">${escapeHTML(shortIndustries)}</span>
+            </div>
+        `;
+    }).join('');
+    const metaEl = document.getElementById('externalLeadStripMeta');
+    if (metaEl) {
+        const items = Object.values(externalLeadStripState.items || {});
+        const count = items.length;
+        const tradingDates = Array.from(new Set(items.map(item => formatExternalLeadTradingDate(item.quoteAt)).filter(Boolean))).sort();
+        const tradingDateText = tradingDates.length === 1
+            ? `美股 ${tradingDates[0]} 收盘`
+            : (tradingDates.length > 1 ? '美股日期不一致' : '美股日期待确认');
+        const cachePrefix = externalLeadStripState.status === 'cached'
+            ? '缓存 · '
+            : (externalLeadStripState.status === 'partial' ? '部分缓存 · ' : '');
+        if (externalLeadStripState.status === 'loading') metaEl.textContent = count ? `更新中 · ${tradingDateText}` : '正在更新外盘';
+        else if (count) metaEl.textContent = `${cachePrefix}${tradingDateText}`;
+        else metaEl.textContent = externalLeadStripState.status === 'error' ? '外盘暂不可用' : '等待外盘';
+        const fetchedText = externalLeadStripState.fetchedAt ? `北京时间 ${formatSectorTrendTime(externalLeadStripState.fetchedAt, true)} 获取` : '尚无获取时间';
+        metaEl.title = [
+            `${count}/${Object.keys(EXTERNAL_LEAD_STRIP_CONFIG.ITEMS).length} 项外盘证据`,
+            tradingDates.length > 1 ? `交易日 ${tradingDates.join('、')}` : '',
+            fetchedText,
+            externalLeadStripState.error
+        ].filter(Boolean).join(' · ');
+    }
+    updateExternalRefreshButton();
+}
+
+function renderSectorTrendOverview() {
+    const container = document.getElementById('sectorTrendOverview');
+    if (!container) return;
+    const summary = sectorTrendState.summary || {};
+    const items = [
+        { label: '上涨趋势', value: summary.uptrendCount || 0, note: '多周期同向且上涨家数扩散', tone: 'is-positive' },
+        { label: '刚刚转强', value: summary.turningCount || 0, note: '短中期改善，仍需继续确认', tone: 'is-mixed' },
+        { label: '单日异动', value: summary.momentumCount || 0, note: '当日强势，尚未构成趋势', tone: 'is-warning' },
+        { label: '当前最强', value: summary.strongest || '--', note: `行业扫描 ${summary.totalCount || 0} 个 · 概念热点取前 ${summary.conceptCount || 0} 个`, tone: 'is-info', textValue: true }
+    ];
+    container.innerHTML = items.map(item => `
+        <article class="sector-summary-card">
+            <div class="sector-summary-label"><span class="sector-summary-dot ${item.tone}" aria-hidden="true"></span>${escapeHTML(item.label)}</div>
+            <div class="sector-summary-value ${item.textValue ? '' : 'mono'}">${escapeHTML(String(item.value))}${item.textValue ? '' : '<span>个</span>'}</div>
+            <div class="sector-summary-note">${escapeHTML(item.note)}</div>
+        </article>
+    `).join('');
+}
+
+function renderSectorTrendCandidates(board) {
+    const candidates = Array.isArray(board.candidates) ? board.candidates : [];
+    if (!candidates.length) return '<div class="sector-candidate-empty">暂无可用活跃个股</div>';
+    return candidates.map(candidate => `
+        <span class="sector-candidate-chip">
+            <span>${escapeHTML(candidate.name)}</span>
+            <span class="mono">${escapeHTML(candidate.code)} · ${formatSectorTrendSigned(candidate.changePct, 2, '%')}</span>
+        </span>
+    `).join('');
+}
+
+function renderSectorConceptHighlights() {
+    const container = document.getElementById('sectorConceptHighlights');
+    if (!container) return;
+    const concepts = Array.isArray(sectorTrendState.concepts) ? sectorTrendState.concepts : [];
+    if (!concepts.length) {
+        container.innerHTML = '<div class="sector-concept-empty">暂无概念热点数据。</div>';
+        return;
+    }
+    container.innerHTML = concepts.map((concept, index) => {
+        const leader = concept.candidates?.[0];
+        return `
+            <article class="sector-concept-row">
+                <div class="sector-concept-identity">
+                    <strong>${index + 1}. ${escapeHTML(concept.name)}</strong>
+                    <span class="mono">${escapeHTML(concept.code)}</span>
+                </div>
+                <div><span>今日</span><strong class="mono ${getSectorTrendMetricClass(concept.changePct)}">${formatSectorTrendSigned(concept.changePct, 2, '%')}</strong></div>
+                <div><span>5日</span><strong class="mono ${getSectorTrendMetricClass(concept.return5)}">${formatSectorTrendSigned(concept.return5, 2, '%')}</strong></div>
+                <div><span>10日</span><strong class="mono ${getSectorTrendMetricClass(concept.return10)}">${formatSectorTrendSigned(concept.return10, 2, '%')}</strong></div>
+                <div><span>代表股</span><strong>${leader ? `${escapeHTML(leader.name)} <span class="sector-concept-leader-code mono">${escapeHTML(leader.code)}</span>` : '--'}</strong></div>
             </article>
         `;
     }).join('');
 }
 
-function getExternalLeadCopy(theme) {
-    const threshold = theme.minEvidence || EXTERNAL_LEAD_CONFIG.MIN_SAME_DIRECTION || 2;
-    if (theme.state === '隔夜偏强') return `至少${threshold}项外盘成分同向上涨且均值超过 +1%，列为开盘观察。`;
-    if (theme.state === '隔夜偏弱') return `至少${threshold}项外盘成分同向下跌且均值低于 -1%，不转化为 A 股卖出结论。`;
-    if (theme.state === '隔夜分化') return '外盘成分未形成满足阈值的一致方向，开盘不预设涨跌。';
-    return '外盘证据尚不完整，仅保留透明的映射清单。';
-}
-
-function getExternalLeadStateSymbol(state) {
-    if (state === '隔夜偏强') return '&#9650; ';   // ▲
-    if (state === '隔夜偏弱') return '&#9660; ';   // ▼
-    if (state === '隔夜分化') return '&#9670; ';   // ◆
-    return '&#9671; ';                              // ◇ 信息不完整
-}
-
-function renderExternalLeadCards() {
-    const container = document.getElementById('externalLeadThemes');
+function renderSectorTrendCards(targetId, boards, emptyCopy) {
+    const container = document.getElementById(targetId);
     if (!container) return;
-    const themes = (externalLeadState.themes && externalLeadState.themes.length)
-        ? externalLeadState.themes
-        : buildExternalLeadThemes(externalLeadState.items || {});
-    container.innerHTML = themes.map(theme => {
-        const average = Number.isFinite(theme.averageChangePct) ? formatExternalSigned(theme.averageChangePct, 2, '%') : '--';
-        const changeClass = Number(theme.averageChangePct) > 0 ? 'up' : (Number(theme.averageChangePct) < 0 ? 'down' : 'flat');
-        const cacheTag = theme.stale ? '<span class="external-cache-tag">缓存</span>' : '';
-        const evidence = theme.evidence.length
-            ? theme.evidence.map(item => `${item.name} ${formatExternalSigned(item.changePct, 2, '%')}${item.stale ? '（缓存）' : ''}`).join(' · ')
-            : '等待外盘证据';
-        const conceptText = theme.concepts.join('、');
-        const candidateHtml = theme.candidates.map(candidate => `
-            <span class="external-lead-candidate"><span>${escapeHTML(candidate.name)}</span><span class="mono">${escapeHTML(candidate.code)}</span></span>
-        `).join('');
-        const metaText = `${theme.availableCount}/${theme.expectedCount} 项外盘证据 · ${theme.quoteAt ? `行情 ${formatExternalMarketTime(theme.quoteAt, true)}` : '行情时间 --'} · ${theme.source || '公开行情'}`;
-        const stateSymbol = getExternalLeadStateSymbol(theme.state);
+    if (!boards?.length) {
+        container.innerHTML = `<div class="sector-trend-empty">${escapeHTML(emptyCopy)}</div>`;
+        return;
+    }
+    container.innerHTML = boards.map((board, index) => {
+        const breadthText = board.memberCount
+            ? `${board.upCount}涨 / ${board.downCount}跌 / ${board.flatCount}平`
+            : '成分广度暂缺';
+        const flowText = Number.isFinite(Number(board.mainFlowPct))
+            ? `主力净流入占比 ${formatSectorTrendSigned(board.mainFlowPct, 2, '%')}`
+            : '资金数据暂缺';
         return `
-            <article class="external-lead-card ${theme.tone}">
-                <div class="external-lead-head">
-                    <div>
-                        <div class="external-lead-name">${escapeHTML(theme.name)}${cacheTag}</div>
-                        <div class="external-lead-state">${stateSymbol}${escapeHTML(theme.state)}</div>
+            <article class="sector-trend-card" aria-label="${escapeHTML(`${board.name}，${board.trendLabel}，趋势分 ${board.score}`)}">
+                <div class="sector-trend-card-head">
+                    <div class="sector-trend-identity">
+                        <div class="sector-trend-eyebrow"><span>${escapeHTML(board.typeLabel)}</span><span class="mono">${escapeHTML(board.code)}</span></div>
+                        <h3>${index + 1}. ${escapeHTML(board.name)}</h3>
                     </div>
-                    <div class="external-lead-average ${changeClass}"><strong class="mono">${average}</strong><span>成分均值</span></div>
+                    <div class="sector-trend-score"><strong class="mono">${board.score}</strong><span>趋势分</span></div>
                 </div>
-                <div class="external-lead-copy">${escapeHTML(getExternalLeadCopy(theme))}</div>
-                <div class="external-lead-detail">
-                    <span>外盘证据</span>
-                    <strong class="mono" title="${escapeHTML(evidence)}">${escapeHTML(evidence)}</strong>
+                <div class="sector-trend-metrics">
+                    <div><span>今日</span><strong class="mono ${getSectorTrendMetricClass(board.changePct)}">${formatSectorTrendSigned(board.changePct, 2, '%')}</strong></div>
+                    <div><span>5日</span><strong class="mono ${getSectorTrendMetricClass(board.return5)}">${formatSectorTrendSigned(board.return5, 2, '%')}</strong></div>
+                    <div><span>10日</span><strong class="mono ${getSectorTrendMetricClass(board.return10)}">${formatSectorTrendSigned(board.return10, 2, '%')}</strong></div>
+                    <div><span>60日</span><strong class="mono ${getSectorTrendMetricClass(board.return60)}">${formatSectorTrendSigned(board.return60, 2, '%')}</strong></div>
+                    <div><span>5日相对</span><strong class="mono ${getSectorTrendMetricClass(board.relative5)}">${formatSectorTrendSigned(board.relative5, 2, '%')}</strong></div>
+                    <div><span>上涨覆盖</span><strong class="mono">${Number(board.breadthPct).toFixed(0)}%</strong></div>
                 </div>
-                <div class="external-lead-detail">
-                    <span>A 股可观察概念</span>
-                    <strong>${escapeHTML(conceptText)}</strong>
+                <div class="sector-trend-evidence">
+                    <span>${escapeHTML(breadthText)}</span>
+                    <span>成交额 ${escapeHTML(formatSectorTrendAmount(board.amount))}</span>
+                    <span class="${getSectorTrendMetricClass(board.mainFlowPct)}">${escapeHTML(flowText)}</span>
                 </div>
-                <div class="external-lead-candidates">
-                    <span>代表标的</span>
-                    <div>${candidateHtml}</div>
+                ${board.etfMappingChecked ? `
+                    <div class="sector-trend-etf">
+                        <span>${board.etfMapping?.relation === 'related' ? '相近参考（非直接对应）' : '官方指数 / 参考 ETF'}</span>
+                        ${board.etfMapping
+                            ? `<strong>${escapeHTML(board.etfMapping.indexName)}${board.etfMapping.indexCode ? ` <em class="mono">${escapeHTML(board.etfMapping.indexCode)}</em>` : ''}</strong><strong>${escapeHTML(board.etfMapping.etfName)} <em class="mono">${escapeHTML(board.etfMapping.etfCode)}</em></strong>`
+                            : '<strong class="is-unmapped">暂无稳定对应 ETF</strong>'}
+                    </div>
+                ` : ''}
+                <div class="sector-trend-candidates">
+                    <span>当前活跃个股</span>
+                    <div>${renderSectorTrendCandidates(board)}</div>
                 </div>
-                <div class="external-lead-meta mono" title="${escapeHTML(metaText)}">${escapeHTML(metaText)} · <span>待 A 股开盘确认</span></div>
+                <div class="sector-trend-invalid"><strong>失效观察</strong><span>${escapeHTML(board.invalidCondition || '等待更完整数据后再判断。')}</span></div>
             </article>
         `;
     }).join('');
@@ -1947,36 +2086,29 @@ function renderExternalLeadCards() {
 function updateExternalRefreshButton() {
     const refreshBtn = document.getElementById('externalRefreshBtn');
     if (!refreshBtn) return;
-    const isLoading = externalMarketState.status === 'loading' || externalLeadState.status === 'loading';
+    const isLoading = sectorTrendState.status === 'loading' || externalLeadStripState.status === 'loading';
     refreshBtn.disabled = isLoading;
     const icon = refreshBtn.querySelector('svg');
     const label = refreshBtn.querySelector('span');
     if (icon) icon.classList.toggle('spin', isLoading);
-    if (label) label.textContent = isLoading ? '正在更新' : '更新快照';
+    if (label) label.textContent = isLoading ? '正在扫描' : '重新扫描';
 }
 
-function getExternalWorkspaceSnapshotStatus() {
-    const statuses = [externalMarketState.status, externalLeadState.status];
-    const error = [externalMarketState.error, externalLeadState.error].filter(Boolean).join('；');
-    if (statuses.includes('loading')) return { key: 'loading', error };
-    if (statuses.every(status => status === 'ready')) return { key: 'ready', error: '' };
-    if (statuses.every(status => status === 'error')) return { key: 'error', error };
-    if (statuses.every(status => status === 'idle')) return { key: 'idle', error: '' };
-    if (statuses.every(status => status === 'cached')) return { key: 'cached', error };
-    return { key: 'partial', error: error || '部分外部快照尚未更新' };
+function getSectorTrendWorkspaceStatus() {
+    return { key: sectorTrendState.status || 'idle', error: sectorTrendState.error || '' };
 }
 
-function renderExternalWorkspaceStatus() {
-    const statusEl = document.getElementById('externalMarketStatus');
+function renderSectorTrendWorkspaceStatus() {
+    const statusEl = document.getElementById('sectorTrendStatus');
     if (!statusEl) return;
-    const snapshotStatus = getExternalWorkspaceSnapshotStatus();
+    const snapshotStatus = getSectorTrendWorkspaceStatus();
     const statusMap = {
-        idle: { label: '等待更新', tone: 'data-status-info', tooltip: '进入页面后将请求外部环境和隔夜主题行情' },
-        loading: { label: '正在更新', tone: 'data-status-info', tooltip: '正在批量更新外部环境和隔夜主题行情，请勿重复操作' },
-        ready: { label: '已更新', tone: 'data-status-ok', tooltip: '外部环境和隔夜主题行情已完成本轮更新' },
-        partial: { label: '部分更新', tone: 'data-status-warn', tooltip: snapshotStatus.error || '部分行情沿用最近缓存' },
-        cached: { label: '缓存快照', tone: 'data-status-warn', tooltip: snapshotStatus.error || '外部接口暂不可用，当前显示最近缓存' },
-        error: { label: '暂不可用', tone: 'data-status-warn', tooltip: snapshotStatus.error || '外部行情暂不可用' }
+        idle: { label: '等待扫描', tone: 'data-status-info', tooltip: '进入页面后将扫描 A 股行业与概念板块' },
+        loading: { label: '正在扫描', tone: 'data-status-info', tooltip: '正在计算板块多周期强度并补充活跃个股' },
+        ready: { label: '扫描完成', tone: 'data-status-ok', tooltip: '行业板块已完成趋势排名，概念板块已取今日热点首100' },
+        partial: { label: '部分完成', tone: 'data-status-warn', tooltip: snapshotStatus.error || '部分板块或活跃个股数据暂缺' },
+        cached: { label: '缓存结果', tone: 'data-status-info', tooltip: snapshotStatus.error || '公开接口暂不可用，当前显示最近扫描结果' },
+        error: { label: '暂不可用', tone: 'data-status-warn', tooltip: snapshotStatus.error || '板块行情暂不可用' }
     };
     const status = statusMap[snapshotStatus.key] || statusMap.idle;
     if (statusEl.dataset.currentStatusKey === snapshotStatus.key) return;
@@ -1988,48 +2120,28 @@ function renderExternalWorkspaceStatus() {
     if (label) label.textContent = status.label;
 }
 
-function renderExternalMarketSnapshot() {
-    loadExternalMarketCache();
-    renderExternalQuoteCards();
-
-    const metaEl = document.getElementById('externalSnapshotMeta');
-    renderExternalWorkspaceStatus();
+function renderSectorTrendSnapshot() {
+    loadSectorTrendCache();
+    renderExternalLeadStrip();
+    renderSectorTrendOverview();
+    renderSectorConceptHighlights();
+    renderSectorTrendCards('sectorTrendLeaders', sectorTrendState.groups.uptrend, '当前没有板块同时满足多周期趋势和上涨家数条件。');
+    renderSectorTrendCards('sectorTrendTurning', sectorTrendState.groups.turning, '当前没有明显的刚转强板块。');
+    renderSectorTrendCards('sectorTrendMomentum', sectorTrendState.groups.momentum, '当前没有需要单独提醒的单日异动。');
+    renderSectorTrendWorkspaceStatus();
+    const metaEl = document.getElementById('sectorTrendMeta');
     if (metaEl) {
-        metaEl.textContent = externalMarketState.fetchedAt
-            ? `本页更新 ${formatExternalMarketTime(externalMarketState.fetchedAt, true)} · ${externalMarketState.source || '公开行情'}`
-            : '尚无可用快照';
-    }
-    updateExternalRefreshButton();
-}
-
-function renderExternalLeadSnapshot() {
-    loadExternalLeadCache();
-    if (!externalLeadState.themes.length) externalLeadState.themes = buildExternalLeadThemes(externalLeadState.items || {});
-    renderExternalLeadCards();
-    renderExternalWorkspaceStatus();
-
-    const metaEl = document.getElementById('externalLeadMeta');
-    if (metaEl) {
-        const prefix = externalLeadState.status === 'cached' ? '缓存于' : '本轮更新';
-        const timestamp = externalLeadState.fetchedAt ? formatExternalMarketTime(externalLeadState.fetchedAt, true) : '--';
-        const count = Object.keys(externalLeadState.items || {}).length;
-        metaEl.textContent = count
-            ? `${count}/${Object.keys(EXTERNAL_LEAD_CONFIG.ITEMS).length} 项外盘证据 · ${prefix} ${timestamp} · ${externalLeadState.source || '公开行情'}`
-            : (externalLeadState.status === 'loading' ? '正在更新隔夜外盘证据' : '等待隔夜外盘证据');
-        metaEl.title = externalLeadState.error || metaEl.textContent;
+        const prefix = sectorTrendState.status === 'cached' ? '缓存于' : '本轮扫描';
+        const timestamp = sectorTrendState.fetchedAt ? formatSectorTrendTime(sectorTrendState.fetchedAt, true) : '--';
+        metaEl.textContent = sectorTrendState.boards.length
+            ? `${prefix} ${timestamp} · ${sectorTrendState.source || '公开板块行情'} · 5/10/60日趋势`
+            : (sectorTrendState.status === 'loading' ? '正在扫描板块趋势' : '等待首次扫描');
+        metaEl.title = sectorTrendState.error || metaEl.textContent;
     }
     updateExternalRefreshButton();
 }
 
 let externalReturnSelection = null;
-
-async function refreshExternalEnvironmentSnapshots(options = {}) {
-    const [market, leads] = await Promise.all([
-        refreshExternalMarketSnapshot(options),
-        refreshExternalLeadSnapshot(options)
-    ]);
-    return { market, leads };
-}
 
 function setPrimaryWorkspace(tab) {
     const marketWorkspace = document.getElementById('marketWorkspace');
@@ -2053,11 +2165,13 @@ function openExternalWorkspace() {
     state.mode = 'external';
     state.isFrozen = false;
     setPrimaryWorkspace('external');
-    loadExternalMarketCache();
-    loadExternalLeadCache();
-    renderExternalMarketSnapshot();
-    renderExternalLeadSnapshot();
-    refreshExternalEnvironmentSnapshots({ reason: 'tab-enter' });
+    loadSectorTrendCache();
+    loadExternalLeadStripCache();
+    renderSectorTrendSnapshot();
+    Promise.all([
+        refreshSectorTrendSnapshot({ reason: 'tab-enter' }),
+        refreshExternalLeadStripSnapshot({ reason: 'tab-enter' })
+    ]);
 }
 
 function openMarketWorkspace(tab) {
@@ -2090,24 +2204,22 @@ function switchPrimaryTab(tab) {
 }
 
 async function handleExternalRefresh() {
-    loadExternalMarketCache();
-    loadExternalLeadCache();
-    const remaining = Math.max(
-        getExternalMarketCooldownRemaining(),
-        getExternalLeadCooldownRemaining()
-    );
+    loadSectorTrendCache();
+    const remaining = getSectorTrendCooldownRemaining();
     if (remaining > 0) {
         showToast(`为保护行情接口，请 ${Math.ceil(remaining / 1000)} 秒后再更新。`, 'info', 2200);
-        return { market: externalMarketState, leads: externalLeadState };
+        return sectorTrendState;
     }
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
         showToast('另一页面正在负责行情更新，当前显示本地快照。', 'info', 2400);
-        return { market: externalMarketState, leads: externalLeadState };
+        return sectorTrendState;
     }
-    const result = await refreshExternalEnvironmentSnapshots({ reason: 'manual' });
-    const statuses = [result.market.status, result.leads.status];
-    if (statuses.every(status => status === 'ready')) showToast('外部环境和隔夜主题已更新。', 'success', 1800);
-    else if (statuses.some(status => ['partial', 'cached', 'error'].includes(status))) showToast('部分行情暂未更新，已保留最近快照。', 'warn', 2600);
+    const [result] = await Promise.all([
+        refreshSectorTrendSnapshot({ reason: 'manual' }),
+        refreshExternalLeadStripSnapshot({ reason: 'manual' })
+    ]);
+    if (result.status === 'ready') showToast('板块趋势扫描已完成。', 'success', 1800);
+    else if (['partial', 'cached', 'error'].includes(result.status)) showToast('部分板块数据暂未更新，已保留最近结果。', 'warn', 2600);
     return result;
 }
 
@@ -2268,7 +2380,10 @@ async function init() {
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
         if (state.tab === 'external') {
-            refreshExternalEnvironmentSnapshots({ reason: 'visibility' });
+            Promise.all([
+                refreshSectorTrendSnapshot({ reason: 'visibility' }),
+                refreshExternalLeadStripSnapshot({ reason: 'visibility' })
+            ]);
             return;
         }
         if (!isMarketOpen()) return;

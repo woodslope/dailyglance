@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260808-01"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260809-05"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260808-01">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260809-05">
 </head>
 <body>
 
@@ -35,7 +35,7 @@
 <div id="loading">系统同步中...</div>
 
 <div id="customModal">
-    <div class="custom-modal-box">
+    <div class="custom-modal-box" role="dialog" aria-modal="true" aria-describedby="customModalMsg">
         <div id="customModalMsg" class="custom-modal-msg"></div>
         <div class="custom-modal-btns">
             <button id="customModalBtnCancel" class="custom-modal-btn btn-cancel">取消</button>
@@ -45,14 +45,14 @@
 </div>
 
 <div id="settingsOverlay">
-    <div id="settingsPanel"></div>
+    <div id="settingsPanel" role="dialog" aria-modal="true" aria-labelledby="settingsDialogTitle"></div>
 </div>
 
 <div id="helpOverlay">
-    <div id="helpPanel">
+    <div id="helpPanel" role="dialog" aria-modal="true" aria-labelledby="helpDialogTitle">
         <div class="sg-header">
-            <h2>系统说明与逻辑</h2>
-            <button class="sg-close" onclick="toggleHelp()">×</button>
+            <h2 id="helpDialogTitle">系统说明与逻辑</h2>
+            <button type="button" class="sg-close" onclick="toggleHelp()" title="关闭帮助" aria-label="关闭帮助">×</button>
         </div>
         <div class="sg-body">
             <div class="terminal-block no-bg">
@@ -77,7 +77,7 @@
 </div>
 
 <div id="perfOverlay">
-    <div id="perfPanel"></div>
+    <div id="perfPanel" role="dialog" aria-modal="true" aria-labelledby="perfDialogTitle"></div>
 </div>
 
 <header class="header">
@@ -91,7 +91,7 @@
         </div>
     </div>
     <div class="header-center" id="mainTabs">
-        <button class="nav-btn" data-tab="external">外部环境</button>
+        <button class="nav-btn" data-tab="external">板块趋势</button>
         <button class="nav-btn active" data-tab="index">大盘数据</button>
         <button class="nav-btn" data-tab="stock">自选股池</button>
     </div>
@@ -209,59 +209,101 @@
     <div class="external-shell">
         <div class="external-page-head">
             <div class="external-page-copy">
-                <div class="external-kicker">GLOBAL CONTEXT</div>
-                <h1>隔夜外盘先行观察</h1>
+                <div class="external-kicker">A-SHARE SECTOR RADAR</div>
+                <h1>板块趋势</h1>
             </div>
             <div class="external-page-actions">
-                <div id="externalMarketStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="外部环境行情尚未加载">
+                <div id="sectorTrendStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="板块趋势尚未扫描">
                     <span class="data-status-dot"></span>
-                    <span class="data-status-label">等待更新</span>
+                    <span class="data-status-label">等待扫描</span>
                 </div>
-                <button id="externalRefreshBtn" type="button" class="icon-btn icon-btn-label" onclick="handleExternalRefresh()" title="更新外部环境和隔夜主题快照">
+                <button id="externalRefreshBtn" type="button" class="icon-btn icon-btn-label" onclick="handleExternalRefresh()" title="重新扫描行业与概念板块">
                     <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                         <path d="M41 13V5M41 5H33M41 5L34.5 11.5C31.8 8.8 28.1 7 24 7C15.7 7 9 13.7 9 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                         <path d="M7 35V43M7 43H15M7 43L13.5 36.5C16.2 39.2 19.9 41 24 41C32.3 41 39 34.3 39 26" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
-                    <span>更新快照</span>
+                    <span>重新扫描</span>
                 </button>
             </div>
         </div>
 
-        <section aria-labelledby="externalLeadTitle">
-            <div class="external-section-head">
-                <div>
-                    <div class="external-section-kicker">外盘 → A股</div>
-                    <h2 id="externalLeadTitle">隔夜主题映射</h2>
-                </div>
-                <div id="externalLeadMeta" class="external-snapshot-meta mono">等待隔夜外盘证据</div>
+        <section class="external-env-strip" aria-labelledby="externalLeadStripTitle">
+            <div class="external-env-strip-label">
+                <strong id="externalLeadStripTitle">外部环境推测</strong>
+                <span id="externalLeadStripMeta" class="mono">等待外盘</span>
             </div>
-            <div id="externalLeadThemes" class="external-lead-grid" aria-live="polite"></div>
+            <div id="externalLeadStrip" class="external-env-strip-items" aria-live="polite"></div>
+            <div class="external-env-strip-boundary">待 A 股确认</div>
         </section>
 
-        <section aria-labelledby="externalQuotesTitle">
+        <section aria-labelledby="sectorOverviewTitle">
             <div class="external-section-head">
                 <div>
-                    <div class="external-section-kicker">行情快照</div>
-                    <h2 id="externalQuotesTitle">五项外部观察</h2>
+                    <div class="external-section-kicker">全市场扫描</div>
+                    <h2 id="sectorOverviewTitle">当前板块状态</h2>
                 </div>
-                <div id="externalSnapshotMeta" class="external-snapshot-meta mono">尚无快照</div>
+                <div id="sectorTrendMeta" class="external-snapshot-meta mono">等待首次扫描</div>
             </div>
-            <div id="externalMarketQuotes" class="external-quote-grid" aria-live="polite"></div>
+            <div id="sectorTrendOverview" class="sector-summary-grid" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="sectorConceptTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">今日热点</div>
+                    <h2 id="sectorConceptTitle">概念热点</h2>
+                </div>
+                <div class="external-snapshot-meta mono">只取今日涨幅前 100 个 · 不纳入行业趋势统计</div>
+            </div>
+            <div id="sectorConceptHighlights" class="sector-concept-list" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="sectorLeadersTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">多周期同向</div>
+                    <h2 id="sectorLeadersTitle">上涨趋势板块</h2>
+                </div>
+                <div class="external-snapshot-meta mono">5日、10日、60日走强 · 上涨家数扩散</div>
+            </div>
+            <div id="sectorTrendLeaders" class="sector-trend-grid" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="sectorTurningTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">趋势改善</div>
+                    <h2 id="sectorTurningTitle">刚刚转强</h2>
+                </div>
+                <div class="external-snapshot-meta mono">短中期强度改善 · 尚需继续确认</div>
+            </div>
+            <div id="sectorTrendTurning" class="sector-trend-grid sector-trend-grid-compact" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="sectorMomentumTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">避免追高误判</div>
+                    <h2 id="sectorMomentumTitle">单日异动</h2>
+                </div>
+                <div class="external-snapshot-meta mono">当日强势 ≠ 已形成上涨趋势</div>
+            </div>
+            <div id="sectorTrendMomentum" class="sector-trend-grid sector-trend-grid-compact" aria-live="polite"></div>
         </section>
 
         <div class="external-boundary-note">
             <strong>使用边界</strong>
-            <span>本页外盘行情、主题映射和代表标的仅作只读观察，不参与大盘八指数、建仓门禁、仓位、B/S 或任何策略计算；“待 A 股开盘确认”不是必涨承诺，公开行情可能延迟，缓存状态会明确标记。</span>
+            <span>本页仅根据公开行情对行业与概念板块做趋势排名；顶部外部环境推测只映射美股主题可能影响的行业，必须等待 A 股确认。上述内容不参与大盘八指数、核心门禁、个股仓位、B/S 或收益计算；活跃个股只作只读观察，不代表买入建议。</span>
         </div>
         <div class="chart-copyright-line external-copyright">© 2026 LINPO LAB · 仅供研究观察，不构成投资建议</div>
     </div>
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/01-config-ui.js?v=20260808-01"></script>
-<script src="assets/js/02-data.js?v=20260808-01"></script>
-<script src="assets/js/03-calculations.js?v=20260808-01"></script>
-<script src="assets/js/04-render.js?v=20260808-01"></script>
-<script src="assets/js/05-app.js?v=20260808-01"></script>
+<script src="assets/js/01-config-ui.js?v=20260809-05"></script>
+<script src="assets/js/02-data.js?v=20260809-05"></script>
+<script src="assets/js/03-calculations.js?v=20260809-05"></script>
+<script src="assets/js/04-render.js?v=20260809-05"></script>
+<script src="assets/js/05-app.js?v=20260809-05"></script>
 </body>
 </html>
