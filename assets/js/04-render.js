@@ -54,6 +54,24 @@ const freezePlugin = {
     beforeEvent: () => true
 };
 
+function getStrategyShortLabel(strategyName = state.strategy) {
+    return ({
+        '稳健趋势型': '稳健',
+        '波段抄底型': '波段',
+        '突破追涨型': '突破',
+        '综合全能型': '综合'
+    })[strategyName] || String(strategyName || '').trim();
+}
+
+function getConclusionTitleHTML(isIndexMode) {
+    const titleText = isIndexMode ? '大盘每日结论' : '个股每日结论';
+    const strategyLabel = getStrategyShortLabel();
+    const strategyHtml = strategyLabel
+        ? `<span class="conclusion-strategy-label">（${escapeHTML(strategyLabel)}）</span>`
+        : '';
+    return `${titleText}${strategyHtml}`;
+}
+
 // 成交量柱 plugin：用 canvas 手绘，像素级对齐 K 线蜡烛
 const volumeBarPlugin = {
     id: 'volumeBarPlugin',
@@ -1009,7 +1027,7 @@ function generateAnalysisHTML(idx, full, meta) {
     else if (['积极建仓', '顺势加仓', '顺势抱单', '积极持有'].includes(a)) { panelClass = 'panel-bull'; }
 
     const cooldownHtml = meta.inCooldown ? `<div style="position:absolute; top:0; right:0; background:var(--yellow); color:#000; font-size:9px; font-weight:800; padding:2px 8px; border-bottom-left-radius:6px; border-top-right-radius:7px;">防守冷静期</div>` : '';
-    const titleText = isIndexMode ? '大盘每日结论' : '个股每日结论';
+    const titleHtml = getConclusionTitleHTML(isIndexMode);
     const evidenceTitle1 = isIndexMode ? '核心市场环境' : '核心建仓门禁';
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
     const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
@@ -1031,7 +1049,7 @@ function generateAnalysisHTML(idx, full, meta) {
             ${cooldownHtml}
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <div class="conclusion-title-row">
-                    <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleText}</div>
+                    <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleHtml}</div>
                 </div>
                 <div class="kicker text-main conclusion-state-kicker">${escapeHTML(noviceSummary.state)}</div>
             </div>
@@ -1226,11 +1244,11 @@ function updateSidebarPriceOnly() {
 
 function renderAnalysisPendingHTML(message = '信号正在同步，结论生成后会自动恢复。') {
     const isIndexMode = state.mode === 'index';
-    const titleText = isIndexMode ? '大盘每日结论' : '个股每日结论';
+    const titleHtml = getConclusionTitleHTML(isIndexMode);
     return `
         <div class="action-panel panel-neutral analysis-pending-panel">
             <div class="conclusion-title-row">
-                <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleText}</div>
+                <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleHtml}</div>
             </div>
             <div class="action-line">
                 <div class="action-name text-dim">分析同步中</div>
@@ -1267,7 +1285,7 @@ function renderActiveSelectionStatus(status = 'loading') {
         ? '没有可用的确认历史 K 线，暂时无法生成行情图和策略结论。'
         : '正在同步确认历史 K 线。';
     const isIndexMode = state.mode === 'index';
-    const titleText = isIndexMode ? '大盘每日结论' : '个股每日结论';
+    const titleHtml = getConclusionTitleHTML(isIndexMode);
     const priceHtml = `
         <div class="terminal-block price-panel">
             <div class="header-meta-row">
@@ -1282,7 +1300,7 @@ function renderActiveSelectionStatus(status = 'loading') {
     const analysisHtml = `
         <div class="action-panel panel-neutral analysis-pending-panel">
             <div class="conclusion-title-row">
-                <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleText}</div>
+                <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleHtml}</div>
             </div>
             <div class="action-line">
                 <div class="action-name text-dim">${stateText}</div>

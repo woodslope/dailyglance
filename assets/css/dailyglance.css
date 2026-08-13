@@ -459,6 +459,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 .data-status-info .data-status-dot { background: var(--blue); }
 .data-status-warn .data-status-dot { background: var(--yellow); }
 .conclusion-title-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.conclusion-strategy-label { margin-left: var(--space-1); color: var(--text-dim); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; }
 .conclusion-state-kicker { flex-shrink: 0; }
 .data-status-pill::after {
     content: attr(data-tooltip);
