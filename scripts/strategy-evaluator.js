@@ -31,6 +31,16 @@ function stableHash(value) {
     return crypto.createHash('sha256').update(JSON.stringify(normalize(value))).digest('hex');
 }
 
+function getBaselinePolicyContract(policy) {
+    return {
+        contractVersion: 1,
+        baselineStartIndex: policy.baselineStartIndex,
+        warmupTradingDays: policy.warmupTradingDays,
+        temporalWindows: policy.temporalWindows,
+        costScenarios: policy.costScenarios
+    };
+}
+
 function hashFile(file) {
     return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -291,14 +301,16 @@ function evaluateCandidateScreen(input) {
             checks: []
         };
     }
-    const rules = policy.gates[candidateClass] || policy.gates.performance;
+    const rules = policy.gates[candidateClass];
+    if (!rules) throw new Error(`unknown candidate class: ${candidateClass}`);
     const checks = [];
     const add = (id, pass, actual, expected) => checks.push({ id, pass: !!pass, actual, expected, blocking: true });
     const minimumAffected = 1;
 
     add('candidate_changes_decision', affectedDecisionDays >= minimumAffected, affectedDecisionDays, `>= ${minimumAffected}`);
     if (candidateClass === 'risk_control') {
-        add('drawdown_non_regression', overallDelta.avgMaxDrawdown <= 0, overallDelta.avgMaxDrawdown, '<= 0');
+        add('drawdown_improvement', overallDelta.avgMaxDrawdown <= -rules.minimumDrawdownImprovement,
+            overallDelta.avgMaxDrawdown, `<= -${rules.minimumDrawdownImprovement}`);
         add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
     } else if (candidateClass === 'efficiency') {
         add('turnover_non_regression', overallDelta.turnoverRatio != null && overallDelta.turnoverRatio <= 0, overallDelta.turnoverRatio, '<= 0');
@@ -307,17 +319,23 @@ function evaluateCandidateScreen(input) {
     } else if (candidateClass === 'semantic_correctness') {
         add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
+    } else if (candidateClass === 'signal_timing') {
+        add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
+        add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
+        add('turnover_guardrail', overallDelta.turnoverRatio == null || overallDelta.turnoverRatio <= rules.maximumTurnoverIncreaseRatio,
+            overallDelta.turnoverRatio, `<= ${rules.maximumTurnoverIncreaseRatio}`);
     } else {
         add('return_non_regression', overallDelta.avgStrategyRet >= 0, overallDelta.avgStrategyRet, '>= 0');
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
     }
 
     const passes = checks.every(check => check.pass);
+    const passStatus = candidateClass === 'signal_timing' ? 'ready_for_product_review' : 'continue_full';
     return {
         candidateClass,
-        status: affectedDecisionDays < minimumAffected ? 'insufficient_evidence' : (passes ? 'continue_full' : 'reject'),
+        status: affectedDecisionDays < minimumAffected ? 'insufficient_evidence' : (passes ? passStatus : 'reject'),
         checks,
-        formalAdmissionRequired: true
+        formalAdmissionRequired: candidateClass !== 'signal_timing'
     };
 }
 
@@ -336,14 +354,17 @@ function evaluateCandidateGates(input) {
             }]
         };
     }
-    const rules = policy.gates[candidateClass] || policy.gates.performance;
+    const rules = policy.gates[candidateClass];
+    if (!rules) throw new Error(`unknown candidate class: ${candidateClass}`);
     const checks = [];
     const add = (id, pass, actual, expected, blocking = true) => checks.push({ id, pass: !!pass, actual, expected, blocking });
     const positiveTemporal = temporalDeltas.filter(delta => {
         if (!delta) return false;
         if (candidateClass === 'risk_control') return delta.avgMaxDrawdown <= -rules.minimumDrawdownImprovement;
         if (candidateClass === 'efficiency') return delta.turnoverRatio <= -rules.minimumTurnoverReductionRatio;
-        if (candidateClass === 'semantic_correctness') return delta.avgStrategyRet >= -rules.maximumReturnRegression && delta.avgMaxDrawdown <= rules.maximumDrawdownRegression;
+        if (candidateClass === 'semantic_correctness' || candidateClass === 'signal_timing') {
+            return delta.avgStrategyRet >= -rules.maximumReturnRegression && delta.avgMaxDrawdown <= rules.maximumDrawdownRegression;
+        }
         return delta.avgStrategyRet >= 0;
     }).length;
     const improvedSymbols = symbolDeltas.filter(item => (item.delta?.avgStrategyRet || 0) >= 0).length;
@@ -359,13 +380,17 @@ function evaluateCandidateGates(input) {
     } else if (candidateClass === 'semantic_correctness') {
         add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
+    } else if (candidateClass === 'signal_timing') {
+        add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
+        add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
     } else {
         add('return_improvement', overallDelta.avgStrategyRet >= rules.minimumReturnDelta, overallDelta.avgStrategyRet, `>= ${rules.minimumReturnDelta}`);
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
     }
 
-    add('temporal_stability', positiveTemporal >= policy.gates.minimumPositiveTemporalWindows, positiveTemporal, `>= ${policy.gates.minimumPositiveTemporalWindows}`);
-    if (candidateClass !== 'semantic_correctness') {
+    add('temporal_stability', positiveTemporal >= policy.gates.minimumPositiveTemporalWindows, positiveTemporal,
+        `>= ${policy.gates.minimumPositiveTemporalWindows}`, candidateClass !== 'signal_timing');
+    if (candidateClass !== 'semantic_correctness' && candidateClass !== 'signal_timing') {
         add('symbol_stability', improvedSymbolRatio >= policy.gates.minimumImprovedSymbolRatio, round(improvedSymbolRatio), `>= ${policy.gates.minimumImprovedSymbolRatio}`);
     }
     if (Number.isFinite(rules.maximumTurnoverIncreaseRatio)) {
@@ -389,20 +414,23 @@ function evaluateCandidateGates(input) {
         }, {
             returnDelta: `>= -${policy.gates.cohort.maximumReturnRegression}`,
             drawdownDelta: `<= ${policy.gates.cohort.maximumDrawdownRegression}`
-        });
+        }, candidateClass !== 'signal_timing');
     }
 
     if (stressDelta) {
         add('cost_stress', stressDelta.avgStrategyRet >= -policy.gates.stress.maximumAdvantageRegression,
-            stressDelta.avgStrategyRet, `>= -${policy.gates.stress.maximumAdvantageRegression}`);
+            stressDelta.avgStrategyRet, `>= -${policy.gates.stress.maximumAdvantageRegression}`, candidateClass !== 'signal_timing');
     }
     const blockingChecks = checks.filter(check => check.blocking);
     const hasEvidence = affectedDecisionDays >= policy.gates.minimumAffectedDecisionDays
         && completedTrades >= policy.gates.minimumCompletedTrades;
     const pass = blockingChecks.every(check => check.pass);
+    const status = candidateClass === 'signal_timing'
+        ? (pass ? 'ready_for_product_review' : 'reject')
+        : (pass && hasEvidence ? 'recommend_shadow' : (pass ? 'insufficient_evidence' : 'reject'));
     return {
         candidateClass,
-        status: pass && hasEvidence ? 'recommend_shadow' : (pass ? 'insufficient_evidence' : 'reject'),
+        status,
         checks
     };
 }
@@ -412,6 +440,7 @@ module.exports = {
     mean,
     median,
     stableHash,
+    getBaselinePolicyContract,
     hashFile,
     summarizePerformance,
     summarizeEvaluationRows,

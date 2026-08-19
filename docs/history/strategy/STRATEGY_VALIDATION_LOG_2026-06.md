@@ -1,6 +1,6 @@
 # 策略历史验证记录（2026-06）
 
-本文从 `docs/strategy/STRATEGY_DECISION_RULES.md` 迁出，只作为历史验证证据。当前策略规则、信号状态、候选池和特别注意点以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
+本文从 `docs/strategy/STRATEGY_DECISION_RULES.md` 迁出，只作为历史验证证据。当前生产策略、信号状态和 `B/S` 契约以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
 
 ## 样本回测验证记录
 
@@ -322,7 +322,7 @@
 
 ## 2026-06-28 候选批量初筛与 ATR 深挖补充
 
-本节从 `docs/strategy/STRATEGY_VALIDATION_GUIDE.md` 迁出，只作为历史验证证据。当前候选池和接入结论以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
+本节从 `docs/strategy/STRATEGY_VALIDATION_GUIDE.md` 迁出，只作为历史验证证据。当前生产策略和接入结论以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
 
 ### 候选批量初筛
 

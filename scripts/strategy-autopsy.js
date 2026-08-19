@@ -2,7 +2,8 @@
 const fs = require('fs'); const path = require('path'); const vm = require('vm');
 const ROOT = path.resolve(__dirname, '..');
 const CACHE_DIR = path.join(ROOT, '.local', 'strategy-cache');
-const OUT = path.join(ROOT, 'docs', 'strategy', 'STRATEGY_AUTOPSY.md');
+const REPORT_DIR = path.join(ROOT, '.local', 'strategy-reports');
+const OUT = path.join(REPORT_DIR, 'strategy-autopsy-wave-bottom.md');
 
 process.stdout.write('🔬 加载源码...\n');
 const configSrc = fs.readFileSync(path.join(ROOT, 'assets/js/01-config-ui.js'), 'utf8');
@@ -296,5 +297,6 @@ report += `- 失败组均量比 ${(failed.reduce((s,e)=>s+e.volRatio,0)/failed.l
 
 report += '---\n> 由 `scripts/strategy-autopsy.js` 生成。仅用于研究，不构成投资建议。\n';
 
+fs.mkdirSync(REPORT_DIR, { recursive: true });
 fs.writeFileSync(OUT, report, 'utf8');
 process.stdout.write(`\n✅ 报告: ${OUT}\n`);

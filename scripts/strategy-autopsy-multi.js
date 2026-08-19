@@ -10,7 +10,8 @@ if (!['稳健趋势型','波段抄底型','突破追涨型','综合全能型'].i
     process.exit(1);
 }
 
-const OUT = path.join(ROOT, 'docs', 'strategy', `STRATEGY_AUTOPSY_${STRATEGY_NAME}.md`);
+const REPORT_DIR = path.join(ROOT, '.local', 'strategy-reports');
+const OUT = path.join(REPORT_DIR, `strategy-autopsy-${STRATEGY_NAME}.md`);
 process.stdout.write(`🔬 尸检: ${STRATEGY_NAME}\n`);
 
 const configSrc = fs.readFileSync(path.join(ROOT, 'assets/js/01-config-ui.js'), 'utf8');
@@ -221,5 +222,6 @@ r += `- 失败组${(failed.filter(e=>e.dd60<-0.2).length/failed.length*100).toFi
 
 r += '\n---\n> 由 `scripts/strategy-autopsy-multi.js` 生成。仅用于研究。\n';
 
+fs.mkdirSync(REPORT_DIR, { recursive: true });
 fs.writeFileSync(OUT, r, 'utf8');
 process.stdout.write(`✅ ${OUT}\n`);

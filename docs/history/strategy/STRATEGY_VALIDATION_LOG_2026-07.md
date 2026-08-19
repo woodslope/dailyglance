@@ -1,6 +1,6 @@
 # 策略历史验证记录（2026-07）
 
-本文只记录历史验证证据。当前策略规则、候选状态和接入结论以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
+本文只记录历史验证证据。当前生产策略、信号状态和 `B/S` 契约以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
 
 ## 波段 B 质量候选严格复核与影子观察
 

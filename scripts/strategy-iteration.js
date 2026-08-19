@@ -14,6 +14,18 @@ const SHADOW_DIR = path.join(ROOT, '.local', 'strategy-shadow');
 const CACHE_DIR = path.join(ROOT, '.local', 'strategy-cache');
 const POLICY = JSON.parse(fs.readFileSync(path.join(ROOT, 'strategy-validation-policy.json'), 'utf8'));
 const UNIVERSE = JSON.parse(fs.readFileSync(path.join(ROOT, 'strategy-validation-universe.json'), 'utf8'));
+const CANDIDATE_STATUS_LABELS = Object.freeze({
+    baseline_control: '基线对照（baseline_control）',
+    continue_full: '可申请全量回放（continue_full）',
+    insufficient_evidence: '证据不足（insufficient_evidence）',
+    recommend_shadow: '建议进入影子观察（recommend_shadow）',
+    ready_for_product_review: '可进入人工产品取舍（ready_for_product_review）',
+    reject: '已拒绝（reject）'
+});
+
+function formatCandidateStatus(status) {
+    return CANDIDATE_STATUS_LABELS[status] || `未知状态（${status || 'missing'}）`;
+}
 
 function parseArgs(argv) {
     const args = new Map();
@@ -54,13 +66,30 @@ function latestReport(pattern) {
         .sort((left, right) => right.modifiedAt - left.modifiedAt)[0] || null;
 }
 
-function readLatestCandidateReport() {
-    const latest = latestReport(/^formal-strategy-candidate-lab-.*\.json$/);
-    if (!latest) throw new Error('没有候选评估报告，请先运行 evaluate');
-    return {
-        file: latest.file,
-        report: JSON.parse(fs.readFileSync(path.join(REPORT_DIR, latest.file), 'utf8'))
-    };
+function readCandidateReport(args) {
+    const strategy = String(args.get('strategy') || '');
+    const variantId = String(args.get('variant') || '');
+    const candidateId = String(args.get('candidate') || '');
+    if (!strategy || !variantId || !candidateId) {
+        throw new Error('需要显式指定 --strategy、--variant 和 --candidate');
+    }
+    const reportPathArg = args.get('report');
+    const candidates = reportPathArg && reportPathArg !== true
+        ? [{ file: String(reportPathArg), absolute: path.resolve(ROOT, String(reportPathArg)) }]
+        : (fs.existsSync(REPORT_DIR) ? fs.readdirSync(REPORT_DIR)
+            .filter(file => /^formal-strategy-candidate-lab-.*\.json$/.test(file))
+            .map(file => ({ file, absolute: path.join(REPORT_DIR, file), modifiedAt: fs.statSync(path.join(REPORT_DIR, file)).mtimeMs }))
+            .sort((left, right) => right.modifiedAt - left.modifiedAt) : []);
+    for (const entry of candidates) {
+        const absolute = entry.absolute;
+        if (!fs.existsSync(absolute)) continue;
+        const report = JSON.parse(fs.readFileSync(absolute, 'utf8'));
+        const match = candidateResults(report).some(item => item.strategy === strategy
+            && item.variantId === variantId
+            && item.candidateId === candidateId);
+        if (match) return { file: path.relative(REPORT_DIR, absolute), report };
+    }
+    throw new Error(`没有匹配的候选报告：${strategy} / ${candidateId} / ${variantId}`);
 }
 
 function readLatestWaveQualityReport() {
@@ -105,11 +134,19 @@ function candidateResults(report) {
 }
 
 function printReview(file, report) {
+    const isScreenReport = report.selection?.mode === 'screen';
     const rows = candidateResults(report).map(item => ({
         strategy: item.strategy,
         candidateId: item.candidateId,
         variantId: item.variantId,
-        status: item.evaluation?.status || 'missing_evaluation',
+        statusCode: isScreenReport
+            ? (item.result?.screen?.status || item.evaluation?.status || 'missing_evaluation')
+            : (item.evaluation?.status || 'missing_evaluation'),
+        status: isScreenReport
+            ? (item.result?.screen?.statusLabel || item.evaluation?.statusLabel || formatCandidateStatus(item.result?.screen?.status || item.evaluation?.status))
+            : (item.evaluation?.statusLabel || formatCandidateStatus(item.evaluation?.status)),
+        screenStatusCode: item.result?.screen?.status || null,
+        screenStatus: item.result?.screen?.statusLabel || (item.result?.screen?.status ? formatCandidateStatus(item.result.screen.status) : null),
         affectedDecisionDays: item.affectedDecisions?.total || 0,
         failedChecks: (item.evaluation?.checks || []).filter(check => check.blocking && !check.pass).map(check => check.id)
     }));
@@ -117,6 +154,8 @@ function printReview(file, report) {
         report: path.join('.local', 'strategy-reports', file),
         commonAsOf: report.dataSnapshot?.commonAsOf || '',
         policyHash: report.validationPolicy?.policyHash || '',
+        timing: report.timing || null,
+        selection: report.selection || null,
         results: rows
     }, null, 2));
 }
@@ -137,36 +176,46 @@ function refresh(args) {
     if (delay) common.push('--delay-ms', String(delay));
     const historyStart = args.get('history-start');
     if (historyStart && historyStart !== true) common.push('--history-start', String(historyStart));
-    const requestedIndices = args.get('indices') || 'all';
-    runNode('scripts/strategy-cache-fetch.js', ['--indices', requestedIndices, ...common]);
-
-    const requestedCodes = args.get('codes')
+    const requestedIndices = typeof args.get('indices') === 'string' ? String(args.get('indices')) : (args.has('all') ? 'all' : '');
+    const requestedCodes = typeof args.get('codes') === 'string'
         ? String(args.get('codes')).split(',').map(value => value.trim()).filter(Boolean)
-        : (UNIVERSE.stocks || []).map(stock => stock.code);
+        : (args.has('all') ? (UNIVERSE.stocks || []).map(stock => stock.code) : []);
+    if (!requestedIndices && !requestedCodes.length) {
+        throw new Error('refresh 需要显式指定 --indices、--codes 或 --all，避免隐式刷新全量样本');
+    }
+    if (requestedIndices) runNode('scripts/strategy-cache-fetch.js', ['--indices', requestedIndices, ...common]);
     for (const codes of chunk(requestedCodes, 12)) {
         runNode('scripts/strategy-cache-fetch.js', ['--codes', codes.join(','), ...common]);
     }
 }
 
-function baseline() {
-    runNode('scripts/strategy-formal-baseline.js');
+function baseline(args) {
+    if (!args.has('full')) throw new Error('baseline 是正式全量回放，必须显式传入 --full');
+    runNode('scripts/strategy-formal-baseline.js', args.has('progress') ? ['--progress'] : []);
 }
 
 function evaluate(args) {
-    if (args.get('variant') && !args.get('strategy')) {
-        throw new Error('evaluate 使用 --variant 时必须同时指定 --strategy');
+    const strategy = String(args.get('strategy') || '');
+    const variant = String(args.get('variant') || '');
+    const candidate = String(args.get('candidate') || '');
+    if (!strategy || !variant || !candidate) throw new Error('evaluate 需要显式指定 --strategy、--variant 和 --candidate');
+    if (!args.has('reuse-baseline')) throw new Error('evaluate 必须显式传入 --reuse-baseline，禁止隐式重建 baseline');
+    const scopeFlags = [args.has('screen'), args.has('full'), typeof args.get('symbols') === 'string'];
+    if (scopeFlags.filter(Boolean).length !== 1) {
+        throw new Error('evaluate 需要且只能指定一个范围：--screen、--full 或 --symbols');
     }
-    if (!args.has('reuse-baseline')) baseline();
     const command = [];
-    if (args.get('strategy')) command.push('--strategy', String(args.get('strategy')));
-    if (args.get('variant')) command.push('--variant', String(args.get('variant')));
+    command.push('--strategy', strategy, '--variant', variant, '--candidate', candidate);
+    if (args.has('screen')) command.push('--screen');
+    if (args.has('full')) command.push('--full');
+    if (typeof args.get('symbols') === 'string') command.push('--symbols', String(args.get('symbols')));
     if (args.has('progress')) command.push('--progress');
     runNode('scripts/strategy-formal-candidate-lab.js', command);
 }
 
-function review() {
-    const latest = readLatestCandidateReport();
-    printReview(latest.file, latest.report);
+function review(args) {
+    const selected = readCandidateReport(args);
+    printReview(selected.file, selected.report);
 }
 
 function readReferenceDates(report) {
@@ -181,8 +230,11 @@ function shadow(args) {
     const strategy = String(args.get('strategy') || '');
     const variantId = String(args.get('variant') || '');
     if (!strategy || !variantId) throw new Error('shadow 需要 --strategy 和 --variant');
-    if (args.has('refresh-evaluation')) evaluate(new Map([['strategy', strategy]]));
-    const latest = readLatestCandidateReport();
+    if (args.has('refresh-evaluation')) evaluate(new Map([
+        ['strategy', strategy], ['variant', variantId], ['candidate', String(args.get('candidate') || '')],
+        ['reuse-baseline', true], ['full', true]
+    ]));
+    const latest = readCandidateReport(args);
     const selected = candidateResults(latest.report).find(item => item.strategy === strategy && item.variantId === variantId);
     if (!selected) throw new Error(`候选报告中不存在 ${strategy} / ${variantId}`);
     if (selected.evaluation?.status === 'reject') throw new Error('历史准入已否决，不能进入影子观察');
@@ -300,9 +352,9 @@ function observation(command, args) {
 function main() {
     const { command, args } = parseArgs(process.argv.slice(2));
     if (command === 'refresh') return refresh(args);
-    if (command === 'baseline') return baseline();
+    if (command === 'baseline') return baseline(args);
     if (command === 'evaluate') return evaluate(args);
-    if (command === 'review') return review();
+    if (command === 'review') return review(args);
     if (command === 'shadow') return shadow(args);
     if (command === 'quality-shadow') return qualityShadow(args);
     if (command === 'quality-status') return qualityStatus();

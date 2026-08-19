@@ -9,6 +9,7 @@ const REPORT_DIR = path.join(ROOT, '.local', 'strategy-reports');
 const STRATEGIES = ['稳健趋势型', '波段抄底型', '突破追涨型', '综合全能型'];
 const strategyArgIndex = process.argv.indexOf('--strategy');
 const requestedStrategy = strategyArgIndex >= 0 ? process.argv[strategyArgIndex + 1] || '' : '';
+const reuseLatest = process.argv.includes('--reuse-latest');
 const EXPECTED_CANDIDATES = {
     '稳健趋势型': 'formal_trend_signal_ablation',
     '波段抄底型': 'formal_wave_repair_signal_ablation',
@@ -56,6 +57,7 @@ const EXPECTED_COMPOSITE_SIGNAL_ABLATIONS = {
 const EXPECTED_COMPOSITE_BUY_SIGNALS = [
     'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B9', 'B10', 'B11', 'B12', 'B14', 'B15', 'B16', 'B17'
 ];
+const WEAK_MARKET_CANDIDATE = 'weak_market_confirmed_80_v1';
 
 const source = fs.readFileSync(path.join(ROOT, 'scripts', 'strategy-formal-candidate-lab.js'), 'utf8');
 for (const candidateId of Object.values(EXPECTED_CANDIDATES)) {
@@ -79,23 +81,75 @@ if (!source.includes('retain_production_control') || !source.includes('b15Prefli
     throw new Error('稳健趋势缺少 B15 生产前逐日对照');
 }
 if (!source.includes('b15MarkerQuality')) throw new Error('稳健趋势缺少 B15 标记质量后验');
+if (!source.includes('evaluateCandidateScreen')) throw new Error('快速筛选没有使用独立准入规则');
+if (!source.includes("status: result.evaluation?.status || 'insufficient_evidence'")) {
+    throw new Error('快速筛选状态没有复用快筛评估结论');
+}
+if (!source.includes('trial entry gate requires matching production control rows')) {
+    throw new Error('试探仓候选仍在重复计算生产控制链');
+}
+if (!source.includes('durationMs: Date.now() - startedAtMs')) throw new Error('候选报告缺少真实耗时');
+if (!source.includes("已拒绝（reject）")) throw new Error('候选状态缺少中文展示文本');
+for (const required of [
+    `id: '${WEAK_MARKET_CANDIDATE}'`,
+    "candidateClass: 'semantic_correctness'",
+    'weakMarketConfirmed80',
+    'previousCandidateDecision',
+    'capturedTargetPosition',
+    'stocksOnly: true',
+    'weakMarketConfirmed80BsDrift',
+    'buildWeakMarketConfirmed80Preflight'
+]) {
+    if (!source.includes(required)) throw new Error(`弱市连续确认候选缺少实现证据：${required}`);
+}
+for (const required of [
+    "id: 'wave_failed_trial_reentry_v1'",
+    "type: 'wave-failed-trial-reentry'",
+    "candidateClass: 'signal_timing'",
+    'waveFailedTrialReentry',
+    'confirmationHoldTradingDays: 2',
+    'waveFailedTrialReentryConfirmed',
+    'waveFailedTrialReentryIndexDrift'
+]) {
+    if (!source.includes(required)) throw new Error(`波段试探失败重新确认候选缺少实现证据：${required}`);
+}
+for (const required of [
+    "id: 'wave_same_day_repair_confirmation_entry_v2'",
+    "revisionOf: 'wave_right_confirmation_entry_v1'",
+    "type: 'wave-same-day-repair-confirmation-entry'",
+    'waveSameDayRepairConfirmationEntry',
+    'waveSameDayEntryConfirmed',
+    'waveSameDayEntryIndexDrift',
+    'waveSameDayEntryPreflight',
+    'same_snapshot_structural_revision'
+]) {
+    if (!source.includes(required)) throw new Error(`波段同日修复确认候选缺少实现证据：${required}`);
+}
 
 const strategies = requestedStrategy ? [requestedStrategy] : STRATEGIES;
 if (strategies.some(strategy => !STRATEGIES.includes(strategy))) throw new Error(`未知正式策略：${requestedStrategy}`);
 
 let latestReportFile = '';
 for (const strategy of strategies) {
-    execFileSync(process.execPath, ['scripts/strategy-formal-candidate-lab.js', '--strategy', strategy], {
-        cwd: ROOT,
-        stdio: 'ignore'
-    });
+    if (!reuseLatest) {
+        execFileSync(process.execPath, ['scripts/strategy-formal-candidate-lab.js', '--full', '--strategy', strategy], {
+            cwd: ROOT,
+            stdio: 'ignore'
+        });
+    }
     const latest = fs.readdirSync(REPORT_DIR)
         .filter(file => /^formal-strategy-candidate-lab-.*\.json$/.test(file))
-        .map(file => ({ file, modifiedAt: fs.statSync(path.join(REPORT_DIR, file)).mtimeMs }))
+        .map(file => ({
+            file,
+            modifiedAt: fs.statSync(path.join(REPORT_DIR, file)).mtimeMs,
+            report: JSON.parse(fs.readFileSync(path.join(REPORT_DIR, file), 'utf8'))
+        }))
+        .filter(item => item.report.selection?.mode === 'full'
+            && item.report.experiments?.[strategy]?.candidate?.id === EXPECTED_CANDIDATES[strategy])
         .sort((left, right) => right.modifiedAt - left.modifiedAt)[0];
     if (!latest) throw new Error(`${strategy} 候选实验没有生成报告`);
     latestReportFile = latest.file;
-    const report = JSON.parse(fs.readFileSync(path.join(REPORT_DIR, latest.file), 'utf8'));
+    const report = latest.report;
     if (report.method !== 'production-js-vm-local-candidate-lab') throw new Error('候选实验未使用生产 VM 决策链');
     if (report.scope?.stocks < 1 || report.scope?.indices !== 8) throw new Error('候选实验未覆盖完整缓存范围');
     const experiment = report.experiments?.[strategy];
@@ -299,6 +353,88 @@ for (const strategy of strategies) {
         if (!experiment.cohorts?.[cohort]?.baseline || !experiment.cohorts?.[cohort]?.variant || !experiment.cohorts?.[cohort]?.delta) {
             throw new Error(`${strategy} 缺少 ${cohort} 分层差分`);
         }
+    }
+}
+
+// 对三个可用策略各跑一个股票缓存样本，专门锁定连续确认、股票限定和 B/S 零漂移契约。
+const weakStrategies = ['稳健趋势型', '突破追涨型', '综合全能型']
+    .filter(strategy => !requestedStrategy || requestedStrategy === strategy);
+for (const strategy of weakStrategies) {
+    execFileSync(process.execPath, [
+        'scripts/strategy-formal-candidate-lab.js',
+        '--symbols', '601398',
+        '--strategy', strategy,
+        '--candidate', WEAK_MARKET_CANDIDATE,
+        '--variant', WEAK_MARKET_CANDIDATE
+    ], { cwd: ROOT, stdio: 'ignore' });
+    const latestWeak = fs.readdirSync(REPORT_DIR)
+        .filter(file => /^formal-strategy-candidate-lab-.*\.json$/.test(file))
+        .map(file => ({
+            file,
+            modifiedAt: fs.statSync(path.join(REPORT_DIR, file)).mtimeMs,
+            report: JSON.parse(fs.readFileSync(path.join(REPORT_DIR, file), 'utf8'))
+        }))
+        .filter(item => item.report.selection?.mode === 'symbols'
+            && item.report.selection?.strategy === strategy
+            && item.report.selection?.candidateId === WEAK_MARKET_CANDIDATE
+            && item.report.selection?.variantId === WEAK_MARKET_CANDIDATE
+            && item.report.scope?.symbols === 1)
+        .sort((left, right) => right.modifiedAt - left.modifiedAt)[0];
+    if (!latestWeak) throw new Error(`${strategy} 弱市连续确认候选没有生成单股票报告`);
+    const experiment = latestWeak.report.experiments?.[strategy];
+    if (experiment?.candidate?.candidateClass !== 'semantic_correctness') throw new Error(`${strategy} 弱市候选类别错误`);
+    if (experiment.control?.id !== 'retain_production_control') throw new Error(`${strategy} 弱市候选缺少生产控制组`);
+    if (!Number.isInteger(experiment.affectedDecisions?.total)) throw new Error(`${strategy} 弱市候选缺少影响日统计`);
+    if (!Number.isInteger(experiment.delta?.bs?.b) || !Number.isInteger(experiment.delta?.bs?.s)
+        || experiment.delta.bs.b !== 0 || experiment.delta.bs.s !== 0) {
+        throw new Error(`${strategy} 弱市候选发生 B/S 漂移`);
+    }
+    const diagnostics = experiment.candidateDiagnostics || {};
+    for (const field of [
+        'weakMarketConfirmed80Eligible', 'weakMarketConfirmed80Applied',
+        'weakMarketConfirmed80RejectedNoPrevious', 'weakMarketConfirmed80RejectedNotStock',
+        'weakMarketConfirmed80RejectedTargetMismatch', 'weakMarketConfirmed80BsDrift'
+    ]) {
+        if (!Number.isInteger(diagnostics[field]) || diagnostics[field] < 0) {
+            throw new Error(`${strategy} 弱市候选缺少 ${field} 诊断统计`);
+        }
+    }
+    if (diagnostics.weakMarketConfirmed80BsDrift !== 0) throw new Error(`${strategy} 弱市候选诊断显示 B/S 漂移`);
+    const preflight = experiment.weakMarketConfirmed80Preflight;
+    if (!preflight || !Number.isInteger(preflight.appliedEvents) || preflight.appliedEvents < 0) {
+        throw new Error(`${strategy} 弱市候选缺少逐事件 preflight`);
+    }
+    for (const field of [
+        'bsDriftDays', 'indexDriftDays', 'firstEntryDriftDays',
+        'unauthorizedUpgradeDays', 'diagnosticsAppliedMismatch'
+    ]) {
+        if (preflight[field] !== 0) throw new Error(`${strategy} 弱市候选 ${field} 必须为零`);
+    }
+    if (!Array.isArray(preflight.violations) || preflight.violations.length !== 0) {
+        throw new Error(`${strategy} 弱市候选存在逐事件边界违例`);
+    }
+    if (preflight.appliedEvents !== diagnostics.weakMarketConfirmed80Applied) {
+        throw new Error(`${strategy} 弱市候选逐事件命中数与诊断不一致`);
+    }
+    if (preflight.appliedEvents > 0) {
+        if (!Array.isArray(preflight.appliedSamples) || preflight.appliedSamples.length < 1) {
+            throw new Error(`${strategy} 弱市候选缺少可审计命中样本`);
+        }
+        for (const sample of preflight.appliedSamples) {
+            if (sample.from !== 50 || sample.to !== 80
+                || sample.previousMarket !== '核心宽基偏弱' || sample.currentMarket !== '核心宽基偏弱'
+                || sample.previousStrength !== 'independent' || sample.currentStrength !== 'independent'
+                || sample.productionTarget !== 80 || sample.productionGateCap !== 50 || sample.candidateGateCap !== 80) {
+                throw new Error(`${strategy} 弱市候选命中样本不符合连续确认50%→80%契约`);
+            }
+        }
+    }
+    if (strategy === '突破追涨型' && preflight.appliedEvents < 1) {
+        throw new Error('突破追涨型 601398 固定样本必须实际命中弱市连续确认80%候选');
+    }
+    const affectedSymbols = experiment.affectedDecisions.bySymbol || [];
+    if (affectedSymbols.some(item => ['sh', 'sz', 'hs300', 'zz500', 'zz1000', 'cy', 'kc50', 'bz50'].includes(item.id))) {
+        throw new Error(`${strategy} 弱市候选错误改变指数路径`);
     }
 }
 

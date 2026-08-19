@@ -6,6 +6,7 @@ const vm = require('vm');
 const {
     stableHash,
     hashFile,
+    getBaselinePolicyContract,
     summarizePerformance,
     summarizeEvaluationRows,
     buildCalendarWindows,
@@ -352,6 +353,8 @@ function main() {
         validationPolicy: {
             schemaVersion: VALIDATION_POLICY.schemaVersion,
             policyHash: stableHash(VALIDATION_POLICY),
+            baselinePolicyHash: stableHash(getBaselinePolicyContract(VALIDATION_POLICY)),
+            baselineContract: getBaselinePolicyContract(VALIDATION_POLICY),
             temporalWindows,
             costScenarios: VALIDATION_POLICY.costScenarios
         },
