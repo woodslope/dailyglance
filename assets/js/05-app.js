@@ -1858,6 +1858,13 @@ function renderSettings() {
             <button type="button" class="sg-close" onclick="toggleSettings()" title="关闭设置" aria-label="关闭设置">×</button>
         </div>
         <div class="sg-body">
+            <div class="strategy-page-launch">
+                <div>
+                    <div class="block-title">独立策略页</div>
+                    <div class="text-dim">查看四套策略、统一仓位档位、信号入口、风险限制和完整配置。</div>
+                </div>
+                <a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener" title="在独立页面查看当前策略">打开独立策略页 ↗</a>
+            </div>
             <div class="terminal-block" style="padding:12px 16px;">
                 <div class="block-title" style="margin-bottom:8px;">量化策略选择 (当前: ${state.strategy})</div>
                 <div class="sg-strategy" style="gap:8px;">${strategyHtml}</div>

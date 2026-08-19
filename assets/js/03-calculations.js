@@ -1703,7 +1703,9 @@ function getStockDecisionSummary(meta, decision) {
     } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
         stateLabel = waveMA20PullbackObservation.defenseType === 'standalone_l3'
             ? 'MA20趋势防守'
-            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation' ? 'MA20回踩防守' : 'MA20回踩观察');
+            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
+                ? 'MA20回踩防守'
+                : (waveMA20PullbackObservation.defenseType === 'breakout_pullback' ? '突破后回踩观察' : 'MA20回踩观察'));
         userAction = '轻仓观察';
     } else if (!hasCriticalExit && waveMA20PullbackObservation.status === 'expired') {
         stateLabel = 'MA20观察结束';
@@ -1787,7 +1789,9 @@ function getStockDecisionSummary(meta, decision) {
             ? `单独MACD死叉，价格仍在完整多头结构中，本日保留${position}%观察`
             : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
                 ? `买点失效位虽被收盘跌破，但价格仍守住MA20，先保留${position}%观察`
-                : `今日收盘仅小幅低于抬升中的${waveMA20PullbackObservation.movingAveragePeriod}日线，但下影线明显收回、结构防守位未破，当前保留${position}%轻仓观察一日，不加仓也不清仓`);
+                : (waveMA20PullbackObservation.defenseType === 'breakout_pullback'
+                    ? waveMA20PullbackObservation.reason
+                    : `今日收盘仅小幅低于抬升中的${waveMA20PullbackObservation.movingAveragePeriod}日线，但下影线明显收回、结构防守位未破，当前保留${position}%轻仓观察一日，不加仓也不清仓`));
     } else if (!hasCriticalExit && waveMA20PullbackObservation.status === 'expired') {
         reason = `MA20回踩观察只保留一日，但价格未重新站回20日线，也没有新的B6/B11信号接管，当前从${previousPosition}%降至${position}%`;
     } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
@@ -1899,7 +1903,9 @@ function getStockDecisionSummary(meta, decision) {
             ? `单独MACD死叉未与L4/L9/L10复合，完整多头结构未破；策略参考仓位维持${position}%一日，不生成S`
             : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
                 ? `买点失效位虽被收盘跌破，但MA20与风险防守位仍守住；策略参考仓位维持${position}%一日，不生成S`
-                : `本次未满足B6加仓条件，只触发MA20回踩防守观察；策略参考仓位维持${position}%一日，不生成S`);
+                : (waveMA20PullbackObservation.defenseType === 'breakout_pullback'
+                    ? `突破MA20后的首次回踩仍守住均线附近；策略参考仓位维持${position}%一日，不生成S`
+                    : `本次未满足B6加仓条件，只触发MA20回踩防守观察；策略参考仓位维持${position}%一日，不生成S`));
     } else if (waveMA20PullbackObservation.status === 'expired') {
         positionWhy = `MA20回踩防守观察只保留一日；次日未通过均线或新B6/B11接管，策略参考仓位从${previousPosition}%降至${position}%`;
     } else if (waveExpiryHandoff.applied) {
@@ -2139,6 +2145,73 @@ function getRiskPositionCap(risk = {}) {
     if (score >= 60) return 50;
     if (score >= 40) return 30;
     return 0;
+}
+
+// 统一的趋势状态只用于解释和审计，暂不改变仓位、积分或 B/S。
+function getTrendRegimeContext(idx, full, ind) {
+    const close = Number(full?.[idx]?.close);
+    const ma20 = Number(ind?.ma?.[20]?.[idx]);
+    const ma60 = Number(ind?.ma?.[60]?.[idx]);
+    const ma20Prev = Number(ind?.ma?.[20]?.[Math.max(0, idx - 5)]);
+    const ma20Yesterday = Number(ind?.ma?.[20]?.[Math.max(0, idx - 1)]);
+    const ma60Prev = Number(ind?.ma?.[60]?.[Math.max(0, idx - 5)]);
+    const values = [close, ma20, ma60, ma20Prev, ma20Yesterday, ma60Prev];
+    const empty = {
+        key: 'unknown',
+        label: '趋势未知',
+        transition: 'unknown',
+        reason: 'MA20/MA60 或斜率数据不足，暂不判断趋势状态',
+        evidence: { close, ma20, ma60, ma20Prev, ma20Yesterday, ma60Prev },
+        thresholds: { rangeSpreadRatio: 0.03, rangeSlopeRatio: 0.01 }
+    };
+    if (!values.every(Number.isFinite) || ma20 <= 0 || ma60 <= 0 || ma20Prev <= 0 || ma60Prev <= 0) return empty;
+
+    const spreadRatio = (ma20 - ma60) / ma60;
+    const slopeRatio = (ma20 - ma20Prev) / ma20Prev;
+    const previousSlopeRatio = (ma20Yesterday - ma20Prev) / ma20Prev;
+    const rangeLike = Math.abs(spreadRatio) <= 0.03 && Math.abs(slopeRatio) <= 0.01;
+    const wasDown = ma20Prev < ma60Prev && previousSlopeRatio <= 0;
+    const wasUp = ma20Prev > ma60Prev && previousSlopeRatio >= 0;
+    const turningUp = ma20 >= ma20Yesterday && slopeRatio > 0;
+    const turningDown = ma20 <= ma20Yesterday && slopeRatio < 0;
+    let key = 'range';
+    let label = '横盘震荡';
+    let transition = 'none';
+    let reason = `MA20/MA60间距${(Math.abs(spreadRatio) * 100).toFixed(1)}%，MA20五日斜率${(slopeRatio * 100).toFixed(1)}%，方向未形成共振`;
+
+    if (wasDown && turningUp && close >= ma20) {
+        key = 'reversal-up';
+        label = '向上反转中';
+        transition = 'up';
+        reason = '此前偏下降，MA20开始止跌上拐且收盘重新站上MA20，等待趋势确认';
+    } else if (wasUp && turningDown && close <= ma20) {
+        key = 'reversal-down';
+        label = '向下反转中';
+        transition = 'down';
+        reason = '此前偏上升，MA20开始转弱且收盘跌回MA20下方，等待防守确认';
+    } else if (close > ma20 && ma20 > ma60 && slopeRatio >= 0) {
+        key = 'up';
+        label = '上升趋势';
+        reason = '收盘价位于MA20上方，MA20位于MA60上方且未下行';
+    } else if (close < ma20 && ma20 < ma60 && slopeRatio <= 0) {
+        key = 'down';
+        label = '下降趋势';
+        reason = '收盘价位于MA20下方，MA20位于MA60下方且未上行';
+    } else if (!rangeLike) {
+        key = close >= ma20 ? 'reversal-up' : 'reversal-down';
+        label = close >= ma20 ? '向上过渡' : '向下过渡';
+        transition = close >= ma20 ? 'up' : 'down';
+        reason = '均线方向和价格位置不一致，归入过渡状态，暂不视为完整趋势';
+    }
+
+    return {
+        key,
+        label,
+        transition,
+        reason,
+        evidence: { close, ma20, ma60, ma20Prev, ma20Yesterday, ma60Prev, spreadRatio, slopeRatio },
+        thresholds: { rangeSpreadRatio: 0.03, rangeSlopeRatio: 0.01 }
+    };
 }
 
 function getStockTrendPositionCap(idx, full, ind, position) {
@@ -3246,6 +3319,68 @@ function getWaveMA20PullbackObservationContext(idx, full, meta, prevPos, basePos
     const movingAverage = Number(state.indicators?.ma?.[period]?.[idx]);
     const rawSignals = item._signals || [];
     const previous = full?.[idx - 1]?._decision?.waveMA20PullbackObservation;
+    const trendPeriod = Math.max(1, Number(trendDefense?.movingAveragePeriod) || period);
+    const trendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx]);
+    const previousTrendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[Math.max(0, idx - 1)]);
+    const breakoutLookbackDays = Math.max(1, Number(trendDefense?.breakoutLookbackDays) || 3);
+    const breakoutPullbackGapRatio = Math.max(0, Number(trendDefense?.maximumBreakoutPullbackGapRatio) || 0.005);
+    const breakoutLowGapRatio = Math.max(0, Number(trendDefense?.maximumBreakoutLowGapRatio) || breakoutPullbackGapRatio);
+    let breakoutDay = -1;
+    if (trendDefense && idx > 1) {
+        for (let day = idx - 1; day >= Math.max(1, idx - breakoutLookbackDays); day--) {
+            const dayClose = Number(full?.[day]?.close);
+            const dayMa = Number(state.indicators?.ma?.[trendPeriod]?.[day]);
+            const priorClose = Number(full?.[day - 1]?.close);
+            const priorMa = Number(state.indicators?.ma?.[trendPeriod]?.[day - 1]);
+            if ([dayClose, dayMa, priorClose, priorMa].every(Number.isFinite)
+                && priorClose <= priorMa
+                && dayClose > dayMa
+                && dayMa >= priorMa) {
+                breakoutDay = day;
+                break;
+            }
+        }
+    }
+    const breakoutAge = breakoutDay >= 0 ? idx - breakoutDay : Infinity;
+    const breakoutDefenseLevel = Number(risk?.stop);
+    const breakoutPullback = trendDefense
+        && prevPos === requiredPosition
+        && Number(basePosition) <= 0
+        && state.mode === 'stock'
+        && breakoutAge >= 1
+        && breakoutAge <= breakoutLookbackDays
+        && [close, trendMovingAverage, previousTrendMovingAverage].every(Number.isFinite)
+        && trendMovingAverage >= previousTrendMovingAverage
+        && close >= trendMovingAverage * (1 - breakoutPullbackGapRatio)
+        && Number(item.low) <= trendMovingAverage * (1 + breakoutLowGapRatio)
+        && (!Number.isFinite(breakoutDefenseLevel) || close >= breakoutDefenseLevel)
+        && !meta?.inCooldown
+        && !(meta?.exitSignals || []).length
+        && !(meta?.warningSignals || []).length
+        && Number(risk?.score) >= Math.max(0, Number(trendDefense.minimumRiskScore) || 40)
+        && getRiskPositionCap(risk) >= requiredPosition;
+    if (breakoutPullback) {
+        return {
+            applied: true,
+            status: 'observing',
+            defenseType: 'breakout_pullback',
+            overrideCriticalExit: true,
+            reason: `突破MA${trendPeriod}后的第${breakoutAge}个交易日回踩，收盘仍贴近均线，保留${requiredPosition}%观察`,
+            triggerDay: idx,
+            triggerDate: item.date || '',
+            triggerLow: Number(item.low),
+            triggerClose: close,
+            sourcePosition: prevPos,
+            targetPosition: requiredPosition,
+            movingAveragePeriod: trendPeriod,
+            movingAverage: trendMovingAverage,
+            previousMovingAverage: previousTrendMovingAverage,
+            breakoutDay,
+            breakoutDate: full?.[breakoutDay]?.date || '',
+            breakoutAge,
+            defenseLevel: Number.isFinite(breakoutDefenseLevel) ? breakoutDefenseLevel : null
+        };
+    }
     const invalidatedToday = [
         ...(meta?.invalidatedWindowSignals || []),
         ...(meta?.localBreakWindowSignals || [])
@@ -3490,6 +3625,7 @@ function getWaveB6TrendAddContext(idx, full, meta, prevPos, exit, strategy = STR
 function computeBaseDecisionForIndex(idx, full, prevPos) {
     const rawMeta = getSignalMeta(idx, full, state.indicators), market = getMarketContext(full[idx].date);
     const risk = getRiskContext(idx, full, state.indicators), rawExit = getExitSeverity(rawMeta, idx, full, state.indicators);
+    const trendRegime = getTrendRegimeContext(idx, full, state.indicators);
     let waveL10TrendHandoff = getWaveL10TrendHandoffContext(idx, full, rawMeta, prevPos, STRATEGY);
     let meta = rawMeta;
     if (waveL10TrendHandoff.eligible) {
@@ -3652,6 +3788,7 @@ function computeBaseDecisionForIndex(idx, full, prevPos) {
         basePosition: base,
         position,
         prevAdv: prevPos,
+        trendRegime,
         market,
         marketGate,
         targetStrength,
