@@ -412,6 +412,11 @@ function isWaveL10TrendHandoffSignal(full, index, signal, strategy = STRATEGY) {
         && full?.[index]?._decision?.waveL10TrendHandoff?.applied === true;
 }
 
+function isWaveMA20TrendDefenseSignal(full, index, signal, strategy = STRATEGY) {
+    return signal === strategy?.waveMA20PullbackObservation?.trendDefense?.standaloneExitSignal
+        && full?.[index]?._decision?.waveMA20PullbackObservation?.defenseType === 'standalone_l3';
+}
+
 function isWindowBuySignalEligible(signal, signalDay, full, strategy = STRATEGY, earliestEligibleDay = 0) {
     const guard = strategy?.windowSignalGuards?.[signal];
     if (!guard) return true;
@@ -587,7 +592,9 @@ function calculateAllSignals(idx, full, ind) {
     const strongExitSet = getStrongExitSignals(S);
     for(let i = idx; i >= Math.max(0, idx - 60); i--) { 
         if((full[i]?._signals || []).some(s => s.startsWith('L') && S.exitSignals?.includes(s)
-            && strongExitSet.has(s) && !isWaveL10TrendHandoffSignal(full, i, s, S))) {
+            && strongExitSet.has(s)
+            && !isWaveL10TrendHandoffSignal(full, i, s, S)
+            && !isWaveMA20TrendDefenseSignal(full, i, s, S))) {
             if(lastExitIdx < 0) lastExitIdx = i;
             else { previousStrongExitIdx = i; break; }
         }
@@ -602,7 +609,9 @@ function calculateAllSignals(idx, full, ind) {
     for(let i = Math.max(0, idx - S.windowDays + 1); i <= idx; i++) {
         (full[i]?._signals || []).forEach(sig => {
             if(!usedSignals.has(sig)) {
-                if(sig.startsWith('L') && S.exitSignals?.includes(sig) && !isWaveL10TrendHandoffSignal(full, i, sig, S)) { windowSignals.push({day: i, signal: sig}); usedSignals.add(sig); }
+                if(sig.startsWith('L') && S.exitSignals?.includes(sig)
+                    && !isWaveL10TrendHandoffSignal(full, i, sig, S)
+                    && !isWaveMA20TrendDefenseSignal(full, i, sig, S)) { windowSignals.push({day: i, signal: sig}); usedSignals.add(sig); }
                 else if(sig.startsWith('B') && S.buySignals?.includes(sig) && i > lastExitIdx && isWindowBuySignalEligible(sig, i, full, S)) {
                     const invalidation = getWindowSignalInvalidation(sig, i, idx, full, ind, S);
                     if (invalidation?.reason === 'local-price-break') localBreakWindowSignals.push(invalidation);
@@ -1488,10 +1497,17 @@ function getStockNextFocus(meta, decision, position, hasWarning) {
     if (waveRejection?.active) {
         const recoveryCloseLevel = Number(waveRejection.recoveryCloseLevel ?? waveRejection.triggerClose);
         const hardInvalidationProtection = ['signal_hard_invalidation', 'fresh_entry_hard_break'].includes(waveRejection.eventType);
+        const freshScoreRecoveryAllowed = ['fresh_entry_failure', 'fresh_entry_downside_failure'].includes(waveRejection.eventType)
+            && waveRejection.ma20RejectionExit !== true;
         const recoveryLevelText = hardInvalidationProtection ? '信号失效位' : '风险日收盘';
         const lockRemaining = Math.max(0, Number(waveRejection.lockRemaining) || 0);
         if (lockRemaining > 0) {
             return `先完成剩余${lockRemaining}个交易日的观察期；期间新信号不立即建仓，若再出现量价分歧则继续空仓。`;
+        }
+        if (freshScoreRecoveryAllowed) {
+            const minimumScore = Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4;
+            const minimumGroups = Number(waveRejection.minimumPostEventGroups) || 2;
+            return `完整观察期已结束；事件后新买入积分达到${minimumScore}分且至少来自${minimumGroups}个独立计分组，风险稳定后可恢复最多30%试探仓；不要求先收复风险日收盘价。`;
         }
         if (hardInvalidationProtection) {
             const minimumScore = Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4;
@@ -1685,7 +1701,9 @@ function getStockDecisionSummary(meta, decision) {
         stateLabel = '趋势修复加仓';
         userAction = '提高仓位';
     } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
-        stateLabel = 'MA20回踩观察';
+        stateLabel = waveMA20PullbackObservation.defenseType === 'standalone_l3'
+            ? 'MA20趋势防守'
+            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation' ? 'MA20回踩防守' : 'MA20回踩观察');
         userAction = '轻仓观察';
     } else if (!hasCriticalExit && waveMA20PullbackObservation.status === 'expired') {
         stateLabel = 'MA20观察结束';
@@ -1765,7 +1783,11 @@ function getStockDecisionSummary(meta, decision) {
     } else if (!hasCriticalExit && waveB6TrendAdd.applied) {
         reason = `今日缩量回踩${waveB6TrendAdd.movingAveragePeriod}日线后收回，且该均线未下行，触发趋势修复加仓，当前从${previousPosition}%提高至${position}%`;
     } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
-        reason = `今日收盘仅小幅低于抬升中的${waveMA20PullbackObservation.movingAveragePeriod}日线，但下影线明显收回、结构防守位未破，当前保留${position}%轻仓观察一日，不加仓也不清仓`;
+        reason = waveMA20PullbackObservation.defenseType === 'standalone_l3'
+            ? `单独MACD死叉，价格仍在完整多头结构中，本日保留${position}%观察`
+            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
+                ? `买点失效位虽被收盘跌破，但价格仍守住MA20，先保留${position}%观察`
+                : `今日收盘仅小幅低于抬升中的${waveMA20PullbackObservation.movingAveragePeriod}日线，但下影线明显收回、结构防守位未破，当前保留${position}%轻仓观察一日，不加仓也不清仓`);
     } else if (!hasCriticalExit && waveMA20PullbackObservation.status === 'expired') {
         reason = `MA20回踩观察只保留一日，但价格未重新站回20日线，也没有新的B6/B11信号接管，当前从${previousPosition}%降至${position}%`;
     } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
@@ -1873,7 +1895,11 @@ function getStockDecisionSummary(meta, decision) {
     } else if (waveB6TrendAdd.applied) {
         positionWhy = `缩量回踩不破将本次趋势修复加仓目标设为50%；风险与市场未进一步限制，最终从${previousPosition}%提高至${position}%，80%仍需买入积分正式达标且满足完整多头资格`;
     } else if (waveMA20PullbackObservation.applied) {
-        positionWhy = `本次未满足B6加仓条件，只触发MA20回踩防守观察；策略参考仓位维持${position}%一日，不生成S`;
+        positionWhy = waveMA20PullbackObservation.defenseType === 'standalone_l3'
+            ? `单独MACD死叉未与L4/L9/L10复合，完整多头结构未破；策略参考仓位维持${position}%一日，不生成S`
+            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
+                ? `买点失效位虽被收盘跌破，但MA20与风险防守位仍守住；策略参考仓位维持${position}%一日，不生成S`
+                : `本次未满足B6加仓条件，只触发MA20回踩防守观察；策略参考仓位维持${position}%一日，不生成S`);
     } else if (waveMA20PullbackObservation.status === 'expired') {
         positionWhy = `MA20回踩防守观察只保留一日；次日未通过均线或新B6/B11接管，策略参考仓位从${previousPosition}%降至${position}%`;
     } else if (waveExpiryHandoff.applied) {
@@ -1884,11 +1910,15 @@ function getStockDecisionSummary(meta, decision) {
         positionWhy = `到期防守观察只保留一日；次日未通过均线或新信号接管，策略参考仓位从${previousPosition}%降至${position}%`;
     }
     const lockRemaining = Math.max(0, Number(waveRejection.lockRemaining) || 0);
+    const freshScoreRecoveryAllowed = ['fresh_entry_failure', 'fresh_entry_downside_failure'].includes(waveRejection.eventType)
+        && waveRejection.ma20RejectionExit !== true;
     const lockedNextFocus = lockRemaining > 0
         ? `局部锁定尚未结束，至少等待${lockRemaining}个交易日；期间新信号不立即建仓。`
         : (isHardInvalidationProtection
             ? `完整观察期已结束；等事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分且至少来自${Number(waveRejection.minimumPostEventGroups) || 2}个独立计分组，或价格站回失效位后，再恢复最多30%试探仓。`
-            : '完整观察期已结束；若是已有浮盈减仓，新的缩量/均线回踩企稳并守住风险日低点时可先补回一档；否则待价格收复关键压力。');
+            : (freshScoreRecoveryAllowed
+                ? `完整观察期已结束；等事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分且至少来自${Number(waveRejection.minimumPostEventGroups) || 2}个独立计分组，风险稳定后可恢复最多30%试探仓，不要求先收复风险日收盘价。`
+                : '完整观察期已结束；若是已有浮盈减仓，新的缩量/均线回踩企稳并守住风险日低点时可先补回一档；否则待价格收复关键压力。'));
     const nextFocus = waveRejection.status === 'entry_blocked'
         ? '至少观察一个完整交易日；后续需站回风险日收盘，或收复风险日高点且事件后新的有效修复信号仍然有效，才重新考虑30%试探仓。'
         : (waveRejection.status === 'locked'
@@ -2505,8 +2535,11 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
             || (meta?.exitSignals || []).length > 0
             || (meta?.warningSignals || []).length > 0
             || (!!decisionContext.exit?.level && decisionContext.exit.level !== '无明确离场');
+        const ma20RejectionRecoveryBlocked = previous.eventType === 'fresh_entry_failure'
+            && previous.ma20RejectionExit === true;
         const strongFreshRecovery = isStock
             && freshRecoveryEvents.has(previous.eventType)
+            && !ma20RejectionRecoveryBlocked
             && postEvent.score >= minimumPostEventScore
             && postEvent.signals.length >= minimumPostEventGroups
             && riskCap >= recoveryCap
@@ -3203,6 +3236,7 @@ function getWaveMA20PullbackObservationContext(idx, full, meta, prevPos, basePos
     const config = strategy?.waveMA20PullbackObservation;
     const empty = { applied: false, reason: '' };
     const requiredPosition = Math.max(0, Number(config?.position) || 30);
+    const trendDefense = config?.trendDefense;
     if (!config || state.strategy !== '波段抄底型' || state.period !== 'daily') return empty;
     if (config.stocksOnly !== false && state.mode !== 'stock') return empty;
 
@@ -3250,11 +3284,94 @@ function getWaveMA20PullbackObservationContext(idx, full, meta, prevPos, basePos
             brokeObservationLow,
             brokeDefenseLevel,
             forceExit: !takeoverPassed,
-            forceHold: takeoverPassed && Number(basePosition) <= 0,
+            forceHold: takeoverPassed && (previous?.defenseType ? true : Number(basePosition) <= 0),
+            overrideCriticalExit: false,
+            targetPosition: requiredPosition,
             reason: takeoverPassed
                 ? `MA${period}回踩观察后重新站回均线，或出现新的B6/B11信号`
                 : `MA${period}回踩观察后未重新站回均线，也没有新的B6/B11信号`
         };
+    }
+
+    if (trendDefense && prevPos === requiredPosition && Number(basePosition) <= 0 && idx > 0) {
+        const trendPeriod = Math.max(1, Number(trendDefense.movingAveragePeriod) || period);
+        const longPeriod = Math.max(1, Number(trendDefense.longMovingAveragePeriod) || 60);
+        const slopeDays = Math.max(1, Number(trendDefense.completeTrendSlopeLookbackDays) || 5);
+        const trendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx]);
+        const previousTrendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx - 1]);
+        const longMovingAverage = Number(state.indicators?.ma?.[longPeriod]?.[idx]);
+        const establishedTrendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx - slopeDays]);
+        const atr = getATR(full, idx);
+        const defenseLevel = Number(risk?.stop);
+        const maGap = Number.isFinite(trendMovingAverage) && Number.isFinite(close)
+            ? Math.max(0, trendMovingAverage - close)
+            : Infinity;
+        const maGapRatio = Number.isFinite(trendMovingAverage) && trendMovingAverage > 0
+            ? maGap / trendMovingAverage
+            : Infinity;
+        const maGapAtr = atr > 0 ? maGap / atr : Infinity;
+        const maSupport = [close, trendMovingAverage, previousTrendMovingAverage].every(Number.isFinite)
+            && trendMovingAverage >= previousTrendMovingAverage
+            && maGapRatio <= Math.max(0, Number(trendDefense.maximumCloseBelowMovingAverageRatio) || 0.005)
+            && maGapAtr <= Math.max(0, Number(trendDefense.maximumCloseBelowMovingAverageAtr) || 0.5);
+        const completeUptrend = [close, trendMovingAverage, longMovingAverage, establishedTrendMovingAverage].every(Number.isFinite)
+            && close >= trendMovingAverage
+            && trendMovingAverage > longMovingAverage
+            && trendMovingAverage >= establishedTrendMovingAverage;
+        const defenseIntact = !Number.isFinite(defenseLevel) || close >= defenseLevel;
+        const riskAllows = Number(risk?.score) >= Math.max(0, Number(trendDefense.minimumRiskScore) || 40)
+            && getRiskPositionCap(risk) >= requiredPosition;
+        const currentExitSignals = meta?.exitSignals || [];
+        const blockingSignals = rawSignals.filter(signal => (trendDefense.blockingSignals || []).includes(signal));
+        const invalidationsToday = getTodaySignalInvalidations(meta, 'price-break');
+        const invalidationGap = invalidationsToday.length
+            ? Math.max(...invalidationsToday
+                .map(signal => Math.max(0, Number(signal?.invalidationLevel) - close))
+                .filter(Number.isFinite), 0)
+            : Infinity;
+        const limitedHardInvalidation = invalidationsToday.length > 0
+            && atr > 0
+            && invalidationGap / atr <= Math.max(0, Number(trendDefense.maximumInvalidationGapAtr) || 1);
+        const standaloneExitSignal = trendDefense.standaloneExitSignal || 'L3';
+        const standaloneL3 = currentExitSignals.length === 1
+            && currentExitSignals[0] === standaloneExitSignal
+            && blockingSignals.length === 0
+            && !(meta?.type || '').includes('清仓')
+            && completeUptrend;
+        const hardInvalidationPullback = currentExitSignals.length === 0
+            && !(meta?.warningSignals || []).length
+            && limitedHardInvalidation
+            && close >= trendMovingAverage;
+        const eligible = trendDefense.stocksOnly !== false
+            && state.mode === 'stock'
+            && !meta?.inCooldown
+            && maSupport
+            && defenseIntact
+            && riskAllows
+            && (standaloneL3 || hardInvalidationPullback);
+        if (eligible) {
+            const defenseType = standaloneL3 ? 'standalone_l3' : 'limited_hard_invalidation';
+            return {
+                applied: true,
+                status: 'observing',
+                defenseType,
+                overrideCriticalExit: standaloneL3,
+                reason: standaloneL3
+                    ? '单独MACD死叉，价格仍在完整多头结构中，本日保留30%观察'
+                    : '买点失效位虽被收盘跌破，但价格仍守住MA20，先保留30%观察',
+                triggerDay: idx,
+                triggerDate: item.date || '',
+                triggerLow: Number(item.low),
+                triggerClose: close,
+                sourcePosition: prevPos,
+                targetPosition: requiredPosition,
+                movingAveragePeriod: trendPeriod,
+                movingAverage: trendMovingAverage,
+                previousMovingAverage: previousTrendMovingAverage,
+                defenseLevel: Number.isFinite(defenseLevel) ? defenseLevel : null,
+                invalidationGapAtr: limitedHardInvalidation && atr > 0 ? invalidationGap / atr : null
+            };
+        }
     }
 
     if (prevPos !== requiredPosition || Number(basePosition) > 0 || idx <= 0 || blocked) return empty;
@@ -3399,6 +3516,12 @@ function computeBaseDecisionForIndex(idx, full, prevPos) {
     if (waveB6TrendAdd.eligible) base = Math.max(base, waveB6TrendAdd.targetPosition);
     const waveExpiryHandoff = getWaveExpiryHandoffContext(idx, full, meta, prevPos, base, exit, risk, STRATEGY);
     const waveMA20PullbackObservation = getWaveMA20PullbackObservationContext(idx, full, meta, prevPos, base, exit, risk, STRATEGY);
+    if (waveMA20PullbackObservation.overrideCriticalExit) {
+        exit = {
+            level: '减仓观察',
+            detail: '完整多头中的单独MACD死叉先作MA20防守观察'
+        };
+    }
     const softSignalGrace = getSoftSignalGraceContext(meta, prevPos, base, exit, idx, STRATEGY);
     const localStructureDefense = getLocalStructureDefenseContext(meta, b11StructureDefense, prevPos, exit, STRATEGY);
     if (waveExpiryHandoff.forceExit || waveMA20PullbackObservation.forceExit) base = 0;
@@ -3411,7 +3534,9 @@ function computeBaseDecisionForIndex(idx, full, prevPos) {
     // 风险评估只决定最高允许档位，不再把仓位连续缩放成10%、20%、40%等中间值。
     let rawPosition = base, position = quantizePosition(rawPosition);
     let isCriticalExit = (rawExit.level === '清仓防守' || rawExit.level === '强离场'
-        || (meta.type || '').includes('规避') || (meta.type || '').includes('破位')) && !waveL10TrendHandoff.eligible;
+        || (meta.type || '').includes('规避') || (meta.type || '').includes('破位'))
+        && !waveL10TrendHandoff.eligible
+        && !waveMA20PullbackObservation.overrideCriticalExit;
 
     if (isCriticalExit || meta.inCooldown) position = 0;
     else if (exit.level === '减仓观察' || exit.level === '延续防守') position = quantizePosition(Math.min(position, 30));
