@@ -1,9 +1,8 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-10T00:00:00.000Z",
+  "generatedAt": "2026-08-13T04:45:00.000Z",
   "source": "DailyGlance production strategy chain over local strategy-cache fixtures",
-  "appBuild": "2026-07-22-09",
-  "signalVersion": "v4.2.13",
+  "signalVersion": "v4.2.32",
   "note": "These snapshots pin observable production decisions for fixed cached samples. Update intentionally only when production strategy behavior changes.",
   "samples": [
     {
@@ -25,7 +24,7 @@
         "mode": "index",
         "strategy": "稳健趋势型",
         "date": "2026-06-26",
-        "close": 4027.26,
+        "close": 4027.264,
         "windowScore": 0,
         "windowSignals": [
           "L1"
@@ -63,7 +62,7 @@
         "mode": "index",
         "strategy": "稳健趋势型",
         "date": "2026-06-26",
-        "close": 4194.21,
+        "close": 4194.209,
         "windowScore": 8,
         "windowSignals": [
           "L2",
@@ -104,7 +103,7 @@
         "mode": "index",
         "strategy": "突破追涨型",
         "date": "2026-06-26",
-        "close": 2032.28,
+        "close": 2032.284,
         "windowScore": 1,
         "windowSignals": [
           "B3"

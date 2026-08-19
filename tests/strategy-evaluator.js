@@ -3,6 +3,7 @@
 const assert = require('assert');
 const {
     stableHash,
+    getBaselinePolicyContract,
     summarizePerformance,
     summarizeEvaluationRows,
     subtractSummaries,
@@ -11,6 +12,15 @@ const {
     evaluateCandidateGates
 } = require('../scripts/strategy-evaluator');
 const policy = require('../strategy-validation-policy.json');
+
+const baselineContractHash = stableHash(getBaselinePolicyContract(policy));
+const gateOnlyPolicyChange = JSON.parse(JSON.stringify(policy));
+gateOnlyPolicyChange.gates.risk_control.minimumDrawdownImprovement = 0.123;
+assert.strictEqual(
+    stableHash(getBaselinePolicyContract(gateOnlyPolicyChange)),
+    baselineContractHash,
+    '只改准入门槛不应让全量基线失效'
+);
 
 function rows(values) {
     return values.map((item, index) => ({
@@ -93,11 +103,18 @@ assert.strictEqual(rejectedGate.status, 'reject');
 const passingScreen = evaluateCandidateScreen({
     candidateClass: 'risk_control',
     policy,
-    overallDelta: { avgStrategyRet: -0.001, avgMaxDrawdown: -0.0001 },
+    overallDelta: { avgStrategyRet: -0.001, avgMaxDrawdown: -0.006 },
     affectedDecisionDays: 2
 });
 assert.strictEqual(passingScreen.status, 'continue_full');
 assert.strictEqual(passingScreen.formalAdmissionRequired, true);
+const rejectedRiskScreen = evaluateCandidateScreen({
+    candidateClass: 'risk_control',
+    policy,
+    overallDelta: { avgStrategyRet: 0, avgMaxDrawdown: -0.001 },
+    affectedDecisionDays: 2
+});
+assert.strictEqual(rejectedRiskScreen.status, 'reject');
 const rejectedScreen = evaluateCandidateScreen({
     candidateClass: 'performance',
     policy,
@@ -105,6 +122,21 @@ const rejectedScreen = evaluateCandidateScreen({
     affectedDecisionDays: 2
 });
 assert.strictEqual(rejectedScreen.status, 'reject');
+const signalTimingScreen = evaluateCandidateScreen({
+    candidateClass: 'signal_timing',
+    policy,
+    overallDelta: { avgStrategyRet: -0.003808, avgMaxDrawdown: 0.000512, turnoverRatio: 0.000809 },
+    affectedDecisionDays: 160
+});
+assert.strictEqual(signalTimingScreen.status, 'ready_for_product_review');
+assert.strictEqual(signalTimingScreen.formalAdmissionRequired, false);
+assert.ok(signalTimingScreen.checks.every(check => check.pass));
+assert.throws(() => evaluateCandidateScreen({
+    candidateClass: 'signal_timimg',
+    policy,
+    overallDelta: {},
+    affectedDecisionDays: 1
+}), /unknown candidate class/);
 const historicalCandidateH = evaluateCandidateGates({
     candidateClass: 'performance',
     policy,
@@ -130,6 +162,26 @@ const semanticLifecycle = evaluateCandidateGates({
     completedTrades: 100
 });
 assert.strictEqual(semanticLifecycle.status, 'recommend_shadow', '语义修正允许在风险预算内进入影子观察');
+const signalTimingFull = evaluateCandidateGates({
+    candidateClass: 'signal_timing',
+    policy,
+    overallDelta: { avgStrategyRet: -0.003808, avgMaxDrawdown: 0.000512, turnoverRatio: 0.000809 },
+    temporalDeltas: [{ avgStrategyRet: -0.02, avgMaxDrawdown: 0.02 }],
+    symbolDeltas: [{ delta: { avgStrategyRet: -0.02 } }],
+    cohorts: {
+        stress: {
+            baseline: { symbols: 5 },
+            variant: { symbols: 5 },
+            delta: { avgStrategyRet: -0.02, avgMaxDrawdown: 0.02 }
+        }
+    },
+    stressDelta: { avgStrategyRet: -0.02 },
+    affectedDecisionDays: 160,
+    completedTrades: 26
+});
+assert.strictEqual(signalTimingFull.status, 'ready_for_product_review');
+assert.ok(signalTimingFull.checks.some(check => check.id === 'temporal_stability' && check.blocking === false));
+assert.ok(signalTimingFull.checks.some(check => check.id === 'cohort_stress' && check.blocking === false));
 const controlGate = evaluateCandidateGates({
     candidateClass: 'control',
     policy,

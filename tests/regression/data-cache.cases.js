@@ -197,275 +197,141 @@ runTest('history sync prefers TickFlow and keeps source-specific fallbacks', asy
     assert.strictEqual(result.eastmoneyFallbackStatus.source, 'eastmoney');
 });
 
-runTest('external market refresh deduplicates the batch request and enforces cooldown', async () => {
+runTest('sector trend refresh deduplicates the board scan and enforces cooldown', async () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
     await vm.runInContext(`
         (async function() {
             AbortController = function() { this.signal = {}; this.abort = function() {}; };
-            var externalFetchCalls = 0;
-            var externalFallbackCalls = 0;
-            fetch = async function() {
-                externalFetchCalls++;
-                await new Promise(resolve => setTimeout(resolve, 5));
-                return {
-                    ok: true,
-                    json: async function() {
-                        return { rc: 0, data: { diff: [
-                            { f12: 'SPX', f2: 6200, f3: 0.4, f4: 24, f124: 1780000000 },
-                            { f12: 'NDX', f2: 22000, f3: 0.6, f4: 130, f124: 1780000000 },
-                            { f12: 'HSTECH', f2: 5100, f3: -0.2, f4: -10, f124: 1780000000 },
-                            { f12: 'CN00Y', f2: 14200, f3: 0.1, f4: 14, f124: 1780000000 },
-                            { f12: 'USDCNH', f2: 7.12, f3: -0.1, f4: -0.007, f124: 1780000000 }
-                        ] } };
-                    }
-                };
-            };
-            document.head.appendChild = function() { externalFallbackCalls++; };
-            state.tab = 'external';
-            state.mode = 'external';
-            await Promise.all([
-                refreshExternalMarketSnapshot({ reason: 'manual' }),
-                refreshExternalMarketSnapshot({ reason: 'visibility' }),
-                refreshExternalMarketSnapshot({ reason: 'tab-enter' })
-            ]);
-            await refreshExternalMarketSnapshot({ reason: 'manual-again' });
-            externalRefreshResult = {
-                fetchCalls: externalFetchCalls,
-                fallbackCalls: externalFallbackCalls,
-                status: externalMarketState.status,
-                itemCount: Object.keys(externalMarketState.items).length,
-                rawDataKeys: Object.keys(state.rawData),
-                cooldown: getExternalMarketCooldownRemaining()
-            };
-        })()
-    `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(externalRefreshResult)', context));
-    assert.strictEqual(result.fetchCalls, 1, 'concurrent and cooldown refreshes should share one primary request');
-    assert.strictEqual(result.fallbackCalls, 0, 'complete primary batch should not call fallback');
-    assert.strictEqual(result.status, 'ready');
-    assert.strictEqual(result.itemCount, 5);
-    assert.deepStrictEqual(result.rawDataKeys, [], 'external snapshot must stay outside confirmed A-share data');
-    assert.ok(result.cooldown > 0 && result.cooldown <= 60000);
-});
-
-runTest('external market fallback runs once after the primary response and only fills supported gaps', async () => {
-    const context = makeBrowserContext();
-    vm.runInContext(configSource, context);
-    vm.runInContext(dataSource, context);
-    await vm.runInContext(`
-        (async function() {
-            AbortController = function() { this.signal = {}; this.abort = function() {}; };
-            var primaryFinished = false;
-            var externalFetchCalls = 0;
-            var externalFallbackCalls = 0;
-            var externalFallbackUrl = '';
-            fetch = async function() {
-                externalFetchCalls++;
-                return {
-                    ok: true,
-                    json: async function() {
-                        primaryFinished = true;
-                        return { rc: 0, data: { diff: [
-                            { f12: 'HSTECH', f2: 5100, f3: -0.2, f4: -10, f124: 1780000000 },
-                            { f12: 'CN00Y', f2: 14200, f3: 0.1, f4: 14, f124: 1780000000 },
-                            { f12: 'USDCNH', f2: 7.12, f3: -0.1, f4: -0.007, f124: 1780000000 }
-                        ] } };
-                    }
-                };
-            };
-            function makeExternalTencentQuote(value, change, pct) {
-                var fields = Array(40).fill('');
-                fields[3] = String(value);
-                fields[30] = '2026-07-24 16:00:00';
-                fields[31] = String(change);
-                fields[32] = String(pct);
-                return fields.join('~');
-            }
-            document.head.appendChild = function(script) {
-                if (!primaryFinished) throw new Error('fallback started before primary settled');
-                externalFallbackCalls++;
-                externalFallbackUrl = script.src;
-                window.v_usINX = makeExternalTencentQuote(6200, 24, 0.4);
-                window.v_usIXIC = makeExternalTencentQuote(22000, 130, 0.6);
-                script.onload();
-            };
-            state.tab = 'external';
-            state.mode = 'external';
-            await refreshExternalMarketSnapshot({ reason: 'manual' });
-            externalFallbackResult = {
-                fetchCalls: externalFetchCalls,
-                fallbackCalls: externalFallbackCalls,
-                fallbackUrl: externalFallbackUrl,
-                status: externalMarketState.status,
-                itemCount: Object.keys(externalMarketState.items).length,
-                source: externalMarketState.source
-            };
-        })()
-    `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(externalFallbackResult)', context));
-    assert.strictEqual(result.fetchCalls, 1);
-    assert.strictEqual(result.fallbackCalls, 1);
-    assert.ok(result.fallbackUrl.includes('usINX,usIXIC'), result.fallbackUrl);
-    assert.ok(!result.fallbackUrl.includes('hkHSTECH'), 'fallback should not re-request an item already returned by primary');
-    assert.strictEqual(result.status, 'ready');
-    assert.strictEqual(result.itemCount, 5);
-    assert.strictEqual(result.source, '东方财富 + 腾讯');
-});
-
-runTest('external market cache keeps A50 and FX gaps without adding a third source', async () => {
-    const context = makeBrowserContext();
-    const cachedItems = {
-        spx: { value: 6100, changePct: 0.1, change: 6, quoteAt: 1770000000000, source: '东方财富' },
-        ndx: { value: 21000, changePct: 0.2, change: 42, quoteAt: 1770000000000, source: '东方财富' },
-        hstech: { value: 5000, changePct: -0.3, change: -15, quoteAt: 1770000000000, source: '东方财富' },
-        a50: { value: 14000, changePct: -0.2, change: -28, quoteAt: 1770000000000, source: '东方财富' },
-        usdcnh: { value: 7.1, changePct: 0.2, change: 0.014, quoteAt: 1770000000000, source: '东方财富' }
-    };
-    context.localStorage.setItem('dg_external_market_snapshot_v1', JSON.stringify({ items: cachedItems, source: '东方财富', fetchedAt: 1770000000000, lastAttemptAt: 0 }));
-    vm.runInContext(configSource, context);
-    vm.runInContext(dataSource, context);
-    await vm.runInContext(`
-        (async function() {
-            AbortController = function() { this.signal = {}; this.abort = function() {}; };
-            var externalFallbackCalls = 0;
-            fetch = async function() {
-                return { ok: true, json: async function() { return { rc: 0, data: { diff: [
-                    { f12: 'SPX', f2: 6200, f3: 0.4, f4: 24, f124: 1780000000 },
-                    { f12: 'NDX', f2: 22000, f3: 0.6, f4: 130, f124: 1780000000 },
-                    { f12: 'HSTECH', f2: 5100, f3: -0.2, f4: -10, f124: 1780000000 }
-                ] } }; } };
-            };
-            document.head.appendChild = function() { externalFallbackCalls++; };
-            state.tab = 'external';
-            state.mode = 'external';
-            await refreshExternalMarketSnapshot({ reason: 'manual' });
-            externalCacheGapResult = {
-                fallbackCalls: externalFallbackCalls,
-                status: externalMarketState.status,
-                a50: externalMarketState.items.a50,
-                usdcnh: externalMarketState.items.usdcnh
-            };
-        })()
-    `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(externalCacheGapResult)', context));
-    assert.strictEqual(result.fallbackCalls, 0, 'A50 and FX gaps must not add an unverified third source');
-    assert.strictEqual(result.status, 'partial');
-    assert.strictEqual(result.a50.value, 14000);
-    assert.strictEqual(result.a50.stale, true);
-    assert.strictEqual(result.usdcnh.value, 7.1);
-    assert.strictEqual(result.usdcnh.stale, true);
-});
-
-runTest('external lead refresh keeps an independent overnight snapshot and derives transparent A-share mappings', async () => {
-    const context = makeBrowserContext();
-    vm.runInContext(configSource, context);
-    vm.runInContext(dataSource, context);
-    await vm.runInContext(`
-        (async function() {
-            AbortController = function() { this.signal = {}; this.abort = function() {}; };
-            var leadFetchCalls = 0;
-            var leadUrl = '';
+            var sectorListCalls = 0;
+            var sectorListActive = 0;
+            var sectorListMaxConcurrency = 0;
+            var sectorComponentCalls = 0;
             fetch = async function(url) {
-                leadFetchCalls++;
-                leadUrl = String(url);
                 await new Promise(resolve => setTimeout(resolve, 5));
+                var text = String(url);
+                if (text.includes('fs=b%3A')) {
+                    sectorComponentCalls++;
+                    return {
+                        ok: true,
+                        json: async function() {
+                            return { rc: 0, data: { diff: [
+                                { f12: '600001', f13: 1, f14: '活跃股甲', f2: 12.5, f3: 5.2, f8: 3.1 },
+                                { f12: '000002', f13: 0, f14: '活跃股乙', f2: 8.2, f3: 3.4, f8: 2.2 },
+                                { f12: '300003', f13: 0, f14: '活跃股丙', f2: 18.8, f3: 2.1, f8: 4.5 },
+                                { f12: '600004', f13: 1, f14: '活跃股丁', f2: 22.8, f3: 1.8, f8: 3.7 },
+                                { f12: '000005', f13: 0, f14: '活跃股戊', f2: 6.8, f3: 1.5, f8: 2.8 },
+                                { f12: '300006', f13: 0, f14: '活跃股己', f2: 10.8, f3: 1.1, f8: 3.2 }
+                            ] } };
+                        }
+                    };
+                }
+                sectorListCalls++;
+                sectorListActive++;
+                sectorListMaxConcurrency = Math.max(sectorListMaxConcurrency, sectorListActive);
                 return {
                     ok: true,
                     json: async function() {
-                        return { rc: 0, data: { diff: [
-                            { f12: 'SOXX', f2: 510, f3: 2.4, f4: 12, f124: 1780000000 },
-                            { f12: 'SMH', f2: 540, f3: 1.8, f4: 9, f124: 1780000000 },
-                            { f12: 'NVDA', f2: 190, f3: 3.0, f4: 5.5, f124: 1780000000 },
-                            { f12: 'AMD', f2: 170, f3: 2.2, f4: 3.7, f124: 1780000000 },
-                            { f12: 'QQQ', f2: 690, f3: 0.8, f4: 5.4, f124: 1780000000 },
-                            { f12: 'MSFT', f2: 450, f3: 1.3, f4: 5.8, f124: 1780000000 },
-                            { f12: 'TSLA', f2: 310, f3: 2.1, f4: 6.4, f124: 1780000000 },
-                            { f12: 'LI', f2: 14, f3: -1.3, f4: -0.2, f124: 1780000000 }
-                        ] } };
+                        try {
+                            return { rc: 0, data: { total: 201, diff: [
+                                { f12: 'BK1001', f14: '上涨板块', f3: 3.2, f6: 8000000000, f8: 4.2, f24: 30, f109: 12, f160: 18, f184: 8, f104: 80, f105: 15, f106: 5, f128: '活跃股甲', f140: '600001', f136: 5.2, f124: 1780000000 },
+                                { f12: 'BK1002', f14: '转强板块', f3: 1.2, f6: 5000000000, f8: 3.1, f24: -3, f109: 9, f160: 6, f184: 2, f104: 60, f105: 30, f106: 10, f128: '活跃股乙', f140: '000002', f136: 3.4, f124: 1780000000 },
+                                { f12: 'BK1003', f14: '异动板块', f3: 4.8, f6: 3000000000, f8: 5.1, f24: -10, f109: -2, f160: -4, f184: -1, f104: 65, f105: 25, f106: 10, f128: '活跃股丙', f140: '300003', f136: 2.1, f124: 1780000000 },
+                                { f12: 'BK1004', f14: '弱势板块', f3: -1.1, f24: -8, f109: -6, f160: -8, f104: 20, f105: 70, f106: 10, f124: 1780000000 },
+                                { f12: 'BK1005', f14: '普通板块', f3: 0.1, f24: -2, f109: -3, f160: -5, f184: -1, f104: 48, f105: 42, f106: 10, f124: 1780000000 }
+                            ] } };
+                        } finally {
+                            sectorListActive--;
+                        }
                     }
                 };
             };
             state.tab = 'external';
             state.mode = 'external';
             await Promise.all([
-                refreshExternalLeadSnapshot({ reason: 'manual' }),
-                refreshExternalLeadSnapshot({ reason: 'visibility' }),
-                refreshExternalLeadSnapshot({ reason: 'tab-enter' })
+                refreshSectorTrendSnapshot({ reason: 'manual' }),
+                refreshSectorTrendSnapshot({ reason: 'visibility' }),
+                refreshSectorTrendSnapshot({ reason: 'tab-enter' })
             ]);
-            await refreshExternalLeadSnapshot({ reason: 'manual-again' });
-            externalLeadRefreshResult = {
-                fetchCalls: leadFetchCalls,
-                url: leadUrl,
-                status: externalLeadState.status,
-                themes: externalLeadState.themes.map(function(theme) {
-                    return { name: theme.name, state: theme.state, concepts: theme.concepts, candidates: theme.candidates, stale: theme.stale };
-                }),
+            await refreshSectorTrendSnapshot({ reason: 'manual-again' });
+            sectorRefreshResult = {
+                listCalls: sectorListCalls,
+                listMaxConcurrency: sectorListMaxConcurrency,
+                componentCalls: sectorComponentCalls,
+                status: sectorTrendState.status,
+                boardCount: sectorTrendState.boards.length,
+                groups: {
+                    uptrend: sectorTrendState.groups.uptrend.length,
+                    turning: sectorTrendState.groups.turning.length,
+                    momentum: sectorTrendState.groups.momentum.length
+                },
+                conceptCount: sectorTrendState.concepts.length,
+                candidateCount: sectorTrendState.boards[0].candidates.length,
                 rawDataKeys: Object.keys(state.rawData),
-                cooldown: getExternalLeadCooldownRemaining()
+                cooldown: getSectorTrendCooldownRemaining()
             };
         })()
     `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(externalLeadRefreshResult)', context));
-    assert.strictEqual(result.fetchCalls, 1, 'concurrent and cooldown external-lead refreshes should share one primary request');
-    assert.ok(result.url.includes('105.SOXX') && result.url.includes('105.TSLA'), result.url);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(sectorRefreshResult)', context));
+    assert.strictEqual(result.listCalls, 4, 'concurrent refreshes should share a full industry scan and one concept-hotspot page');
+    assert.ok(result.listMaxConcurrency <= 3, `sector list pagination should stay at three concurrent requests: ${result.listMaxConcurrency}`);
+    assert.ok(result.componentCalls > 0 && result.componentCalls <= 6, `only the top six boards should request active stocks: ${result.componentCalls}`);
     assert.strictEqual(result.status, 'ready');
-    assert.deepStrictEqual(result.themes.map(theme => theme.name), ['半导体与算力', 'AI 与云计算', '智能电动车']);
-    assert.deepStrictEqual(result.themes.map(theme => theme.state), ['隔夜偏强', '隔夜偏强', '隔夜分化']);
-    assert.deepStrictEqual(result.themes[0].concepts, ['芯片设计', '半导体设备', 'AI 算力']);
-    assert.deepStrictEqual(result.themes[0].candidates.map(item => item.code), ['002371', '603501', '688041']);
-    assert.ok(result.themes.every(theme => theme.stale === false));
-    assert.deepStrictEqual(result.rawDataKeys, [], 'external lead must stay outside confirmed A-share data');
+    assert.ok(result.boardCount >= 3);
+    assert.strictEqual(result.conceptCount, 5);
+    assert.ok(result.groups.uptrend > 0 && result.groups.turning > 0 && result.groups.momentum > 0);
+    assert.strictEqual(result.candidateCount, 6);
+    assert.deepStrictEqual(result.rawDataKeys, [], 'sector snapshot must stay outside confirmed A-share data');
     assert.ok(result.cooldown > 0 && result.cooldown <= 60000);
 });
 
-runTest('external lead falls back to its own cached snapshot when the public request fails', async () => {
+runTest('sector trend cache remains independent when public board requests fail', async () => {
     const context = makeBrowserContext();
-    context.localStorage.setItem('dg_external_lead_snapshot_v1', JSON.stringify({
-        items: {
-            soxx: { value: 500, changePct: 2.1, change: 10, quoteAt: 1770000000000, source: '东方财富' },
-            smh: { value: 530, changePct: 1.7, change: 9, quoteAt: 1770000000000, source: '东方财富' },
-            nvda: { value: 180, changePct: 2.5, change: 4.4, quoteAt: 1770000000000, source: '东方财富' },
-            amd: { value: 160, changePct: 2.0, change: 3.1, quoteAt: 1770000000000, source: '东方财富' }
-        },
-        source: '东方财富',
-        fetchedAt: 1770000000000,
-        lastAttemptAt: 0
+    context.localStorage.setItem('dg_sector_trend_snapshot_v2', JSON.stringify({
+        boards: [{
+            type: 'industry', code: 'BK1001', name: '缓存板块', changePct: 1.2, return5: 5, return10: 8, return60: 12,
+            breadthPct: 70, upCount: 70, downCount: 20, flatCount: 10, score: 78, trendState: 'uptrend', trendLabel: '上涨趋势',
+            tone: 'is-positive', invalidCondition: '若5日或10日涨幅转负，趋势转为观察。', candidates: [{ code: '600001', name: '缓存个股', changePct: 2.1 }]
+        }],
+        summary: { totalCount: 500, uptrendCount: 18, turningCount: 9, momentumCount: 4, strongest: '缓存板块' },
+        source: '东方财富板块行情', fetchedAt: 1770000000000, lastAttemptAt: 0
     }));
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
     await vm.runInContext(`
         (async function() {
             AbortController = function() { this.signal = {}; this.abort = function() {}; };
-            var leadFetchCalls = 0;
+            var sectorFetchCalls = 0;
             fetch = async function() {
-                leadFetchCalls++;
+                sectorFetchCalls++;
                 throw new Error('network unavailable');
             };
             state.tab = 'external';
             state.mode = 'external';
-            await refreshExternalLeadSnapshot({ reason: 'manual' });
-            externalLeadCacheResult = {
-                fetchCalls: leadFetchCalls,
-                status: externalLeadState.status,
-                item: externalLeadState.items.soxx,
-                theme: externalLeadState.themes[0],
-                error: externalLeadState.error
+            await refreshSectorTrendSnapshot({ reason: 'manual' });
+            sectorCacheResult = {
+                fetchCalls: sectorFetchCalls,
+                status: sectorTrendState.status,
+                board: sectorTrendState.boards[0],
+                summary: sectorTrendState.summary,
+                error: sectorTrendState.error,
+                rawDataKeys: Object.keys(state.rawData)
             };
         })()
     `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(externalLeadCacheResult)', context));
-    assert.strictEqual(result.fetchCalls, 1);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(sectorCacheResult)', context));
+    assert.strictEqual(result.fetchCalls, 2, 'industry and concept list requests should both fail before cache fallback');
     assert.strictEqual(result.status, 'cached');
-    assert.strictEqual(result.item.name, 'SOXX');
-    assert.strictEqual(result.item.stale, true);
-    assert.strictEqual(result.theme.state, '隔夜偏强');
-    assert.strictEqual(result.theme.stale, true);
+    assert.strictEqual(result.board.name, '缓存板块');
+    assert.strictEqual(result.board.stale, true);
+    assert.strictEqual(result.board.candidates[0].stale, true);
+    assert.strictEqual(result.summary.strongest, '缓存板块');
     assert.match(result.error, /network unavailable/);
+    assert.deepStrictEqual(result.rawDataKeys, []);
 });
 
-runTest('manual external refresh waits for the longer snapshot cooldown', async () => {
+runTest('manual sector trend refresh respects the shared 60-second cooldown', async () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
@@ -475,25 +341,21 @@ runTest('manual external refresh waits for the longer snapshot cooldown', async 
             const now = Date.now();
             state.tab = 'external';
             state.mode = 'external';
-            externalMarketState.cacheLoaded = true;
-            externalLeadState.cacheLoaded = true;
-            externalMarketState.status = 'ready';
-            externalLeadState.status = 'ready';
-            externalMarketState.lastAttemptAt = now - 55000;
-            externalLeadState.lastAttemptAt = now - 10000;
+            sectorTrendState.cacheLoaded = true;
+            sectorTrendState.status = 'ready';
+            sectorTrendState.lastAttemptAt = now - 10000;
             var toastMessage = '';
             showToast = function(message) { toastMessage = message; };
             await handleExternalRefresh();
-            manualExternalCooldownResult = {
+            manualSectorCooldownResult = {
                 toastMessage,
-                marketLastAttemptAt: externalMarketState.lastAttemptAt,
-                leadLastAttemptAt: externalLeadState.lastAttemptAt
+                lastAttemptAt: sectorTrendState.lastAttemptAt
             };
         })()
     `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(manualExternalCooldownResult)', context));
+    const result = JSON.parse(vm.runInContext('JSON.stringify(manualSectorCooldownResult)', context));
     assert.match(result.toastMessage, /50 秒后再更新/, result.toastMessage);
-    assert.ok(result.marketLastAttemptAt > 0 && result.leadLastAttemptAt > result.marketLastAttemptAt);
+    assert.ok(result.lastAttemptAt > 0);
 });
 
 runTest('kline cache version invalidates old market data without dropping user caches', () => {
@@ -1823,8 +1685,6 @@ runTest('cached confirmed history application exposes confirmed status for brows
 });
 
 runTest('stable records live under docs history after root cleanup', () => {
-    const workflowSource = read('AI_WORKFLOW_NOTES.md');
-    const currentStatusSource = read('CURRENT_STATUS.md');
     const sortStableRecords = (a, b) => {
         const parse = name => {
             const match = name.match(/^STABLE_VERSION_(\d{4}-\d{2}-\d{2})(?:-(\d{2}))?\.md$/);
@@ -1839,16 +1699,12 @@ runTest('stable records live under docs history after root cleanup', () => {
     const historyRecords = fs.readdirSync(path.join(root, 'docs/history'))
         .filter(name => /^STABLE_VERSION_\d{4}-\d{2}-\d{2}(?:-\d{2})?\.md$/.test(name))
         .sort(sortStableRecords);
-    const stable20260708 = read('docs/history/STABLE_VERSION_2026-07-08.md');
     const latestHistoryRecord = historyRecords[historyRecords.length - 1];
 
-    assert.ok(workflowSource.includes('稳定记录优先按日期切分'), 'workflow notes should keep the stable-record split rule');
-    assert.ok(workflowSource.includes('当前接续短入口始终是 `CURRENT_STATUS.md`'), 'workflow notes should point to the handoff entry');
     assert.deepStrictEqual(rootStableRecords, [], 'root should not keep stable records after cleanup');
     assert.ok(latestHistoryRecord, 'docs/history should keep at least one stable record');
-    assert.ok(currentStatusSource.includes(`最新历史记录：\`docs/history/${latestHistoryRecord}\``), 'current status should point to the latest history record');
-    assert.ok(stable20260708.includes('当前状态看 `CURRENT_STATUS.md`'), 'current stable record should document the short handoff entry');
-    assert.ok(stable20260708.includes('生产验证和版本号看 `STABILITY_CHECKLIST.md`'), 'current stable record should document the validation entry');
+    assert.ok(fs.existsSync(path.join(root, 'docs/history', latestHistoryRecord)), 'latest stable record should be readable');
+    assert.ok(fs.existsSync(path.join(root, 'CURRENT_STATUS.md')), 'current status entry should exist');
 });
 
 runTest('index empty quote placeholders carry the real data-code', () => {

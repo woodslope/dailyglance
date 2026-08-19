@@ -406,15 +406,57 @@ function getStrongExitSignals(strategy = STRATEGY) {
     return new Set(list);
 }
 
-function isWindowBuySignalEligible(signal, signalDay, full, strategy = STRATEGY) {
+function isWaveL10TrendHandoffSignal(full, index, signal, strategy = STRATEGY) {
+    return signal === 'L10'
+        && !!strategy?.l10TrendHandoff
+        && full?.[index]?._decision?.waveL10TrendHandoff?.applied === true;
+}
+
+function isWaveMA20TrendDefenseSignal(full, index, signal, strategy = STRATEGY) {
+    return signal === strategy?.waveMA20PullbackObservation?.trendDefense?.standaloneExitSignal
+        && full?.[index]?._decision?.waveMA20PullbackObservation?.defenseType === 'standalone_l3';
+}
+
+function isWindowBuySignalEligible(signal, signalDay, full, strategy = STRATEGY, earliestEligibleDay = 0) {
     const guard = strategy?.windowSignalGuards?.[signal];
     if (!guard) return true;
     const companionSignals = new Set(guard.companionSignals || []);
     const recentDays = Math.max(1, Number(guard.recentDays) || 1);
-    for (let day = Math.max(0, signalDay - recentDays + 1); day <= signalDay; day++) {
+    for (let day = Math.max(0, earliestEligibleDay, signalDay - recentDays + 1); day <= signalDay; day++) {
         if ((full[day]?._signals || []).some(item => companionSignals.has(item))) return true;
     }
     return false;
+}
+
+function getPostEventBuyScoreContext(idx, full, ind, triggerDay, strategy = STRATEGY) {
+    const firstDay = Math.max(Number(triggerDay) + 1, idx - Math.max(1, Number(strategy?.windowDays) || 1) + 1);
+    const usedSignals = new Set();
+    const groupBest = new Map();
+    for (let day = firstDay; day <= idx; day++) {
+        for (const signal of full?.[day]?._signals || []) {
+            if (usedSignals.has(signal) || !signal.startsWith('B') || !strategy?.buySignals?.includes(signal)) continue;
+            if (!isWindowBuySignalEligible(signal, day, full, strategy, firstDay)) continue;
+            const invalidation = getWindowSignalInvalidation(signal, day, idx, full, ind, strategy);
+            if (invalidation && invalidation.reason !== 'local-price-break') continue;
+            const score = getSignalScore(signal, strategy);
+            const groupKey = getScoreGroupKey(strategy, signal);
+            const existing = groupBest.get(groupKey);
+            if (!existing || score > existing.score) groupBest.set(groupKey, {
+                signal,
+                score,
+                groupKey,
+                day,
+                signalDate: full?.[day]?.date || '',
+                dayOffset: idx - day
+            });
+            usedSignals.add(signal);
+        }
+    }
+    const signals = Array.from(groupBest.values());
+    return {
+        score: signals.reduce((sum, item) => sum + item.score, 0),
+        signals
+    };
 }
 
 function getB11StructureDefense(signalDay, full, strategy = STRATEGY) {
@@ -549,7 +591,10 @@ function calculateAllSignals(idx, full, ind) {
     let lastExitIdx = -1, previousStrongExitIdx = -1;
     const strongExitSet = getStrongExitSignals(S);
     for(let i = idx; i >= Math.max(0, idx - 60); i--) { 
-        if((full[i]?._signals || []).some(s => s.startsWith('L') && S.exitSignals?.includes(s) && strongExitSet.has(s))) {
+        if((full[i]?._signals || []).some(s => s.startsWith('L') && S.exitSignals?.includes(s)
+            && strongExitSet.has(s)
+            && !isWaveL10TrendHandoffSignal(full, i, s, S)
+            && !isWaveMA20TrendDefenseSignal(full, i, s, S))) {
             if(lastExitIdx < 0) lastExitIdx = i;
             else { previousStrongExitIdx = i; break; }
         }
@@ -564,7 +609,9 @@ function calculateAllSignals(idx, full, ind) {
     for(let i = Math.max(0, idx - S.windowDays + 1); i <= idx; i++) {
         (full[i]?._signals || []).forEach(sig => {
             if(!usedSignals.has(sig)) {
-                if(sig.startsWith('L') && S.exitSignals?.includes(sig)) { windowSignals.push({day: i, signal: sig}); usedSignals.add(sig); } 
+                if(sig.startsWith('L') && S.exitSignals?.includes(sig)
+                    && !isWaveL10TrendHandoffSignal(full, i, sig, S)
+                    && !isWaveMA20TrendDefenseSignal(full, i, sig, S)) { windowSignals.push({day: i, signal: sig}); usedSignals.add(sig); }
                 else if(sig.startsWith('B') && S.buySignals?.includes(sig) && i > lastExitIdx && isWindowBuySignalEligible(sig, i, full, S)) {
                     const invalidation = getWindowSignalInvalidation(sig, i, idx, full, ind, S);
                     if (invalidation?.reason === 'local-price-break') localBreakWindowSignals.push(invalidation);
@@ -577,7 +624,11 @@ function calculateAllSignals(idx, full, ind) {
         });
     }
     
-    const windowScoreSignals = Array.from(groupBest.values()).map(item => ({ ...item, dayOffset: idx - item.day }));
+    const windowScoreSignals = Array.from(groupBest.values()).map(item => ({
+        ...item,
+        dayOffset: idx - item.day,
+        signalDate: full?.[item.day]?.date || ''
+    }));
     return {
         currentDay: idx,
         currentDate: full[idx]?.date || '',
@@ -703,13 +754,13 @@ function getReadyPositionForStrategy(strategy, meta, fallback) {
 }
 
 function getBasePosition(idx, full, ind, meta) {
-    if (meta.type === '✅ 明确转强') return getReadyPositionForStrategy(STRATEGY, meta, 80);
-    if (meta.type === '⚠️ 谨慎看多') return Number(STRATEGY.cautiousPosition || 0) || 50;
-    if (meta.type === '👀 关注异动') return getWatchPositionForStrategy(STRATEGY, meta);
+    if (meta.type === '✅ 明确转强') return quantizePosition(getReadyPositionForStrategy(STRATEGY, meta, 80));
+    if (meta.type === '⚠️ 谨慎看多') return quantizePosition(Number(STRATEGY.cautiousPosition || 0) || 50);
+    if (meta.type === '👀 关注异动') return quantizePosition(getWatchPositionForStrategy(STRATEGY, meta));
     if (meta.type === '📈 趋势抱单') {
         const holdPosition = Number(STRATEGY.holdPosition || 0);
-        if (holdPosition > 0) return holdPosition;
-        return (ind.ma?.[20]?.[idx] && ind.ma?.[60]?.[idx] && ind.ma[20][idx] > ind.ma[60][idx]) ? 60 : 40;
+        if (holdPosition > 0) return quantizePosition(holdPosition);
+        return 50;
     }
     return 0;
 }
@@ -781,6 +832,34 @@ function getRiskContext(idx, full, ind) {
     return { score: Math.max(0, Math.round(score)), level, coef, flags, atrPct, distMA20, drawdown, support: low20, pressure: high20, watch: ma20 || close, stop: Math.min(Math.max(low20, close - atr * 2), close), ma60: ma60 || null };
 }
 
+function getRiskAdjustmentDetails(risk = {}) {
+    const flags = Array.isArray(risk.flags) ? risk.flags : [];
+    const details = [];
+    const drawdown = Number(risk.drawdown);
+    const atrPct = Number(risk.atrPct);
+    const distMA20 = Number(risk.distMA20);
+    const hasHeatFlag = flags.includes('短线偏热') || flags.includes('偏离MA20过远');
+    if (hasHeatFlag && Number.isFinite(distMA20)) details.push(`收盘价高于MA20 ${(distMA20 * 100).toFixed(1)}%`);
+    if (flags.includes('跌破MA20较深') && Number.isFinite(distMA20)) details.push(`收盘价低于MA20 ${(Math.abs(distMA20) * 100).toFixed(1)}%`);
+    if ((flags.includes('回撤较深') || drawdown > 0.07) && Number.isFinite(drawdown)) details.push(`近20日高点回撤 ${(drawdown * 100).toFixed(1)}%`);
+    if ((flags.includes('波动偏高') || flags.includes('波动过高') || atrPct > 0.025) && Number.isFinite(atrPct)) details.push(`14日波动 ${(atrPct * 100).toFixed(1)}%`);
+    flags.forEach(flag => {
+        if (!['短线偏热', '偏离MA20过远', '跌破MA20较深', '回撤较深', '波动偏高', '波动过高'].includes(flag)) details.push(flag);
+    });
+    if (hasHeatFlag && !Number.isFinite(distMA20)) details.push(flags.includes('偏离MA20过远') ? '偏离MA20过远' : '短线偏热');
+    if (flags.includes('跌破MA20较深') && !Number.isFinite(distMA20)) details.push('跌破MA20较深');
+    if (flags.includes('回撤较深') && !Number.isFinite(drawdown)) details.push('回撤较深');
+    if ((flags.includes('波动偏高') || flags.includes('波动过高')) && !Number.isFinite(atrPct)) details.push(flags.includes('波动过高') ? '波动过高' : '波动偏高');
+    return details;
+}
+
+function hasShortTermHeatRisk(meta, risk) {
+    const flags = risk?.flags || [];
+    return flags.includes('短线偏热')
+        || flags.includes('偏离MA20过远')
+        || (meta?.warningSignals || []).includes('W1');
+}
+
 function getExitSeverity(meta, idx, full, ind) {
     const exits = meta.exitSignals || [], raw = Object.keys(meta.allSignals || {});
     if (meta.type && meta.type.includes('清仓规避')) return { level: '清仓防守', detail: '触发高危清仓信号' };
@@ -828,7 +907,8 @@ function getPositionDriverText(meta, market, risk, exit, base, position, prevPos
     }
 
     const pieces = [`基础 ${base}%`];
-    if ((risk?.coef ?? 1) !== 1) pieces.push(`风险系数 ${risk.coef.toFixed(2)}`);
+    const riskCap = getRiskPositionCap(risk);
+    if (base > riskCap) pieces.push(`风险最高允许 ${riskCap}%`);
     if (positionCap?.reason) pieces.push(positionCap.reason);
     if (marketGate?.detail) pieces.push(marketGate.detail);
     pieces.push(position === prevPos ? `维持 ${position}%` : `调整至 ${position}%`);
@@ -838,6 +918,93 @@ function getPositionDriverText(meta, market, risk, exit, base, position, prevPos
 
 function formatPriceLevel(value) {
     return Number.isFinite(value) ? Number(value).toFixed(2) : '--';
+}
+
+function formatRatioPercent(value, digits = 1) {
+    const number = Number(value);
+    return Number.isFinite(number) ? `${(Math.abs(number) * 100).toFixed(digits)}%` : '--';
+}
+
+function getWavePressureSourceText(waveRejection) {
+    const sources = Array.isArray(waveRejection?.pressureSources) ? waveRejection.pressureSources : [];
+    const texts = [];
+    const invalidationGroups = new Map();
+    for (const source of sources) {
+        const level = Number(source?.level);
+        if (!Number.isFinite(level)) continue;
+        if (source?.type === 'signal_invalidation') {
+            const key = level.toFixed(4);
+            if (!invalidationGroups.has(key)) invalidationGroups.set(key, { level, signals: [] });
+            if (source.signal) invalidationGroups.get(key).signals.push(getUserSignalText(source.signal));
+            continue;
+        }
+        if (source?.type === 'ma' && Number.isFinite(Number(source.period))) {
+            texts.push(`MA${Number(source.period)} ${formatPriceLevel(level)}`);
+        } else if (source?.type === 'pivot') {
+            texts.push(`${source.date ? `${source.date}的` : '近期'}结构高点${formatPriceLevel(level)}`);
+        } else if (source?.type === 'signal_low') {
+            texts.push(`${source.date ? `${source.date}的` : ''}买入日低点${formatPriceLevel(level)}`);
+        } else if (source?.type === 'recent_high') {
+            texts.push(`近期高点${formatPriceLevel(level)}`);
+        }
+    }
+    for (const group of invalidationGroups.values()) {
+        const names = [...new Set(group.signals)].slice(0, 2);
+        const nameText = names.length ? `${names.join('、')}${group.signals.length > names.length ? '等' : ''}` : '买入信号';
+        texts.push(`${nameText}失效位${formatPriceLevel(group.level)}`);
+    }
+    return [...new Set(texts)].slice(0, 2).join('、') || '对应压力位';
+}
+
+function getWaveEventEvidenceText(waveRejection) {
+    const eventDate = waveRejection?.triggerDate || '当日';
+    const entryDate = waveRejection?.entryDate || '';
+    const entryCloseLabel = entryDate ? `${entryDate}买入收盘` : '买入日收盘';
+    const entryLowLabel = entryDate ? `${entryDate}买入日最低价` : '买入日最低价';
+    const highText = formatPriceLevel(Number(waveRejection?.triggerHigh));
+    const lowText = formatPriceLevel(Number(waveRejection?.triggerLow));
+    const closeText = formatPriceLevel(Number(waveRejection?.triggerClose));
+    const entryCloseText = formatPriceLevel(Number(waveRejection?.entryClose));
+    const entryLowText = formatPriceLevel(Number(waveRejection?.entrySignalLow));
+    const pressureText = getWavePressureSourceText(waveRejection);
+    const upperShadowText = formatRatioPercent(waveRejection?.upperShadowRangeRatio);
+    const entryChange = Number(waveRejection?.profitRatio);
+    const entryChangeText = Number.isFinite(entryChange)
+        ? `较${entryCloseLabel}${entryCloseText}${entryChange >= 0 ? '上涨' : '下跌'}${formatRatioPercent(entryChange)}`
+        : '';
+    if (waveRejection?.status === 'entry_blocked' || waveRejection?.eventType === 'entry_day_pressure_rejection') {
+        return `${eventDate}高点${highText}触及${pressureText}，收盘${closeText}仍在压力位下方，上影占全天振幅${upperShadowText}`;
+    }
+    if (['fresh_entry_failure', 'fresh_entry_ma20_hold'].includes(waveRejection?.eventType)) {
+        const closeAtLowText = Number(waveRejection?.triggerClose) <= Number(waveRejection?.triggerLow) ? '并收在全天最低' : `，全天最低${lowText}`;
+        const secondDayAttackText = Number(waveRejection?.entryAge) === 2
+            ? (waveRejection?.pressureAttackType === 'new_source'
+                ? '，第二个交易日首次进入新的压力区'
+                : `，第二个交易日高点较前一日继续提高${formatRatioPercent(waveRejection?.secondDayHighAdvanceRatio)}`)
+            : '';
+        return `${eventDate}高点${highText}触及${pressureText}${secondDayAttackText}，随后回落至${closeText}${closeAtLowText}；${entryChangeText}，上影占全天振幅${upperShadowText}`;
+    }
+    if (waveRejection?.eventType === 'fresh_entry_hard_break') {
+        return `${eventDate}收盘跌破${entryLowLabel}${entryLowText}（收盘${closeText}）${entryChangeText ? `，${entryChangeText}` : ''}`;
+    }
+    if (waveRejection?.eventType === 'fresh_entry_downside_failure') {
+        const defenseGapText = formatRatioPercent(waveRejection?.downsideCloseGapRatio);
+        const bodyText = formatRatioPercent(waveRejection?.downsideBearBodyRangeRatio);
+        return `${eventDate}盘中最低${lowText}跌破${entryLowLabel}${entryLowText}，收盘${closeText}距该防守位仅${defenseGapText}，阴线实体占全天振幅${bodyText}`;
+    }
+    if (waveRejection?.eventType === 'signal_hard_invalidation') {
+        return `${eventDate}收盘${closeText}跌破${pressureText}`;
+    }
+    if (waveRejection?.eventType === 'risk_cap_zero_exit') {
+        return `${eventDate}风险评分${Number.isFinite(Number(waveRejection.riskScore)) ? Number(waveRejection.riskScore) : '--'}分，风险上限降至0%`;
+    }
+    const highPullback = Number(waveRejection?.triggerHigh) > 0
+        ? Number(waveRejection.triggerClose) / Number(waveRejection.triggerHigh) - 1
+        : NaN;
+    const volumeText = Number.isFinite(Number(waveRejection?.volumeRatio))
+        ? `，成交量为近5日均量${Number(waveRejection.volumeRatio).toFixed(1)}倍`
+        : '';
+    return `${eventDate}高点${highText}触及${pressureText}后回落至${closeText}，从日内高点回撤${formatRatioPercent(highPullback)}，上影占全天振幅${upperShadowText}${volumeText}`;
 }
 
 function getEffectiveWindowBuySignals(meta, strategy = STRATEGY) {
@@ -874,12 +1041,218 @@ function getSignalCauseSummary(meta, maxSignals = 2) {
     const selected = items.slice(0, Math.max(1, maxSignals));
     const names = selected.map(item => getUserSignalText(item.signal));
     if (!names.length) return { items, selected, names, timing: '', text: '' };
-    const offsets = selected.map(item => Number(item.dayOffset));
-    const hasToday = offsets.some(offset => offset === 0);
-    const allToday = offsets.length > 0 && offsets.every(offset => offset === 0);
-    const timing = allToday ? '今日出现的' : (hasToday ? '今日与近窗内的' : '近窗内的');
-    const suffix = items.length > selected.length ? '等有效信号' : '有效信号';
-    return { items, selected, names, timing, text: `${timing}${names.join('、')}${suffix}` };
+    const currentDay = Number(meta?.currentDay);
+    const todayNames = [];
+    const historical = new Map();
+    selected.forEach((item, index) => {
+        const isToday = Number(item?.dayOffset) === 0 || (Number.isFinite(currentDay) && Number(item?.day) === currentDay);
+        if (isToday) {
+            todayNames.push(names[index]);
+            return;
+        }
+        const date = item?.signalDate || (item?.dayDate || '此前');
+        if (!historical.has(date)) historical.set(date, []);
+        historical.get(date).push(names[index]);
+    });
+    const parts = [];
+    if (todayNames.length) parts.push(`今日出现${todayNames.join('、')}`);
+    historical.forEach((signalNames, date) => {
+        parts.push(`${date}出现${signalNames.join('、')}，目前仍有效`);
+    });
+    const timing = todayNames.length && historical.size ? '今日与历史窗口' : (todayNames.length ? '今日' : '历史窗口');
+    const extraText = items.length > selected.length ? '；另有其他有效信号' : '';
+    return { items, selected, names, timing, text: `${parts.join('；')}${extraText}` };
+}
+
+function getPlainPositionLimitText(reason = '') {
+    return String(reason || '')
+        .replace(/W4缩量上涨背离/g, '上涨动能减弱')
+        .replace(/W\d+/g, '')
+        .replace(/个股处于中期下降趋势/g, '个股中期趋势偏弱')
+        .replace(/个股尚未形成完整多头结构/g, '个股多头结构还未确认')
+        .replace(/个股趋势数据不足/g, '个股趋势数据不足')
+        .replace(/高仓位上限/g, '仓位上限')
+        .replace(/^[，、；\s]+|[，、；\s]+$/g, '')
+        .replace(/[，、；]\s*[，、；]/g, '，')
+        .replace(/；+/g, '；')
+        .trim();
+}
+
+function getPlainDisplayText(text = '') {
+    return String(text || '')
+        .replace(/B11/g, '局部回踩信号')
+        .replace(/\b[BLW]\d+\b/g, '')
+        .replace(/近窗/g, '最近几个交易日')
+        .replace(/核心宽基偏弱下/g, '核心宽基偏弱时')
+        .replace(/增仓门禁/g, '市场新增风险限制')
+        .replace(/风险系数/g, '风险评估')
+        .replace(/风险评分进入极端风险档/g, '当前风险已进入极端风险档')
+        .replace(/风险评分/g, '风险状况')
+        .replace(/\s+([，。；：])/g, '$1')
+        .replace(/([，。；：])\s+/g, '$1')
+        .replace(/[，、；]\s*[，、；]/g, '，')
+        .replace(/出现\s+/g, '出现')
+        .replace(/；+/g, '；')
+        .replace(/：\s*，/g, '：')
+        .trim();
+}
+
+function getPlainRiskAdjustmentText(risk = {}, basePosition, riskCoef, adjustedPosition, positionLabel = '基础仓位') {
+    const base = Number(basePosition);
+    const cap = getRiskPositionCap(risk);
+    const details = getRiskAdjustmentDetails(risk);
+    if (!Number.isFinite(base) || base <= cap) return `风险评估未限制，${positionLabel}按${Number.isFinite(base) ? `${base}%` : '当前档位'}执行`;
+    const reasonText = details.length ? details.join('、') : '当前风险偏高';
+    return cap > 0
+        ? `因${reasonText}，${positionLabel}最高按${cap}%档执行`
+        : `因${reasonText}，${positionLabel}归零防守`;
+}
+
+function getRiskCoefficientText(risk = {}) {
+    const cap = getRiskPositionCap(risk);
+    const score = Number(risk.score);
+    const details = getRiskAdjustmentDetails(risk);
+    const evidence = [...details];
+    if (Number.isFinite(score)) evidence.push(`风险评分 ${score}/100`);
+    if (!evidence.length && risk.level && risk.level !== '未知') evidence.push(risk.level);
+    return `风险最高允许${cap}%${evidence.length ? `（${evidence.join('、')}）` : ''}`;
+}
+
+function getStockPositionChangeDetails(meta, decision, signalCause, previousPosition, position, mode = 'stock') {
+    const isIndex = mode === 'index';
+    const scoreName = isIndex ? '指数动能积分' : '买入积分';
+    const signalName = isIndex ? '指数动能信号' : '买入信号';
+    const basePositionLabel = isIndex ? '基础风险仓位' : '基础仓位';
+    const currentPositionLabel = isIndex ? '风险仓位' : '仓位';
+    const scoreText = `${meta?.windowScore ?? 0}/${STRATEGY?.buyThreshold ?? '-'}`;
+    const causeText = signalCause?.text || `当前有效${signalName}`;
+    const basePosition = Number(decision?.basePosition);
+    const riskCoef = Number(decision?.risk?.coef);
+    const riskCap = getRiskPositionCap(decision?.risk);
+    const exitLevel = decision?.exit?.level || '无明确离场';
+    const directExitSignals = meta?.exitSignals || [];
+    const warningSignals = meta?.warningSignals || [];
+    const exitNames = directExitSignals.map(getUserSignalText);
+    const warningNames = warningSignals.map(getUserSignalText);
+    const isEntry = previousPosition === 0 && position > 0;
+    const isIncrease = position > previousPosition;
+    const isReduce = previousPosition > 0 && position > 0 && position < previousPosition;
+    const isExit = previousPosition > 0 && position === 0;
+    const path = [];
+    let hasLimiter = Number.isFinite(basePosition) && basePosition > riskCap;
+    const adjustedPosition = Number.isFinite(basePosition) ? quantizePosition(Math.min(basePosition, riskCap)) : null;
+
+    if (Number.isFinite(basePosition)) {
+        if (basePosition <= 0) {
+            path.push(isIndex ? '当前指数动能不足，基础风险仓位为0%' : '当前没有满足开仓条件，基础仓位为0%');
+        } else if (Number.isFinite(riskCoef)) {
+            path.push(`${basePositionLabel}为${basePosition}%（信号计算结果）`);
+            path.push(getPlainRiskAdjustmentText(decision?.risk, basePosition, riskCoef, adjustedPosition, basePositionLabel));
+        } else {
+            path.push(`${basePositionLabel}为${basePosition}%（信号计算结果），风险评估暂按原值处理`);
+        }
+    } else if (signalCause?.text) {
+        path.push(`${basePositionLabel}由${signalCause.text}计算`);
+    } else if (position > 0) {
+        path.push(`当前没有新增${signalName}，${basePositionLabel}沿用现有持仓判断`);
+    } else {
+        path.push(isIndex ? '当前指数动能不足，基础风险仓位按0%处理' : '当前没有有效买入信号，基础仓位按0%处理');
+    }
+
+    const marketGate = decision?.marketGate || {};
+    const isCriticalExit = ['清仓防守', '强离场'].includes(exitLevel)
+        || ['清仓离场', '规避风险'].includes(decision?.simpleAction);
+    if (isCriticalExit) {
+        hasLimiter = true;
+        const triggerText = exitNames.length ? `出现${exitNames.join('、')}` : getPlainDisplayText(decision?.exit?.detail || exitLevel);
+        path.push(`${triggerText}，强离场规则要求${currentPositionLabel}归零`);
+    } else if (meta?.inCooldown) {
+        hasLimiter = true;
+        path.push(`${getCooldownProgress(meta).label}，冷静期要求${currentPositionLabel}保持0%`);
+    } else {
+        const b11Defense = decision?.b11StructureDefense;
+        if (!isIndex && state.mode === 'stock' && state.strategy === '波段抄底型' && b11Defense?.localBreak) {
+            hasLimiter = true;
+            path.push('局部回踩失守但结构位未破，暂停加仓，保留当前试探仓');
+        }
+        if (decision?.softSignalGrace?.applied) {
+            hasLimiter = true;
+            path.push(`短线动能转弱但仍在观察期，先保留当前${currentPositionLabel}观察${decision.softSignalGrace.days}个交易日`);
+        }
+        const isDefensiveCap = ['减仓观察', '延续防守'].includes(exitLevel);
+        if (isDefensiveCap) {
+            hasLimiter = true;
+            const triggerText = exitNames.length
+                ? `出现${exitNames.join('、')}`
+                : (warningNames.length ? `出现${warningNames.join('、')}预警` : getPlainDisplayText(decision?.exit?.detail || exitLevel));
+            path.push(`${triggerText}，${currentPositionLabel}防守上限为30%`);
+        } else if (warningNames.length) {
+            hasLimiter = true;
+            path.push(`出现${warningNames.join('、')}预警，仓位最高按30%档执行`);
+        }
+        if (Number(decision?.risk?.score) < 40) {
+            hasLimiter = true;
+            path.push(`当前风险进入极端档，${currentPositionLabel}归零防守`);
+        }
+        if (!isIndex && decision?.positionCap?.reason) {
+            hasLimiter = true;
+            path.push(getPlainPositionLimitText(decision.positionCap.reason));
+        }
+    }
+
+    if (marketGate.type === 'increase-capped') {
+        hasLimiter = true;
+        const tierText = marketGate.strengthTier === 'independent' ? (isIndex ? '指数自身独立走强' : '标的独立走强') : '普通机会';
+        path.push(`核心宽基偏弱时，${tierText}新增风险上限为${marketGate.cap}%，已有${currentPositionLabel}不因市场偏弱被动降低`);
+    }
+    if (isIncrease && !hasLimiter) {
+        if (marketGate.cap != null && Number.isFinite(Number(marketGate.cap))) path.push(`当前基础仓位未超过市场新增风险上限 ${marketGate.cap}%`);
+        else path.push('风险评估未额外下调，市场也未限制本次增加仓位');
+    }
+    if (position === previousPosition && position > 0) {
+        const sourceText = signalCause?.text || `此前形成的有效${signalName}`;
+        const higherTierText = !hasLimiter ? `，但尚未满足进入更高${currentPositionLabel}档位的条件` : '';
+        path.push(`${sourceText}仍支持当前${currentPositionLabel}${higherTierText}`);
+    } else if (position === previousPosition && position === 0) {
+        path.push(isIndex ? '当前没有提高市场风险的依据，继续保持低风险' : '当前没有有效开仓依据，继续保持空仓');
+    }
+    const finalChangeText = isIndex
+        ? (previousPosition === 0
+            ? (position === 0 ? '最终风险仓位保持0%' : `最终风险仓位由0%提高至${position}%`)
+            : (position === previousPosition ? `最终风险仓位维持${position}%`
+                : `最终风险仓位由${previousPosition}%${position > previousPosition ? '提高至' : '降至'}${position}%`))
+        : (previousPosition === 0
+            ? (position === 0 ? '最终保持0%空仓' : `最终由空仓转为${position}%`)
+            : (position === previousPosition ? `最终维持${position}%`
+                : `最终由${previousPosition}%${position > previousPosition ? '提高至' : '降至'}${position}%`));
+    path.push(`因此${finalChangeText}`);
+
+    let reason = '';
+    if (isEntry) {
+        reason = `${causeText}使${scoreName}达到 ${scoreText}，满足首次建仓条件`;
+    } else if (isIncrease) {
+        reason = `${causeText}使${scoreName}达到 ${scoreText}，满足继续增加仓位条件`;
+    } else if (isReduce) {
+        const drivers = [];
+        if (exitNames.length) drivers.push(`出现${exitNames.join('、')}`);
+        if (warningNames.length) drivers.push(`出现${warningNames.join('、')}预警`);
+        if (!exitNames.length && !warningNames.length && ['减仓观察', '延续防守'].includes(exitLevel) && decision?.exit?.detail) drivers.push(decision.exit.detail);
+        if (Number.isFinite(basePosition) && basePosition < previousPosition) drivers.push(`买入积分为${scoreText}，所以信号给出的基础仓位从${previousPosition}%降至${basePosition}%`);
+        if (Number.isFinite(basePosition)) drivers.push(getPlainRiskAdjustmentText(decision?.risk, basePosition, riskCoef, position));
+        if (Number(decision?.risk?.score) < 40) drivers.push('风险评分进入极端风险档');
+        if (decision?.positionCap?.reason) drivers.push(getPlainPositionLimitText(decision.positionCap.reason));
+        reason = `${drivers.length ? [...new Set(drivers)].slice(0, 3).join('；') : `当前信号对应基础仓位为${Number.isFinite(basePosition) ? `${basePosition}%` : `${position}%`}`}`;
+    } else if (isExit) {
+        const triggerText = exitNames.length
+            ? `出现${exitNames.join('、')}`
+            : (basePosition <= 0 ? `买入积分降至 ${scoreText}，原持仓依据失效` : getPlainDisplayText(decision?.exit?.detail || '离场条件成立'));
+        reason = triggerText;
+    }
+
+    return {
+        reason,
+        positionExplanation: path.join('；')
+    };
 }
 
 function getWaveBQualityMetadata(meta, decision, ruleset = WAVE_B_QUALITY_RULESET) {
@@ -1099,6 +1472,122 @@ function getIndexInvalidCondition(meta, decision, position, hasWarning) {
     return `只要不跌破${stopGuard}，且不出现强离场信号，当前市场判断继续有效；若触发其一，先降低风险暴露。`;
 }
 
+function getStockNextFocus(meta, decision, position, hasWarning) {
+    const threshold = STRATEGY?.buyThreshold ?? '-';
+    const currentScore = Number(meta?.windowScore);
+    const numericThreshold = Number(threshold);
+    const scoreText = threshold === '-' ? '买入积分重新达标' : `买入积分重新达到${threshold}/${threshold}`;
+    const addCondition = Number.isFinite(currentScore) && Number.isFinite(numericThreshold) && currentScore < numericThreshold
+        ? scoreText
+        : '出现新的有效买入信号';
+    const marketGate = decision?.marketGate || {};
+    const defense = decision?.b11StructureDefense;
+    const waveRejection = decision?.waveRejectionProtection;
+    const stop = formatPriceLevel(decision?.risk?.stop);
+    const stopText = stop === '--' ? '防守位' : `防守位${stop}`;
+    if (decision?.exit?.level === '强离场' || decision?.exit?.level === '清仓防守') {
+        const cooldownDays = Math.max(1, Number(meta?.cooldownDays) || 3);
+        return `完成${cooldownDays}个交易日冷静期、且${scoreText}后，才重新考虑买入；若再次出现离场信号或跌破${stopText}，继续空仓。`;
+    }
+    if (meta?.inCooldown) {
+        const progress = getCooldownProgress(meta);
+        const cooldownText = progress.remaining > 0 ? `等剩余${progress.remaining}个冷静期交易日走完` : '等今天冷静期结束';
+        return `${cooldownText}、且${scoreText}后，才重新考虑买入；若再次出现防守信号，继续空仓。`;
+    }
+    if (waveRejection?.active) {
+        const recoveryCloseLevel = Number(waveRejection.recoveryCloseLevel ?? waveRejection.triggerClose);
+        const hardInvalidationProtection = ['signal_hard_invalidation', 'fresh_entry_hard_break'].includes(waveRejection.eventType);
+        const freshScoreRecoveryAllowed = ['fresh_entry_failure', 'fresh_entry_downside_failure'].includes(waveRejection.eventType)
+            && waveRejection.ma20RejectionExit !== true;
+        const recoveryLevelText = hardInvalidationProtection ? '信号失效位' : '风险日收盘';
+        const lockRemaining = Math.max(0, Number(waveRejection.lockRemaining) || 0);
+        if (lockRemaining > 0) {
+            return `先完成剩余${lockRemaining}个交易日的观察期；期间新信号不立即建仓，若再出现量价分歧则继续空仓。`;
+        }
+        if (freshScoreRecoveryAllowed) {
+            const minimumScore = Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4;
+            const minimumGroups = Number(waveRejection.minimumPostEventGroups) || 2;
+            return `完整观察期已结束；事件后新买入积分达到${minimumScore}分且至少来自${minimumGroups}个独立计分组，风险稳定后可恢复最多30%试探仓；不要求先收复风险日收盘价。`;
+        }
+        if (hardInvalidationProtection) {
+            const minimumScore = Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4;
+            const minimumGroups = Number(waveRejection.minimumPostEventGroups) || 2;
+            return `完整观察期已结束；事件后新买入积分重新达到${minimumScore}分且至少来自${minimumGroups}个独立计分组，或价格重新站回${recoveryLevelText}${recoveryCloseLevel.toFixed(2)}后，才恢复最多30%试探仓。`;
+        }
+        return `收复风险日高点${Number(waveRejection.triggerHigh).toFixed(2)}且事件后新的有效买入信号仍然有效，或至少两个交易日后站回${recoveryLevelText}${recoveryCloseLevel.toFixed(2)}，才考虑局部恢复；若再出现量价分歧，继续保持当前防守仓位。`;
+    }
+    if (waveRejection?.status === 'recovery_pending') {
+        return `出现新的有效买入信号且风险稳定后，才考虑首次恢复，首次最多30%；若再出现量价分歧或离场信号，继续空仓。`;
+    }
+    if (['released', 'recovery_started', 'recovery_hold'].includes(waveRejection?.status)) {
+        return `完成事件后的低仓观察且风险保持稳定后，才考虑继续提高仓位；若再出现量价分歧或离场信号，先降低仓位或离场。`;
+    }
+    if (position === 0 && marketGate.type === 'entry-blocked') {
+        return `核心宽基数据补齐、市场允许新增风险且${scoreText}后，才考虑开仓；若出现防守信号，继续空仓。`;
+    }
+    if (defense?.hardInvalidated) {
+        return `${scoreText}且重新站回结构防守位后，才考虑买入或加仓；若再次收盘跌破结构防守位或出现离场信号，继续离场观察。`;
+    }
+    if (defense?.localBreak) {
+        return `价格回到局部防守位上方、且${addCondition}后，才考虑加仓；若收盘跌破结构防守位或出现离场信号，减仓或离场。`;
+    }
+    if (decision?.softSignalGrace?.applied) {
+        return `观察期内价格不跌破防守位、且${addCondition}后，才考虑加仓；若观察期结束仍未改善或跌破防守位，减仓或离场。`;
+    }
+    if (marketGate.type === 'increase-capped') {
+        return `${addCondition}、且市场重新允许增加风险后，才考虑提高仓位；若跌破${stopText}或出现离场信号，减仓或离场。`;
+    }
+    if (position === 0) {
+        return `${scoreText}后才考虑开仓；若继续出现防守信号或跌破${stopText}，继续空仓。`;
+    }
+    if (position <= 30) {
+        const riskCondition = hasWarning ? '风险降温' : '风险保持稳定';
+        return `${addCondition}、且${riskCondition}后，才考虑加仓；若跌破${stopText}或出现离场信号，降到0%。`;
+    }
+    if (hasWarning) {
+        return `风险降温、且当前买入信号仍有效后，才考虑提高仓位；若风险继续升高、跌破${stopText}或出现离场信号，降低仓位或离场。`;
+    }
+    return `出现新的有效买入信号、且风险保持稳定后，才考虑提高仓位；若跌破${stopText}或出现离场信号，降低仓位或离场。`;
+}
+
+function getIndexNextFocus(meta, decision, position, hasWarning) {
+    const threshold = STRATEGY?.buyThreshold ?? '-';
+    const currentScore = Number(meta?.windowScore);
+    const numericThreshold = Number(threshold);
+    const scoreText = threshold === '-' ? '指数动能积分重新达标' : `指数动能积分重新达到${threshold}/${threshold}`;
+    const addCondition = Number.isFinite(currentScore) && Number.isFinite(numericThreshold) && currentScore < numericThreshold
+        ? scoreText
+        : '指数出现新的有效动能信号';
+    const marketGate = decision?.marketGate || {};
+    const stop = formatPriceLevel(decision?.risk?.stop);
+    const stopText = stop === '--' ? '指数防守位' : `指数防守位${stop}`;
+    if (decision?.exit?.level === '强离场' || decision?.exit?.level === '清仓防守') {
+        const cooldownDays = Math.max(1, Number(meta?.cooldownDays) || 3);
+        return `完成${cooldownDays}个交易日冷静期、且${scoreText}后，才重新考虑提高风险；若再次出现离场信号或跌破${stopText}，继续保持低风险。`;
+    }
+    if (meta?.inCooldown) {
+        const progress = getCooldownProgress(meta);
+        const cooldownText = progress.remaining > 0 ? `等剩余${progress.remaining}个冷静期交易日走完` : '等今天冷静期结束';
+        return `${cooldownText}、且${scoreText}后，才重新考虑提高风险；若再次出现防守信号，保持低风险。`;
+    }
+    if (marketGate.type === 'entry-blocked') {
+        return `核心宽基数据补齐、市场允许新增风险且${scoreText}后，才考虑提高风险；若出现防守信号，保持低风险。`;
+    }
+    if (marketGate.type === 'increase-capped') {
+        return `核心市场环境改善、且${addCondition}后，才考虑超过当前新增风险上限；若跌破${stopText}或出现离场信号，降低风险。`;
+    }
+    if (position === 0) {
+        return `${scoreText}后才考虑提高风险；若继续跌破${stopText}或出现防守信号，保持低风险。`;
+    }
+    if (position <= 30) {
+        return `${addCondition}、且重新站回短期趋势后，才考虑提高风险；若跌破${stopText}或出现离场信号，降到0%。`;
+    }
+    if (hasWarning) {
+        return `市场风险降温、且当前指数动能仍有效后，才考虑提高风险；若风险继续升高、跌破${stopText}或出现离场信号，降低风险。`;
+    }
+    return `指数出现新的有效动能信号、且风险保持稳定后，才考虑提高风险；若跌破${stopText}或出现离场信号，降低风险。`;
+}
+
 function getStockDecisionSummary(meta, decision) {
     const position = decision?.position ?? 0;
     const action = decision?.simpleAction || '持币观望';
@@ -1107,68 +1596,215 @@ function getStockDecisionSummary(meta, decision) {
     const riskFlags = decision?.risk?.flags || [];
     const scoreReady = !!decision?.signalReady || (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity);
     const hasWarning = (meta?.warningSignals || []).length > 0 || riskFlags.length > 0;
+    const hasHeatRisk = hasShortTermHeatRisk(meta, decision?.risk);
     const hasCriticalExit = ['清仓防守', '强离场'].includes(exitLevel) || ['清仓离场', '规避风险'].includes(action);
     const hasPositionExit = hasCriticalExit || action === '执行离场';
     const directExitSignals = meta?.exitSignals || [];
+    const waveRejection = decision?.waveRejectionProtection || { status: 'none', active: false };
+    const isFreshEntryFailure = ['fresh_entry_failure', 'fresh_entry_downside_failure', 'fresh_entry_hard_break'].includes(waveRejection.eventType);
+    const isSignalHardInvalidation = waveRejection.eventType === 'signal_hard_invalidation';
+    const isHardInvalidationProtection = isSignalHardInvalidation || waveRejection.eventType === 'fresh_entry_hard_break';
+    const isRiskCapZeroExit = waveRejection.eventType === 'risk_cap_zero_exit';
+    const waveEvidence = getWaveEventEvidenceText(waveRejection);
+    const waveB6TrendAdd = decision?.waveB6TrendAdd || { eligible: false, applied: false };
+    const waveExpiryB11TakeoverAdd = decision?.waveExpiryB11TakeoverAdd || { eligible: false, applied: false, active: false, status: 'none' };
+    const waveMA20PullbackObservation = decision?.waveMA20PullbackObservation || { applied: false };
+    const waveExpiryHandoff = decision?.waveExpiryHandoff || { applied: false };
+    const waveL10Handoff = decision?.waveL10TrendHandoff || { applied: false };
     const previousPosition = Number(decision?.prevAdv) || 0;
     const threshold = Number(STRATEGY?.buyThreshold);
     const scoreBelowThreshold = Number.isFinite(threshold) && (meta?.windowScore ?? 0) < threshold;
     const basePosition = Number(decision?.basePosition);
     const basePositionIsEmpty = Number.isFinite(basePosition) ? basePosition <= 0 : scoreBelowThreshold;
     const isFavorableMarket = ['核心宽基偏强', '全面多头', '温和偏多'].includes(marketLabel);
+    const isEntry = previousPosition === 0 && position > 0;
+    const isIncrease = position > previousPosition;
+    const isReduce = previousPosition > 0 && position < previousPosition;
     let stateLabel = '弱势观察';
     let userAction = '先不碰';
     if (hasCriticalExit) {
         stateLabel = '破位防守';
-        userAction = position === 0 ? '空仓观望' : '优先防守';
+        userAction = position === 0 ? '离场观察' : '降低仓位';
     } else if (position === 0) {
         stateLabel = meta?.inCooldown ? '离场冷静期' : (hasPositionExit ? (basePositionIsEmpty && directExitSignals.length === 0 ? '信号失效' : '风险防守') : '弱势观察');
-        userAction = hasPositionExit ? '空仓观望' : '先不碰';
+        userAction = hasPositionExit ? '离场观察' : '暂时不买';
     } else if (position <= 30) {
         stateLabel = action.includes('减仓') || hasWarning ? '风险观察' : '试探观察';
-        userAction = action.includes('减仓') ? '降低仓位' : '只适合轻仓';
+        userAction = action.includes('减仓') ? '降低仓位' : '轻仓观察';
     } else if (scoreReady && position >= 50) {
-        stateLabel = hasWarning ? '转强但偏热' : '趋势转强';
-        userAction = position >= 80 ? '可积极关注' : '可继续观察';
+        stateLabel = hasHeatRisk ? '转强但偏热' : (hasWarning ? '转强但风险未消' : '趋势转强');
+        userAction = isIncrease ? '提高仓位' : '继续持有';
     } else {
         stateLabel = '持仓观察';
-        userAction = action.includes('加仓') ? '顺势持有' : '继续持有';
+        userAction = '继续持有';
     }
 
     const scoreText = `${meta?.windowScore ?? 0}/${STRATEGY?.buyThreshold ?? '-'}`;
     const strongExitSet = getStrongExitSignals(STRATEGY);
     const strongExitSignals = directExitSignals.filter(signal => strongExitSet.has(signal));
     const otherExitSignals = directExitSignals.filter(signal => !strongExitSet.has(signal));
-    const formatExitSignal = signal => `${signal} ${getUserSignalText(signal)}`;
+    const formatExitSignal = signal => getUserSignalText(signal);
     const hasPreviousPosition = previousPosition > 0;
     const scoreIsEmpty = (meta?.windowScore ?? 0) <= 0;
     const positionToZeroText = hasPreviousPosition ? `当前从${previousPosition}%降至 0%` : '策略参考仓位降至 0%';
     const positionPressure = [];
-    if (Number(decision?.risk?.coef) < 1) positionPressure.push(`风险系数 ${Number(decision.risk.coef).toFixed(2)}`);
+    if (Number.isFinite(basePosition)) positionPressure.push(getPlainRiskAdjustmentText(decision.risk, basePosition, Number(decision.risk.coef), position, '基础仓位'));
     const marketGate = decision?.marketGate || {};
     const signalCause = getSignalCauseSummary(meta);
-    const buyCauseText = signalCause.text || '近窗有效买入信号';
+    const buyCauseText = signalCause.text || '当前有效买入信号';
     const lifecycleTransition = getSignalLifecycleTransition(meta, decision, 'stock');
-    const isEntry = previousPosition === 0 && position > 0;
-    const isIncrease = position > previousPosition;
-    const isReduce = previousPosition > 0 && position < previousPosition;
+    const positionChange = getStockPositionChangeDetails(meta, decision, signalCause, previousPosition, position);
     if (!hasCriticalExit && lifecycleTransition.kind === 'hard' && !isIncrease) {
         stateLabel = '信号硬失效';
-        userAction = position === 0 ? '空仓观察' : '优先防守';
+        userAction = position === 0 ? '离场观察' : '降低仓位';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'local') {
         stateLabel = '结构未破';
-        userAction = position > 0 ? '只适合轻仓' : '先不碰';
+        userAction = position > 0 ? '轻仓观察' : '暂时不买';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'soft') {
         stateLabel = '动能转弱';
-        userAction = position > 0 ? '轻仓观察' : '先不碰';
+        userAction = position > 0 ? '轻仓观察' : '暂时不买';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'soft-expired') {
         stateLabel = '信号失效';
-        userAction = '空仓观察';
+        userAction = '离场观察';
+    }
+    if (!hasCriticalExit && waveL10Handoff.applied) {
+        stateLabel = '趋势接管预警';
+        userAction = position < previousPosition ? '降低仓位' : '轻仓观察';
+    } else if (!hasCriticalExit && waveRejection.status === 'entry_blocked') {
+        stateLabel = '压力受阻';
+        userAction = '暂时不买';
+    } else if (!hasCriticalExit && waveRejection.status === 'ma20_hold') {
+        stateLabel = 'MA20上方观察';
+        userAction = '轻仓观察';
+    } else if (!hasCriticalExit && waveRejection.status === 'triggered') {
+        stateLabel = isRiskCapZeroExit ? '极端风险防守' : (isSignalHardInvalidation ? '信号硬失效' : (isFreshEntryFailure ? '新仓失败离场' : '冲高回落止盈'));
+        userAction = position === 0 ? '离场观察' : '降低仓位';
+    } else if (!hasCriticalExit && waveRejection.status === 'locked') {
+        stateLabel = '风险恢复观察';
+        userAction = position === 0 ? '暂时不买' : '持仓观察';
+    } else if (!hasCriticalExit && ['released', 'recovery_pending'].includes(waveRejection.status)) {
+        stateLabel = '风险解除';
+        userAction = position > 0 ? (previousPosition === 0 ? '轻仓建仓' : '继续持有') : '继续观察';
+    } else if (!hasCriticalExit && ['recovery_started', 'recovery_hold'].includes(waveRejection.status)) {
+        stateLabel = '分步恢复';
+        userAction = '轻仓观察';
+    } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.applied) {
+        stateLabel = '防守接管加仓';
+        userAction = '提高仓位';
+    } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.active) {
+        stateLabel = '波段仓持有';
+        userAction = '继续持有';
+    } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.status === 'released') {
+        stateLabel = '波段仓减仓';
+        userAction = '降低仓位';
+    } else if (!hasCriticalExit && waveB6TrendAdd.applied) {
+        stateLabel = '趋势修复加仓';
+        userAction = '提高仓位';
+    } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
+        stateLabel = waveMA20PullbackObservation.defenseType === 'standalone_l3'
+            ? 'MA20趋势防守'
+            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
+                ? 'MA20回踩防守'
+                : (waveMA20PullbackObservation.defenseType === 'breakout_pullback' ? '突破后回踩观察' : 'MA20回踩观察'));
+        userAction = '轻仓观察';
+    } else if (!hasCriticalExit && waveMA20PullbackObservation.status === 'expired') {
+        stateLabel = 'MA20观察结束';
+        userAction = '离场观察';
+    } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
+        stateLabel = waveExpiryHandoff.trendWashout
+            ? '趋势洗盘观察'
+            : (waveExpiryHandoff.observationMode === 'defensive' ? '到期防守观察' : '反弹接管观察');
+        userAction = '轻仓观察';
+    } else if (!hasCriticalExit && waveExpiryHandoff.status === 'expired') {
+        stateLabel = '到期观察结束';
+        userAction = '离场观察';
     }
 
     let reason = '';
-    if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
-        reason = `${getCooldownProgress(meta).label}，买入积分为 ${scoreText}，${positionToZeroText}，先空仓观察`;
+    if (!hasCriticalExit && waveL10Handoff.applied) {
+        reason = `完整多头持仓中单独出现MACD顶背离，当前按趋势接管预警处理，不因单个L10清仓，仓位保持在${position}%以内观察`;
+    } else if (!hasCriticalExit && waveRejection.status === 'entry_blocked') {
+        const sourceText = (waveRejection.sourceSignals || []).includes('B16') ? '周线支撑企稳信号' : '当前买入信号';
+        reason = `${waveEvidence}，形成长上影；${sourceText}原本准备轻仓建仓，本次取消建仓且不画B`;
+    } else if (!hasCriticalExit && waveRejection.status === 'ma20_hold') {
+        reason = `${waveEvidence}，虽出现压力长上影，但收盘仍站在MA20上方，本次只保留${position}%观察且不加仓`;
+    } else if (!hasCriticalExit && waveRejection.status === 'triggered') {
+        reason = isRiskCapZeroExit
+            ? `${waveEvidence}，当日风险上限优先将策略参考仓位从${previousPosition}%降至0%；事件前旧积分仍可展示，但不得直接重新建仓`
+            : (isSignalHardInvalidation
+            ? `${waveEvidence}，买入信号硬失效，当前从${previousPosition}%降至${position}%并进入局部重入保护`
+            : (waveRejection.eventType === 'fresh_entry_hard_break'
+            ? `${waveEvidence}，新仓硬失效，风险日从${previousPosition}%降至${position}%`
+            : (waveRejection.eventType === 'fresh_entry_downside_failure'
+                ? `${waveEvidence}，形成贴近防守位的大阴线，风险日从${previousPosition}%降至${position}%`
+                : (waveRejection.eventType === 'fresh_entry_failure'
+                    ? `${waveEvidence}，${waveRejection.ma20RejectionExit ? '形成长上影且收盘重新落回MA20下方' : '形成长上影且收盘不高于买入日收盘'}，判定新仓冲击压力失败，风险日从${previousPosition}%降至${position}%`
+                    : `${waveEvidence}，判定已有浮盈后的放量冲高回落，风险日实时分档止盈，当前从${previousPosition}%降至${position}%`))));
+    } else if (!hasCriticalExit && waveRejection.status === 'locked') {
+        if (isRiskCapZeroExit) {
+            const score = Number(waveRejection.postEventScore) || 0;
+            const minimumScore = Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.holdThreshold) || 3;
+            const priceText = waveRejection.priceRecovered
+                ? '价格已站回风险日收盘'
+                : '价格尚未站回风险日收盘';
+            reason = `${waveRejection.triggerDate || '此前'}风险评分曾将仓位归零；事件后新积分为${score}/${minimumScore}，${priceText}，事件前旧积分不参与重新建仓，当前继续空仓观察`;
+        } else {
+        const recoveryLevel = Number(waveRejection.recoveryCloseLevel ?? waveRejection.triggerClose);
+        const currentClose = Number(meta?.currentClose);
+        const levelName = isHardInvalidationProtection ? '信号失效位' : '风险日收盘';
+        const recoveryState = Number.isFinite(currentClose) && Number.isFinite(recoveryLevel) && currentClose > recoveryLevel
+            ? `当前收盘${formatPriceLevel(currentClose)}虽已站回${levelName}${formatPriceLevel(recoveryLevel)}，但完整观察期尚未结束`
+            : `当前收盘${formatPriceLevel(currentClose)}尚未站回${levelName}${formatPriceLevel(recoveryLevel)}`;
+        reason = `${waveRejection.triggerDate || '此前'}的风险事件仍在局部保护期；${recoveryState}，事件前旧积分不立即触发回补，当前保持${position}%防守仓位`;
+        }
+    } else if (!hasCriticalExit && waveRejection.status === 'released') {
+        const recoveryText = isRiskCapZeroExit
+            ? (waveRejection.trendRecovery
+                ? '价格已重新站回MA20，且MA20高于MA60并保持未下行'
+                : `事件后新积分已达到${Number(waveRejection.postEventScore) || 0}/${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.holdThreshold) || 3}，且${waveRejection.structuralRecovery ? '新结构修复信号仍有效' : '价格已站回风险日收盘'}`)
+            : (waveRejection.pullbackRecovery
+            ? `事件后新出现${(waveRejection.freshPullbackSignals || []).map(getUserSignalText).join('、') || '有效回踩企稳'}，并站上未下行的MA${Number(waveRejection.pullbackMovingAveragePeriod) || 20}`
+            : (waveRejection.strongFreshRecovery
+            ? `事件后新积分已达到${Number(waveRejection.postEventScore) || 0}/${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}，且来自${(waveRejection.postEventScoreSignals || []).length}个独立计分组`
+            : (waveRejection.stableRecovery
+            ? `当前收盘已站回${isHardInvalidationProtection ? '信号失效位' : '风险日收盘'}${formatPriceLevel(Number(waveRejection.recoveryCloseLevel ?? waveRejection.triggerClose))}`
+            : `当前已收复事件高点${formatPriceLevel(Number(waveRejection.triggerHigh))}且事件后的新信号仍有效`)));
+        reason = `${recoveryText}，局部保护解除，当前先恢复至${position}%仓位观察`;
+    } else if (!hasCriticalExit && waveRejection.status === 'recovery_pending') {
+        reason = '冲高回落风险已局部解除，但当前尚无可执行的恢复仓位，继续空仓观察';
+    } else if (!hasCriticalExit && waveRejection.status === 'recovery_started') {
+        reason = `冲高回落事件后首次恢复，当前最多恢复至${position}%仓位`;
+    } else if (!hasCriticalExit && waveRejection.status === 'recovery_hold') {
+        reason = `冲高回落事件后仍在低仓确认期，当前保持${position}%仓位`;
+    } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.applied) {
+        reason = `前一日到期防守观察成功后，今日新出现均线回踩不破并重新站上MA5与MA20，MA20保持未下行，当前从${previousPosition}%提高至${position}%`;
+    } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.active) {
+        reason = `${waveExpiryB11TakeoverAdd.triggerDate || '此前'}的防守接管加仓仍有效，当前按30%基础仓加20%波段仓继续持有${position}%`;
+    } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.status === 'released') {
+        reason = `防守接管后的额外20%波段仓已先减，原30%基础仓仍满足既有观察条件，当前从${previousPosition}%降至${position}%且不生成S`;
+    } else if (!hasCriticalExit && waveB6TrendAdd.applied) {
+        reason = `今日缩量回踩${waveB6TrendAdd.movingAveragePeriod}日线后收回，且该均线未下行，触发趋势修复加仓，当前从${previousPosition}%提高至${position}%`;
+    } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
+        reason = waveMA20PullbackObservation.defenseType === 'standalone_l3'
+            ? `单独MACD死叉，价格仍在完整多头结构中，本日保留${position}%观察`
+            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
+                ? `买点失效位虽被收盘跌破，但价格仍守住MA20，先保留${position}%观察`
+                : (waveMA20PullbackObservation.defenseType === 'breakout_pullback'
+                    ? waveMA20PullbackObservation.reason
+                    : `今日收盘仅小幅低于抬升中的${waveMA20PullbackObservation.movingAveragePeriod}日线，但下影线明显收回、结构防守位未破，当前保留${position}%轻仓观察一日，不加仓也不清仓`));
+    } else if (!hasCriticalExit && waveMA20PullbackObservation.status === 'expired') {
+        reason = `MA20回踩观察只保留一日，但价格未重新站回20日线，也没有新的B6/B11信号接管，当前从${previousPosition}%降至${position}%`;
+    } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
+        const momentumText = (waveExpiryHandoff.momentumSignals || []).join('、') || '短线动能继续改善';
+        reason = waveExpiryHandoff.trendWashout
+            ? `买入积分仅因窗口到期降为${scoreText}，但MA${waveExpiryHandoff.trendMAPeriod}仍高于MA${waveExpiryHandoff.longMAPeriod}且未下行，当前按上涨趋势洗盘保留${position}%防守仓位`
+            : (waveExpiryHandoff.observationMode === 'defensive'
+            ? `原买入积分仅因窗口到期由${waveExpiryHandoff.previousWindowScore}/${threshold}降至${scoreText}，但价格仍守住原买点防守位，且${momentumText}，当前保留${position}%轻仓防守观察一日`
+            : `原买入积分仅因窗口到期由${waveExpiryHandoff.previousWindowScore}/${threshold}降至${scoreText}，但价格仍守住原买点防守位、重新站上${waveExpiryHandoff.shortMAPeriod}日线，且${momentumText}，当前保留${position}%轻仓等待接管`);
+    } else if (!hasCriticalExit && waveExpiryHandoff.status === 'expired') {
+        reason = `买入积分自然到期后已多观察一日，但价格未重新站上短期与中期均线，也没有新的有效买入信号，当前从${previousPosition}%降至${position}%`;
+    } else if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
+        reason = `当前是${getCooldownProgress(meta).label}；买入积分为${scoreText}，仓位保持0%，继续空仓`;
     } else if (!hasCriticalExit && lifecycleTransition.text) {
         reason = lifecycleTransition.text;
     } else if (hasPositionExit && exitLevel === '无明确离场' && hasPreviousPosition && basePositionIsEmpty) {
@@ -1182,36 +1818,45 @@ function getStockDecisionSummary(meta, decision) {
         const pressureText = positionPressure.length ? positionPressure.join('、') : '个股风险限制';
         reason = `买入积分为 ${scoreText}，${baseText}，但${pressureText}使策略参考仓位归零，${positionToZeroText}，先空仓防守`;
     } else if (hasPositionExit && exitLevel === '无明确离场') {
-        reason = `市场环境为${marketLabel}，当前未满足开仓条件，策略参考仓位降至 0%，先空仓观察`;
+        reason = '当前没有满足开仓条件，策略参考仓位保持0%，继续空仓观察';
     } else if (hasCriticalExit && strongExitSignals.length) {
-        const strongText = strongExitSignals.map(formatExitSignal).join(' / ');
-        const otherText = otherExitSignals.length ? `，同时出现 ${otherExitSignals.map(formatExitSignal).join(' / ')}` : '';
+        const exitText = [...strongExitSignals, ...otherExitSignals].map(formatExitSignal).join('、');
         const triggerText = meta?.repeatedStrongExit ? '今日再次触发强离场' : '今日触发强离场';
-        reason = `${triggerText} ${strongText}${otherText}；强离场会让此前买入积分失效，当前清零为 ${scoreText}，${positionToZeroText}；${getStrongExitCooldownText(meta)}，先空仓防守`;
+        const positionAction = position === 0 ? positionToZeroText : `仓位降至${position}%防守`;
+        const resetScoreText = `0/${STRATEGY?.buyThreshold ?? '-'}`;
+        reason = `${triggerText}：${exitText}；此前买入依据失效，积分清零至${resetScoreText}，${positionAction}；${getStrongExitCooldownText(meta)}`;
     } else if (hasCriticalExit) {
         const exitReason = directExitSignals.length
-            ? `出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
+            ? `${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
             : (decision?.exit?.detail || `当前按${exitLevel}处理`);
         const zeroPositionText = position === 0 ? `，${positionToZeroText}，先空仓防守` : '，当前先处理风险';
-        reason = `市场环境为${marketLabel}，${exitReason}${zeroPositionText}`;
+        reason = `${exitReason}${zeroPositionText}`;
+    } else if (hasPositionExit && hasPreviousPosition) {
+        const exitReason = directExitSignals.length
+            ? `${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
+            : (decision?.exit?.detail || `当前按${exitLevel}处理`);
+        const positionAction = position === 0
+            ? `${positionToZeroText}，先空仓防守`
+            : `当前从${previousPosition}%降至${position}%防守`;
+        reason = `${exitReason}，${positionAction}`;
     } else if (marketGate.type === 'entry-blocked' && position === 0) {
-        reason = `${buyCauseText}使买入积分达到 ${scoreText}，但${marketLabel}下增仓门禁关闭，仍暂不开新仓`;
+        reason = `${buyCauseText}使买入积分达到${scoreText}，但核心市场数据还不完整，当前暂时不买`;
     } else if (marketGate.type === 'increase-capped') {
-        const tierText = marketGate.strengthTier === 'independent' ? '标的独立走强' : '普通机会';
-        reason = `${buyCauseText}使买入积分维持在 ${scoreText}，但核心宽基偏弱，${tierText}新增风险上限为${marketGate.cap}%，当前为${position}%`;
+        if (isIncrease) reason = positionChange.reason;
+        else {
+            const tierText = marketGate.strengthTier === 'independent' ? '标的独立走强' : '普通机会';
+            reason = `${buyCauseText}使买入积分维持在${scoreText}，但核心市场偏弱，${tierText}最多新增到${marketGate.cap}%，当前保持${position}%`;
+        }
     } else if (isReduce) {
-        const reduceCause = directExitSignals.length
-            ? `出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
-            : (riskFlags.length ? `个股风险提示为${riskFlags.join('、')}` : (decision?.exit?.detail || '短线风险升高'));
-        const reduceAction = position === 0 ? `当前从${previousPosition}%降至 0%，先空仓防守` : `当前从${previousPosition}%降至${position}%防守`;
-        reason = `${reduceCause}，${reduceAction}`;
+        reason = positionChange.reason;
     } else if (position === 0) {
         reason = `${isFavorableMarket ? '大盘虽偏好，但' : ''}买入积分只有 ${scoreText}，当前还不满足开仓条件`;
     } else if (isEntry) {
-        const entryText = position <= 30 ? `${position}%轻仓试探` : `${position}%仓位`;
-        reason = `${buyCauseText}使买入积分达到 ${scoreText}，本次由空仓转为${entryText}`;
+        reason = positionChange.reason;
+    } else if (isIncrease && meta.type === '📈 趋势抱单') {
+        reason = `价格重新站回20日线，趋势抱单状态接管此前轻仓观察，当前从${previousPosition}%提高至${position}%`;
     } else if (isIncrease) {
-        reason = `${buyCauseText}使买入积分达到 ${scoreText}，当前由${previousPosition}%提高至${position}%`;
+        reason = positionChange.reason;
     } else if (position <= 30) {
         reason = scoreReady
             ? `${buyCauseText}使买入积分维持在 ${scoreText}，当前按${position}%轻仓继续观察`
@@ -1221,14 +1866,93 @@ function getStockDecisionSummary(meta, decision) {
             ? `${buyCauseText}使买入积分维持在 ${scoreText}，继续支持当前${position}%仓位`
             : `买入积分为 ${scoreText}，当前按${position}%仓位继续观察`;
     }
-    const invalidCondition = getStockInvalidCondition(meta, decision, position, hasWarning);
+    const why = getPlainDisplayText(reason);
+    let positionWhy = getPlainDisplayText(positionChange.positionExplanation);
+    if (waveL10Handoff.applied) {
+        positionWhy = `单独L10只触发趋势接管预警，风险链与完整多头资格共同将策略参考仓位限制在${position}%`;
+    } else if (waveRejection.status === 'entry_blocked') {
+        positionWhy = '建仓日长上影受阻优先于试探信号，原计划30%试探仓保持0%，不生成B';
+    } else if (waveRejection.status === 'ma20_hold') {
+        positionWhy = `新仓冲击压力后收盘仍在MA20上方，不清仓但暂停加仓，策略参考仓位封顶${position}%`;
+    } else if (waveRejection.status === 'triggered') {
+        positionWhy = isRiskCapZeroExit
+            ? `风险评分低于40时仓位上限为0%，本次从${previousPosition}%归零并启动旧积分隔离`
+            : (isSignalHardInvalidation
+            ? `买入信号硬失效使策略参考仓位从${previousPosition}%降至${position}%，并启动局部重入保护`
+            : (waveRejection.eventType === 'fresh_entry_hard_break'
+            ? `收盘跌破买入日最低价时新仓直接归零，策略参考仓位从${previousPosition}%降至${position}%`
+            : (waveRejection.eventType === 'fresh_entry_downside_failure'
+                ? `新仓下跌失败在当日直接触发防守，策略参考仓位从${previousPosition}%降至${position}%`
+                : (waveRejection.eventType === 'fresh_entry_failure'
+                    ? `新仓冲击压力失败在当日直接触发防守，策略参考仓位从${previousPosition}%降至${position}%`
+                    : `冲高回落风险在当日直接降一档，策略参考仓位从${previousPosition}%降至${position}%`))));
+    } else if (waveRejection.status === 'locked') {
+        positionWhy = isRiskCapZeroExit
+            ? `风险归零后只重新统计事件后的有效买入积分，旧窗口积分不再把空仓自动抬回30%`
+            : `风险事件至少锁定一个完整交易日，新信号不得在次日立即建仓或回补，策略参考仓位保持${position}%`;
+    } else if (['released', 'recovery_started', 'recovery_hold'].includes(waveRejection.status)) {
+        positionWhy = `风险解除后按分步恢复规则执行，当前策略参考仓位为${position}%`;
+    } else if (waveExpiryB11TakeoverAdd.applied || waveExpiryB11TakeoverAdd.active) {
+        positionWhy = `当前${position}%由30%基础仓与20%波段仓组成；本次只对防守观察成功后的新B11放宽弱市普通机会30%增仓上限，不允许空仓直接提高到50%，也不触发80%`;
+    } else if (waveExpiryB11TakeoverAdd.status === 'released') {
+        positionWhy = `本次只退出额外20%波段仓，仍满足原规则的30%基础仓继续保留；分层减仓不生成新的S`;
+    } else if (waveB6TrendAdd.applied) {
+        positionWhy = `缩量回踩不破将本次趋势修复加仓目标设为50%；风险与市场未进一步限制，最终从${previousPosition}%提高至${position}%，80%仍需买入积分正式达标且满足完整多头资格`;
+    } else if (waveMA20PullbackObservation.applied) {
+        positionWhy = waveMA20PullbackObservation.defenseType === 'standalone_l3'
+            ? `单独MACD死叉未与L4/L9/L10复合，完整多头结构未破；策略参考仓位维持${position}%一日，不生成S`
+            : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
+                ? `买点失效位虽被收盘跌破，但MA20与风险防守位仍守住；策略参考仓位维持${position}%一日，不生成S`
+                : (waveMA20PullbackObservation.defenseType === 'breakout_pullback'
+                    ? `突破MA20后的首次回踩仍守住均线附近；策略参考仓位维持${position}%一日，不生成S`
+                    : `本次未满足B6加仓条件，只触发MA20回踩防守观察；策略参考仓位维持${position}%一日，不生成S`));
+    } else if (waveMA20PullbackObservation.status === 'expired') {
+        positionWhy = `MA20回踩防守观察只保留一日；次日未通过均线或新B6/B11接管，策略参考仓位从${previousPosition}%降至${position}%`;
+    } else if (waveExpiryHandoff.applied) {
+        positionWhy = waveExpiryHandoff.trendWashout
+            ? `积分到期不等于上涨结构失效；完整多头均线仍在时最多保留${waveExpiryHandoff.maxTradingDays || 2}个交易日的${position}%洗盘观察，不机械生成S`
+            : `本次积分下降来自时间窗口自然到期，不是真实破位；一日${waveExpiryHandoff.observationMode === 'defensive' ? '防守观察' : '接管'}规则将策略参考仓位维持在${position}%，不生成S`;
+    } else if (waveExpiryHandoff.status === 'expired') {
+        positionWhy = `到期防守观察只保留一日；次日未通过均线或新信号接管，策略参考仓位从${previousPosition}%降至${position}%`;
+    }
+    const lockRemaining = Math.max(0, Number(waveRejection.lockRemaining) || 0);
+    const freshScoreRecoveryAllowed = ['fresh_entry_failure', 'fresh_entry_downside_failure'].includes(waveRejection.eventType)
+        && waveRejection.ma20RejectionExit !== true;
+    const lockedNextFocus = lockRemaining > 0
+        ? `局部锁定尚未结束，至少等待${lockRemaining}个交易日；期间新信号不立即建仓。`
+        : (isHardInvalidationProtection
+            ? `完整观察期已结束；等事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分且至少来自${Number(waveRejection.minimumPostEventGroups) || 2}个独立计分组，或价格站回失效位后，再恢复最多30%试探仓。`
+            : (freshScoreRecoveryAllowed
+                ? `完整观察期已结束；等事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分且至少来自${Number(waveRejection.minimumPostEventGroups) || 2}个独立计分组，风险稳定后可恢复最多30%试探仓，不要求先收复风险日收盘价。`
+                : '完整观察期已结束；若是已有浮盈减仓，新的缩量/均线回踩企稳并守住风险日低点时可先补回一档；否则待价格收复关键压力。'));
+    const nextFocus = waveRejection.status === 'entry_blocked'
+        ? '至少观察一个完整交易日；后续需站回风险日收盘，或收复风险日高点且事件后新的有效修复信号仍然有效，才重新考虑30%试探仓。'
+        : (waveRejection.status === 'locked'
+            ? (isRiskCapZeroExit
+                ? `等事件后新的有效买入积分独立达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.holdThreshold) || 3}分并完成价格/结构确认，或价格重新站回MA20且恢复MA20高于MA60的上涨结构后，再恢复最多30%。`
+                : lockedNextFocus)
+            : (waveExpiryB11TakeoverAdd.applied || waveExpiryB11TakeoverAdd.active
+        ? `额外20%按波段仓管理；若出现压力回落、预警或风险上限收紧，先降回30%。若30%基础仓自身失效、跌破防守位${formatPriceLevel(decision?.risk?.stop)}或出现离场信号，再按原规则降至0%。`
+        : (waveMA20PullbackObservation.applied
+            ? `下一交易日需重新站回MA20，或新触发B6/B11；若未接管、收盘跌破观察日低点${formatPriceLevel(waveMA20PullbackObservation.triggerLow)}、跌破结构防守位${formatPriceLevel(waveMA20PullbackObservation.defenseLevel)}或出现离场信号，仓位降至0%。`
+            : (waveExpiryHandoff.applied
+                ? (waveExpiryHandoff.trendWashout
+                    ? `洗盘观察最多保留${waveExpiryHandoff.maxTradingDays || 2}个交易日；期间需重新站回MA20或出现新的有效买入信号接管。若MA20转弱、收盘跌破原买点防守位或出现离场信号，仓位降至0%。`
+                    : (waveExpiryHandoff.observationMode === 'defensive'
+                    ? `下一交易日需重新站上MA5与MA20，或出现新的有效买入信号；若未接管、收盘跌破观察日低点${formatPriceLevel(waveExpiryHandoff.triggerLow)}、跌破原买点防守位${formatPriceLevel(waveExpiryHandoff.entryLow)}或出现离场信号，仓位降至0%。`
+                    : `下一交易日需由趋势抱单或新的有效买入信号接管；若未接管、跌破原买点防守位${formatPriceLevel(waveExpiryHandoff.entryLow)}或出现离场信号，仓位降至0%。`))
+                : getPlainDisplayText(getStockNextFocus(meta, decision, position, hasWarning))))));
 
     return {
         state: stateLabel,
         action: userAction,
         positionText: `${position}%`,
-        reason,
-        invalidCondition
+        why,
+        positionWhy,
+        nextFocus,
+        reason: why,
+        positionExplanation: positionWhy,
+        invalidCondition: nextFocus
     };
 }
 
@@ -1254,10 +1978,15 @@ function getIndexDecisionSummary(meta, decision) {
     const strongExitSet = getStrongExitSignals(STRATEGY);
     const strongExitSignals = directExitSignals.filter(signal => strongExitSet.has(signal));
     const otherExitSignals = directExitSignals.filter(signal => !strongExitSet.has(signal));
-    const formatExitSignal = signal => `${signal} ${getUserSignalText(signal)}`;
+    const formatExitSignal = signal => getUserSignalText(signal);
     const signalCause = getSignalCauseSummary(meta);
-    const causeText = signalCause.text || '近窗有效指数信号';
+    const causeText = signalCause.text || '当前有效指数动能信号';
     const lifecycleTransition = getSignalLifecycleTransition(meta, decision, 'index');
+    const waveRejection = decision?.waveRejectionProtection || { status: 'none', active: false };
+    const isFreshEntryFailure = ['fresh_entry_failure', 'fresh_entry_downside_failure', 'fresh_entry_hard_break'].includes(waveRejection.eventType);
+    const isFreshEntryRejectionFailure = waveRejection.eventType === 'fresh_entry_failure';
+    const waveEvidence = getWaveEventEvidenceText(waveRejection);
+    const waveExpiryHandoff = decision?.waveExpiryHandoff || { applied: false };
     const isEntry = previousPosition === 0 && position > 0;
     const isIncrease = position > previousPosition;
     const isReduce = previousPosition > 0 && position < previousPosition;
@@ -1282,7 +2011,13 @@ function getIndexDecisionSummary(meta, decision) {
         userAction = isReduce ? '降低风险暴露' : '维持当前风险仓位';
     }
 
-    if (!hasCriticalExit && lifecycleTransition.kind === 'hard' && !isIncrease) {
+    if (!hasCriticalExit && waveRejection.status === 'triggered' && isFreshEntryFailure) {
+        stateLabel = position === 0 ? '指数新仓失败离场' : (isFreshEntryRejectionFailure ? '指数新仓冲高防守' : '指数新仓下跌防守');
+        userAction = position === 0 ? '保持低风险暴露' : '降低风险暴露';
+    } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
+        stateLabel = '反弹接管观察';
+        userAction = '保持低风险暴露';
+    } else if (!hasCriticalExit && lifecycleTransition.kind === 'hard' && !isIncrease) {
         stateLabel = '指数信号硬失效';
         userAction = position === 0 ? '保持低风险暴露' : '优先降低风险';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'soft') {
@@ -1294,8 +2029,17 @@ function getIndexDecisionSummary(meta, decision) {
     }
 
     let reason = '';
-    if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
-        reason = `${getCooldownProgress(meta).label}，指数动能积分为 ${scoreText}，${riskPositionToZero}，暂不增加市场风险`;
+    if (!hasCriticalExit && waveRejection.status === 'triggered' && isFreshEntryFailure) {
+        reason = waveRejection.eventType === 'fresh_entry_hard_break'
+            ? `${waveEvidence}，指数新仓硬失效，风险仓位从${previousPosition}%降至${position}%`
+            : (isFreshEntryRejectionFailure
+                ? `${waveEvidence}，形成长上影并弱势收盘，判定指数新仓冲击压力失败，风险仓位从${previousPosition}%降至${position}%`
+                : `${waveEvidence}，收盘虽收回但仍是贴近防守位的弱势阴线，风险仓位从${previousPosition}%降至${position}%`);
+    } else if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
+        reason = `当前是${getCooldownProgress(meta).label}；指数动能积分为${scoreText}，风险仓位保持0%`;
+    } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
+        const momentumText = (waveExpiryHandoff.momentumSignals || []).join('、') || '短线动能继续改善';
+        reason = `原指数动能积分仅因窗口到期由${waveExpiryHandoff.previousWindowScore}/${threshold}降至${scoreText}，但指数仍守住原买点防守位、重新站上${waveExpiryHandoff.shortMAPeriod}日线，且${momentumText}，当前保留${position}%低风险暴露等待接管`;
     } else if (!hasCriticalExit && lifecycleTransition.text) {
         reason = lifecycleTransition.text;
     } else if (hasPositionExit && exitLevel === '无明确离场' && previousPosition > 0 && basePositionIsEmpty) {
@@ -1304,16 +2048,16 @@ function getIndexDecisionSummary(meta, decision) {
             : `此前指数动能已不足，积分为 ${scoreText}，低于门槛 ${threshold}/${threshold}`;
         reason = `${scoreReason}，${riskPositionToZero}，暂不增加市场风险`;
     } else if (hasPositionExit && exitLevel === '无明确离场' && previousPosition > 0) {
-        const pressureText = Number(decision?.risk?.coef) < 1 ? `指数风险系数 ${Number(decision.risk.coef).toFixed(2)}` : '指数自身风险限制';
+        const pressureText = Number(decision?.risk?.coef) < 1 ? '指数当前风险偏高' : '指数自身风险限制';
         reason = `指数动能积分为 ${scoreText}，但${pressureText}使风险仓位归零，${riskPositionToZero}`;
     } else if (hasCriticalExit && strongExitSignals.length) {
-        const strongText = strongExitSignals.map(formatExitSignal).join(' / ');
-        const otherText = otherExitSignals.length ? `，同时出现 ${otherExitSignals.map(formatExitSignal).join(' / ')}` : '';
+        const exitText = [...strongExitSignals, ...otherExitSignals].map(formatExitSignal).join('、');
         const triggerText = meta?.repeatedStrongExit ? '今日指数再次触发强离场' : '今日指数触发强离场';
-        reason = `${triggerText} ${strongText}${otherText}，动能积分清零为 ${scoreText}，${riskPositionToZero}；${getStrongExitCooldownText(meta)}`;
+        const resetScoreText = `0/${STRATEGY?.buyThreshold ?? '-'}`;
+        reason = `${triggerText}：${exitText}；此前动能依据失效，积分清零至${resetScoreText}，${riskPositionToZero}；${getStrongExitCooldownText(meta)}`;
     } else if (hasCriticalExit) {
         const exitReason = directExitSignals.length
-            ? `指数出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
+            ? `指数${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
             : (decision?.exit?.detail || `当前指数按${exitLevel}处理`);
         reason = `${exitReason}，${position === 0 ? riskPositionToZero : '当前优先处理市场风险'}`;
     } else if (marketGate.type === 'entry-blocked' && position === 0) {
@@ -1323,7 +2067,7 @@ function getIndexDecisionSummary(meta, decision) {
         reason = `${causeText}使指数动能积分维持在 ${scoreText}，但核心宽基偏弱，${tierText}新增风险上限为${marketGate.cap}%，当前为${position}%`;
     } else if (isReduce) {
         const reduceCause = directExitSignals.length
-            ? `指数出现 ${directExitSignals.map(formatExitSignal).join(' / ')}，当前按${exitLevel}处理`
+            ? `指数${directExitSignals.map(formatExitSignal).join('、')}，当前按${exitLevel}处理`
             : (riskFlags.length ? `指数风险提示为${riskFlags.join('、')}` : (decision?.exit?.detail || '指数短线风险升高'));
         const reduceAction = position === 0 ? `当前风险仓位从${previousPosition}%降至 0%，保持低风险暴露` : `当前风险仓位从${previousPosition}%降至${position}%`;
         reason = `${reduceCause}，${reduceAction}`;
@@ -1331,6 +2075,8 @@ function getIndexDecisionSummary(meta, decision) {
         reason = `当前指数动能积分只有 ${scoreText}，暂不增加市场风险暴露`;
     } else if (isEntry) {
         reason = `${causeText}使指数动能积分达到 ${scoreText}，支持风险仓位由0%提高至${position}%`;
+    } else if (isIncrease && meta.type === '📈 趋势抱单') {
+        reason = `指数重新站回20日线，趋势抱单状态接管此前低风险观察，风险仓位由${previousPosition}%提高至${position}%`;
     } else if (isIncrease) {
         reason = `${causeText}使指数动能积分达到 ${scoreText}，支持风险仓位由${previousPosition}%提高至${position}%`;
     } else if (position <= 30) {
@@ -1343,12 +2089,33 @@ function getIndexDecisionSummary(meta, decision) {
             : `指数动能积分为 ${scoreText}，当前维持${position}%风险仓位观察`;
     }
 
+    const positionDetails = getStockPositionChangeDetails(meta, decision, signalCause, previousPosition, position, 'index');
+    const why = getPlainDisplayText(reason)
+        .replace(/买入积分/g, '指数动能积分')
+        .replace(/买入信号/g, '指数动能信号');
+    let positionWhy = getPlainDisplayText(positionDetails.positionExplanation)
+        .replace(/买入积分/g, '指数动能积分')
+        .replace(/买入信号/g, '指数动能信号')
+        .replace(/试探仓/g, '低风险仓位');
+    if (waveExpiryHandoff.applied) {
+        positionWhy = `本次积分下降来自时间窗口自然到期，不是真实破位；一日接管规则将风险仓位维持在${position}%，不生成S`;
+    } else if (waveRejection.status === 'triggered' && isFreshEntryFailure) {
+        positionWhy = `${isFreshEntryRejectionFailure ? '指数新仓冲高失败' : '指数新仓下跌失败'}在风险日直接触发防守，最终风险仓位由${previousPosition}%降至${position}%`;
+    }
+    const nextFocus = waveExpiryHandoff.applied
+        ? `下一交易日需由趋势抱单或新的有效指数动能信号接管；若未接管、跌破原买点防守位${Number(waveExpiryHandoff.entryLow).toFixed(2)}或出现离场信号，风险仓位降至0%。`
+        : getPlainDisplayText(getIndexNextFocus(meta, decision, position, hasWarning));
+
     return {
         state: stateLabel,
         action: userAction,
         positionText: `${position}%`,
-        reason,
-        invalidCondition: getIndexInvalidCondition(meta, decision, position, hasWarning)
+        why,
+        positionWhy,
+        nextFocus,
+        reason: why,
+        positionExplanation: positionWhy,
+        invalidCondition: nextFocus
     };
 }
 
@@ -1360,16 +2127,124 @@ function getNoviceDecisionSummary(meta, decision, mode = 'stock') {
     const reasons = (decision.bQualityReasons || []).filter(Boolean).slice(0, 2);
     return {
         ...summary,
-        state: decision.bQuality === 'trial' ? '金色 B（试用）' : '强确认买点',
+        state: decision.bQuality === 'trial' ? '试用确认买点' : '强确认买点',
+        why: reasons.length ? reasons.join('；') : summary.why,
         reason: reasons.length ? reasons.join('；') : summary.reason
     };
 }
 
-function quantizePosition(val) { const steps = [0, 10, 20, 30, 50, 80, 100]; return steps.reduce((prev, curr) => Math.abs(curr - val) < Math.abs(prev - val) ? curr : prev); }
+function quantizePosition(val) {
+    const steps = Array.isArray(POSITION_STEPS) && POSITION_STEPS.length ? POSITION_STEPS : [0, 30, 50, 80];
+    return steps.reduce((prev, curr) => Math.abs(curr - val) < Math.abs(prev - val) ? curr : prev);
+}
 
-function getPositionCap(meta, prevPos, position) {
-    if (!meta.allSignals?.W4 || prevPos <= 0 || position < 80) return null;
-    return { limit: 50, reason: 'W4缩量上涨背离，高仓位上限50%' };
+function getRiskPositionCap(risk = {}) {
+    const score = Number(risk?.score);
+    if (!Number.isFinite(score)) return 50;
+    if (score >= 80) return 80;
+    if (score >= 60) return 50;
+    if (score >= 40) return 30;
+    return 0;
+}
+
+// 统一的趋势状态只用于解释和审计，暂不改变仓位、积分或 B/S。
+function getTrendRegimeContext(idx, full, ind) {
+    const close = Number(full?.[idx]?.close);
+    const ma20 = Number(ind?.ma?.[20]?.[idx]);
+    const ma60 = Number(ind?.ma?.[60]?.[idx]);
+    const ma20Prev = Number(ind?.ma?.[20]?.[Math.max(0, idx - 5)]);
+    const ma20Yesterday = Number(ind?.ma?.[20]?.[Math.max(0, idx - 1)]);
+    const ma60Prev = Number(ind?.ma?.[60]?.[Math.max(0, idx - 5)]);
+    const values = [close, ma20, ma60, ma20Prev, ma20Yesterday, ma60Prev];
+    const empty = {
+        key: 'unknown',
+        label: '趋势未知',
+        transition: 'unknown',
+        reason: 'MA20/MA60 或斜率数据不足，暂不判断趋势状态',
+        evidence: { close, ma20, ma60, ma20Prev, ma20Yesterday, ma60Prev },
+        thresholds: { rangeSpreadRatio: 0.03, rangeSlopeRatio: 0.01 }
+    };
+    if (!values.every(Number.isFinite) || ma20 <= 0 || ma60 <= 0 || ma20Prev <= 0 || ma60Prev <= 0) return empty;
+
+    const spreadRatio = (ma20 - ma60) / ma60;
+    const slopeRatio = (ma20 - ma20Prev) / ma20Prev;
+    const previousSlopeRatio = (ma20Yesterday - ma20Prev) / ma20Prev;
+    const rangeLike = Math.abs(spreadRatio) <= 0.03 && Math.abs(slopeRatio) <= 0.01;
+    const wasDown = ma20Prev < ma60Prev && previousSlopeRatio <= 0;
+    const wasUp = ma20Prev > ma60Prev && previousSlopeRatio >= 0;
+    const turningUp = ma20 >= ma20Yesterday && slopeRatio > 0;
+    const turningDown = ma20 <= ma20Yesterday && slopeRatio < 0;
+    let key = 'range';
+    let label = '横盘震荡';
+    let transition = 'none';
+    let reason = `MA20/MA60间距${(Math.abs(spreadRatio) * 100).toFixed(1)}%，MA20五日斜率${(slopeRatio * 100).toFixed(1)}%，方向未形成共振`;
+
+    if (wasDown && turningUp && close >= ma20) {
+        key = 'reversal-up';
+        label = '向上反转中';
+        transition = 'up';
+        reason = '此前偏下降，MA20开始止跌上拐且收盘重新站上MA20，等待趋势确认';
+    } else if (wasUp && turningDown && close <= ma20) {
+        key = 'reversal-down';
+        label = '向下反转中';
+        transition = 'down';
+        reason = '此前偏上升，MA20开始转弱且收盘跌回MA20下方，等待防守确认';
+    } else if (close > ma20 && ma20 > ma60 && slopeRatio >= 0) {
+        key = 'up';
+        label = '上升趋势';
+        reason = '收盘价位于MA20上方，MA20位于MA60上方且未下行';
+    } else if (close < ma20 && ma20 < ma60 && slopeRatio <= 0) {
+        key = 'down';
+        label = '下降趋势';
+        reason = '收盘价位于MA20下方，MA20位于MA60下方且未上行';
+    } else if (!rangeLike) {
+        key = close >= ma20 ? 'reversal-up' : 'reversal-down';
+        label = close >= ma20 ? '向上过渡' : '向下过渡';
+        transition = close >= ma20 ? 'up' : 'down';
+        reason = '均线方向和价格位置不一致，归入过渡状态，暂不视为完整趋势';
+    }
+
+    return {
+        key,
+        label,
+        transition,
+        reason,
+        evidence: { close, ma20, ma60, ma20Prev, ma20Yesterday, ma60Prev, spreadRatio, slopeRatio },
+        thresholds: { rangeSpreadRatio: 0.03, rangeSlopeRatio: 0.01 }
+    };
+}
+
+function getStockTrendPositionCap(idx, full, ind, position) {
+    if (state.mode !== 'stock') return null;
+    const ma20 = Number(ind?.ma?.[20]?.[idx]);
+    const ma60 = Number(ind?.ma?.[60]?.[idx]);
+    const ma20Prev = Number(ind?.ma?.[20]?.[Math.max(0, idx - 5)]);
+    const close = Number(full?.[idx]?.close);
+    const hasTrendData = [close, ma20, ma60, ma20Prev].every(Number.isFinite);
+    let limit = 50;
+    let reason = '个股趋势数据不足，高仓位上限50%';
+    if (hasTrendData && ma20 < ma60 && ma20 < ma20Prev) {
+        limit = 30;
+        reason = '个股处于中期下降趋势，高仓位上限30%';
+    } else if (hasTrendData && close > ma20 && ma20 > ma60 && ma20 >= ma20Prev) {
+        return null;
+    } else if (hasTrendData) {
+        reason = '个股尚未形成完整多头结构，高仓位上限50%';
+    }
+    return position > limit ? { limit, reason } : null;
+}
+
+function getPositionCap(meta, prevPos, position, idx, full, ind) {
+    const caps = [];
+    const trendCap = getStockTrendPositionCap(idx, full, ind, position);
+    if (trendCap) caps.push(trendCap);
+    if (meta.allSignals?.W4 && prevPos > 0 && position >= 80) {
+        caps.push({ limit: 50, reason: 'W4缩量上涨背离，高仓位上限50%' });
+    }
+    if (!caps.length) return null;
+    const limit = Math.min(...caps.map(cap => cap.limit));
+    const reasons = [...new Set(caps.map(cap => cap.reason).filter(Boolean))];
+    return { limit, reason: reasons.join('；') };
 }
 
 function getTargetStrengthTier(meta, idx, full, ind, risk, exit) {
@@ -1471,26 +2346,1344 @@ function getLocalStructureDefenseContext(meta, b11Defense, prevPos, exit, strate
     };
 }
 
-function computeDecisionForIndex(idx, full, prevPos) {
-    const meta = getSignalMeta(idx, full, state.indicators), market = getMarketContext(full[idx].date);
-    const risk = getRiskContext(idx, full, state.indicators), exit = getExitSeverity(meta, idx, full, state.indicators);
+function getWaveRejectionEntryClose(idx, full, prevPos) {
+    if (prevPos <= 0) return null;
+    for (let day = idx - 1; day >= 0; day--) {
+        const decision = full?.[day]?._decision;
+        if (!decision) continue;
+        if (Number(decision.position) <= 0) break;
+        if (Number(decision.prevAdv) === 0 || decision.bsMark === 'B') {
+            const close = Number(full?.[day]?.close);
+            return Number.isFinite(close) && close > 0 ? close : null;
+        }
+    }
+    return null;
+}
+
+function getLowerWavePositionStep(position, steps = [0, 30, 50, 80]) {
+    const current = Math.max(0, Number(position) || 0);
+    const eligible = [...steps].map(Number).filter(step => Number.isFinite(step) && step < current).sort((left, right) => left - right);
+    return eligible.length ? eligible[eligible.length - 1] : 0;
+}
+
+function getRecentConfirmedPressureHigh(idx, full, lookbackDays = 20, pivotDays = 2) {
+    const start = Math.max(pivotDays, idx - Math.max(1, lookbackDays));
+    for (let day = idx - pivotDays - 1; day >= start; day--) {
+        const value = Number(full?.[day]?.high);
+        if (!Number.isFinite(value)) continue;
+        let confirmed = true;
+        for (let offset = 1; offset <= pivotDays; offset++) {
+            if (Number(full?.[day - offset]?.high) >= value || Number(full?.[day + offset]?.high) >= value) {
+                confirmed = false;
+                break;
+            }
+        }
+        if (confirmed) return { day, value };
+    }
+    return null;
+}
+
+function getWaveFreshEntryPressureContext(idx, full, indicators, config = {}) {
+    const item = full?.[idx] || {};
+    const high = Number(item.high);
+    const close = Number(item.close);
+    const tolerance = Math.max(0, Number(config.pressureToleranceRatio) || 0);
+    const closeTolerance = Math.max(0, Number(config.pressureCloseToleranceRatio) || 0);
+    const sources = [];
+    const pivot = getRecentConfirmedPressureHigh(
+        idx,
+        full,
+        Math.max(1, Number(config.pressureLookbackDays) || 20),
+        Math.max(1, Number(config.pivotConfirmationDays) || 2)
+    );
+    if (pivot && high >= pivot.value * (1 - tolerance) && close <= pivot.value * (1 + closeTolerance)) {
+        sources.push({ type: 'pivot', period: null, level: pivot.value, day: pivot.day, date: full?.[pivot.day]?.date || '' });
+    }
+    const slopeDays = Math.max(1, Number(config.movingAverageSlopeLookbackDays) || 5);
+    for (const period of config.movingAveragePeriods || []) {
+        const series = indicators?.ma?.[period] || [];
+        const level = Number(series[idx]);
+        const previousLevel = Number(series[idx - slopeDays]);
+        if (!Number.isFinite(level) || !Number.isFinite(previousLevel) || level > previousLevel) continue;
+        if (high >= level * (1 - tolerance) && close <= level * (1 + closeTolerance)) {
+            sources.push({ type: 'ma', period, level, day: idx, date: item.date || '' });
+        }
+    }
+    return { matched: sources.length > 0, sources };
+}
+
+function wasWavePressureSourceReachedOnDay(source, day, full, indicators, config = {}) {
+    if (!source || day < 0) return false;
+    const high = Number(full?.[day]?.high);
+    const tolerance = Math.max(0, Number(config.pressureToleranceRatio) || 0);
+    const level = source.type === 'ma' && Number.isFinite(Number(source.period))
+        ? Number(indicators?.ma?.[Number(source.period)]?.[day])
+        : Number(source.level);
+    return Number.isFinite(high) && Number.isFinite(level) && high >= level * (1 - tolerance);
+}
+
+function getWaveEntryDayPressureVetoContext(idx, full, meta, prevPos, targetPosition, strategy = STRATEGY) {
+    const protection = strategy?.waveRejectionProtection;
+    const config = protection?.entryDayPressureVeto;
+    const empty = { active: false, status: 'none', targetPosition };
+    if (!config || state.strategy !== '波段抄底型' || state.period !== 'daily'
+        || (config.stocksOnly !== false && state.mode !== 'stock') || prevPos > 0 || targetPosition <= 0) return empty;
+
+    const item = full?.[idx] || {};
+    const open = Number(item.open);
+    const high = Number(item.high);
+    const low = Number(item.low);
+    const close = Number(item.close);
+    const range = high - low;
+    if (![open, high, low, close].every(Number.isFinite) || range <= 0) return empty;
+    if (open < low || open > high || close < low || close > high) return empty;
+
+    const ma20 = Number(state.indicators?.ma?.[20]?.[idx]);
+    const ma60 = Number(state.indicators?.ma?.[60]?.[idx]);
+    const slopeDays = Math.max(1, Number(config.movingAverageSlopeLookbackDays) || 5);
+    const previousMa20 = Number(state.indicators?.ma?.[20]?.[idx - slopeDays]);
+    const hasMediumDowntrend = [ma20, ma60, previousMa20].every(Number.isFinite)
+        && ma20 < ma60
+        && ma20 < previousMa20;
+    if (config.requireMediumDowntrend !== false && !hasMediumDowntrend) return empty;
+
+    const upperShadow = high - Math.max(open, close);
+    const lowerShadow = Math.min(open, close) - low;
+    const upperShadowRangeRatio = upperShadow / range;
+    const closeLocation = (close - low) / range;
+    if (upperShadowRangeRatio < Number(config.minimumUpperShadowRangeRatio || 0)
+        || closeLocation > Number(config.maximumCloseLocation ?? 1)
+        || (config.requireUpperShadowDominance && upperShadow <= lowerShadow)) return empty;
+
+    const pressure = getWaveFreshEntryPressureContext(idx, full, state.indicators, config);
+    const pressureSources = pressure.sources.filter(source =>
+        source?.type === 'ma'
+        && Number.isFinite(Number(source.level))
+        && close < Number(source.level)
+    );
+    if (!pressureSources.length) return empty;
+
+    const sourceSignals = (meta?.windowScoreSignals || [])
+        .filter(signal => Number(signal?.day) === Number(idx))
+        .map(signal => signal.signal);
+    return {
+        active: true,
+        status: 'entry_blocked',
+        eventType: 'entry_day_pressure_rejection',
+        triggerDay: idx,
+        triggerDate: item.date || '',
+        triggerHigh: high,
+        triggerLow: low,
+        triggerClose: close,
+        entryClose: close,
+        entryDay: idx,
+        entryDate: item.date || '',
+        entryAge: 0,
+        entrySignalLow: low,
+        sourceSignals,
+        sourcePosition: 0,
+        targetPosition: 0,
+        upperShadowBodyRatio: Math.abs(close - open) > 0 ? upperShadow / Math.abs(close - open) : null,
+        upperShadowRangeRatio,
+        lowerShadow,
+        closeLocation,
+        pressureSources,
+        mediumDowntrend: hasMediumDowntrend,
+        recoveryPending: false,
+        recoveryHoldRemaining: 0
+    };
+}
+
+function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosition, strategy = STRATEGY, decisionContext = {}) {
+    const config = strategy?.waveRejectionProtection;
+    const empty = { active: false, status: 'none', targetPosition };
+    const isStock = state.mode === 'stock';
+    const isIndex = state.mode === 'index';
+    const indexFreshEntryConfig = isIndex ? config?.indexFreshEntryFailure : null;
+    const indexDownsideConfig = isIndex ? config?.indexFreshEntryDownsideFailure : null;
+    if (state.strategy !== '波段抄底型' || state.period !== 'daily' || !config
+        || (!isStock && !indexFreshEntryConfig && !indexDownsideConfig)) return empty;
+
+    const item = full?.[idx] || {};
+    const close = Number(item.close);
+    const previous = full?.[idx - 1]?._decision?.waveRejectionProtection;
+    const entryDayPressureVeto = getWaveEntryDayPressureVetoContext(idx, full, meta, prevPos, targetPosition, strategy);
+    if (entryDayPressureVeto.status === 'entry_blocked') return entryDayPressureVeto;
+    if (previous?.active) {
+        const age = idx - Number(previous.triggerDay);
+        if (previous.eventType === 'risk_cap_zero_exit') {
+            const riskConfig = config.riskCapZeroExit || {};
+            const postEvent = getPostEventBuyScoreContext(idx, full, state.indicators, previous.triggerDay, strategy);
+            const minimumPostEventScore = Math.max(1, Number(riskConfig.minimumPostEventScore) || Number(strategy?.holdThreshold) || 3);
+            const structuralRecoverySignals = new Set(riskConfig.structuralRecoverySignals || ['B6', 'B11']);
+            const structuralRecovery = postEvent.signals.some(signal => structuralRecoverySignals.has(signal.signal));
+            const recoveryCloseLevel = Number.isFinite(Number(previous.recoveryCloseLevel))
+                ? Number(previous.recoveryCloseLevel)
+                : Number(previous.triggerClose);
+            const priceRecovered = Number.isFinite(close) && Number.isFinite(recoveryCloseLevel) && close > recoveryCloseLevel;
+            const ma20 = Number(state.indicators?.ma?.[20]?.[idx]);
+            const ma60 = Number(state.indicators?.ma?.[60]?.[idx]);
+            const previousMa20 = Number(state.indicators?.ma?.[20]?.[Math.max(0, idx - 5)]);
+            const trendRecovery = [close, ma20, ma60, previousMa20].every(Number.isFinite)
+                && close > ma20
+                && ma20 > ma60
+                && ma20 >= previousMa20;
+            const riskCap = Number.isFinite(Number(decisionContext.riskPositionCap))
+                ? Number(decisionContext.riskPositionCap)
+                : getRiskPositionCap(decisionContext.risk);
+            const riskRecovered = riskCap >= Math.max(0, Number(riskConfig.recoveryPositionCap) || 30);
+            const marketRecoveryCap = Number(decisionContext.market?.increaseCaps?.[decisionContext.targetStrength?.tier || 'ordinary']);
+            const marketAllowsRecovery = !Number.isFinite(marketRecoveryCap)
+                || marketRecoveryCap >= Math.max(0, Number(riskConfig.recoveryPositionCap) || 30);
+            const rawSignals = item._signals || [];
+            const blockedByRiskSignal = (config.blockingSignals || []).some(signal => rawSignals.includes(signal));
+            const blockedByDecision = !!meta?.inCooldown
+                || (meta?.exitSignals || []).length > 0
+                || (meta?.warningSignals || []).length > 0
+                || decisionContext.exit?.level !== '无明确离场';
+            const canRelease = age >= 1
+                && riskRecovered
+                && marketAllowsRecovery
+                && !blockedByRiskSignal
+                && !blockedByDecision
+                && ((postEvent.score >= minimumPostEventScore && (priceRecovered || structuralRecovery)) || trendRecovery);
+            if (!canRelease) {
+                return {
+                    ...previous,
+                    active: true,
+                    status: 'locked',
+                    lockAge: age,
+                    lockRemaining: 0,
+                    blockedByRiskSignal,
+                    blockedByDecision,
+                    riskRecovered,
+                    marketAllowsRecovery,
+                    priceRecovered,
+                    structuralRecovery,
+                    trendRecovery,
+                    postEventScore: postEvent.score,
+                    postEventScoreSignals: postEvent.signals,
+                    minimumPostEventScore,
+                    targetPosition: 0
+                };
+            }
+            const recoveryCap = Math.max(0, Number(riskConfig.recoveryPositionCap) || 30);
+            return {
+                ...previous,
+                active: false,
+                status: 'released',
+                resolvedDay: idx,
+                resolvedDate: item.date || '',
+                riskRecovered,
+                marketAllowsRecovery,
+                priceRecovered,
+                structuralRecovery,
+                trendRecovery,
+                postEventScore: postEvent.score,
+                postEventScoreSignals: postEvent.signals,
+                minimumPostEventScore,
+                recoveryPending: false,
+                recoveryHoldRemaining: Math.max(0, Number(riskConfig.recoveryHoldTradingDays) || 0),
+                allowRecoveryIncrease: trendRecovery,
+                targetPosition: Math.min(Math.max(targetPosition, trendRecovery ? recoveryCap : 0), recoveryCap)
+            };
+        }
+        const minimumLockTradingDays = Math.max(1, Number(config.minimumLockTradingDays) || 2);
+        const rawSignals = item._signals || [];
+        const blockedByRiskSignal = (config.blockingSignals || []).some(signal => rawSignals.includes(signal));
+        const recoveredRiskHigh = Number.isFinite(close) && close > Number(previous.triggerHigh);
+        const hasFreshPostEventSignal = (meta?.windowScoreSignals || []).some(signal => Number(signal.day) > Number(previous.triggerDay));
+        const postEvent = getPostEventBuyScoreContext(idx, full, state.indicators, previous.triggerDay, strategy);
+        const freshRecoveryConfig = config.strongFreshRecovery || {};
+        const freshRecoveryEvents = new Set(freshRecoveryConfig.eventTypes || []);
+        const minimumPostEventScore = Math.max(1, Number(strategy?.buyThreshold) || 4);
+        const minimumPostEventGroups = Math.max(2, Number(freshRecoveryConfig.minimumScoreGroups) || 2);
+        const recoveryCap = Math.max(0, Number(config.recoveryPositionCap) || 30);
+        const riskCap = Number.isFinite(Number(decisionContext.riskPositionCap))
+            ? Number(decisionContext.riskPositionCap)
+            : getRiskPositionCap(decisionContext.risk);
+        const marketRecoveryCap = Number(decisionContext.market?.increaseCaps?.[decisionContext.targetStrength?.tier || 'ordinary']);
+        const marketAllowsRecovery = !Number.isFinite(marketRecoveryCap) || marketRecoveryCap >= recoveryCap;
+        const blockedByDecision = !!meta?.inCooldown
+            || (meta?.exitSignals || []).length > 0
+            || (meta?.warningSignals || []).length > 0
+            || (!!decisionContext.exit?.level && decisionContext.exit.level !== '无明确离场');
+        const ma20RejectionRecoveryBlocked = previous.eventType === 'fresh_entry_failure'
+            && previous.ma20RejectionExit === true;
+        const strongFreshRecovery = isStock
+            && freshRecoveryEvents.has(previous.eventType)
+            && !ma20RejectionRecoveryBlocked
+            && postEvent.score >= minimumPostEventScore
+            && postEvent.signals.length >= minimumPostEventGroups
+            && riskCap >= recoveryCap
+            && marketAllowsRecovery
+            && !blockedByDecision
+            && targetPosition > 0;
+        const pullbackConfig = config.pullbackRecovery || {};
+        const pullbackEvents = new Set(pullbackConfig.eventTypes || ['mature_profit_rejection']);
+        const pullbackSourcePositions = new Set(pullbackConfig.sourcePositions || [30, 50]);
+        const pullbackSignals = new Set(pullbackConfig.signals || ['B6', 'B11']);
+        const freshPullbackSignals = (item._signals || []).filter(signal => pullbackSignals.has(signal));
+        const pullbackMaPeriod = Math.max(1, Number(pullbackConfig.movingAveragePeriod) || 20);
+        const pullbackSlopeDays = Math.max(1, Number(pullbackConfig.slopeLookbackDays) || 1);
+        const pullbackMa = Number(state.indicators?.ma?.[pullbackMaPeriod]?.[idx]);
+        const previousPullbackMa = Number(state.indicators?.ma?.[pullbackMaPeriod]?.[Math.max(0, idx - pullbackSlopeDays)]);
+        const heldEventLow = pullbackConfig.requireHoldEventLow === false
+            || (Number.isFinite(close) && close > Number(previous.triggerLow));
+        const pullbackRecoveryTarget = pullbackSourcePositions.has(Number(previous.sourcePosition))
+            ? Number(previous.sourcePosition)
+            : 0;
+        const stockTrendCap = Number(decisionContext.positionCap?.limit);
+        const stockTrendAllowsPullbackRecovery = pullbackRecoveryTarget <= recoveryCap
+            || !Number.isFinite(stockTrendCap)
+            || stockTrendCap >= pullbackRecoveryTarget;
+        const marketAllowsPullbackRecovery = pullbackRecoveryTarget > 0
+            && (!Number.isFinite(marketRecoveryCap) || marketRecoveryCap >= pullbackRecoveryTarget);
+        const pullbackRecovery = isStock
+            && pullbackConfig.stocksOnly !== false
+            && pullbackEvents.has(previous.eventType)
+            && age >= Math.max(2, Number(pullbackConfig.minimumEventAgeTradingDays) || 2)
+            && pullbackRecoveryTarget > prevPos
+            && freshPullbackSignals.length > 0
+            && [close, pullbackMa, previousPullbackMa].every(Number.isFinite)
+            && close >= pullbackMa
+            && pullbackMa >= previousPullbackMa
+            && heldEventLow
+            && riskCap >= pullbackRecoveryTarget
+            && marketAllowsPullbackRecovery
+            && !blockedByRiskSignal
+            && !blockedByDecision
+            && stockTrendAllowsPullbackRecovery;
+        const recoveryCloseLevel = Number.isFinite(Number(previous.recoveryCloseLevel))
+            ? Number(previous.recoveryCloseLevel)
+            : Number(previous.triggerClose);
+        const stableRecovery = age >= Math.max(1, Number(config.minimumLockTradingDays) || 2)
+            && Number.isFinite(close)
+            && close > recoveryCloseLevel;
+        const confirmedPostEventRecovery = isStock
+            ? (recoveredRiskHigh && hasFreshPostEventSignal) || stableRecovery || strongFreshRecovery || pullbackRecovery
+            : recoveredRiskHigh || hasFreshPostEventSignal || stableRecovery;
+        const canRelease = age >= minimumLockTradingDays
+            && !blockedByRiskSignal
+            && confirmedPostEventRecovery;
+        if (!canRelease) {
+            return {
+                ...previous,
+                active: true,
+                status: 'locked',
+                lockAge: age,
+                lockRemaining: Math.max(0, minimumLockTradingDays - age),
+                blockedByRiskSignal,
+                blockedByDecision,
+                recoveredRiskHigh,
+                hasFreshPostEventSignal,
+                stableRecovery,
+                strongFreshRecovery,
+                pullbackRecovery,
+                freshPullbackSignals,
+                pullbackMovingAveragePeriod: pullbackMaPeriod,
+                pullbackMovingAverage: pullbackMa,
+                postEventScore: postEvent.score,
+                postEventScoreSignals: postEvent.signals,
+                minimumPostEventScore,
+                minimumPostEventGroups,
+                riskRecovered: riskCap >= recoveryCap,
+                marketAllowsRecovery,
+                marketAllowsPullbackRecovery,
+                stockTrendAllowsPullbackRecovery,
+                targetPosition: Math.min(targetPosition, prevPos)
+            };
+        }
+        const holdDays = Math.max(0, Number(config.recoveryHoldTradingDays) || 0);
+        if (targetPosition > 0) {
+            return {
+                ...previous,
+                active: false,
+                status: 'released',
+                resolvedDay: idx,
+                resolvedDate: item.date || '',
+                recoveredRiskHigh,
+                hasFreshPostEventSignal,
+                stableRecovery,
+                strongFreshRecovery,
+                pullbackRecovery,
+                freshPullbackSignals,
+                pullbackMovingAveragePeriod: pullbackMaPeriod,
+                pullbackMovingAverage: pullbackMa,
+                postEventScore: postEvent.score,
+                postEventScoreSignals: postEvent.signals,
+                minimumPostEventScore,
+                minimumPostEventGroups,
+                riskRecovered: riskCap >= recoveryCap,
+                marketAllowsRecovery,
+                marketAllowsPullbackRecovery,
+                stockTrendAllowsPullbackRecovery,
+                recoveryPending: false,
+                recoveryHoldRemaining: holdDays,
+                allowRecoveryIncrease: strongFreshRecovery || pullbackRecovery,
+                targetPosition: pullbackRecovery
+                    ? Math.max(prevPos, pullbackRecoveryTarget)
+                    : Math.min(targetPosition, Math.max(prevPos, recoveryCap))
+            };
+        }
+        if (pullbackRecovery) {
+            return {
+                ...previous,
+                active: false,
+                status: 'released',
+                resolvedDay: idx,
+                resolvedDate: item.date || '',
+                recoveredRiskHigh,
+                hasFreshPostEventSignal,
+                stableRecovery,
+                strongFreshRecovery,
+                pullbackRecovery,
+                freshPullbackSignals,
+                pullbackMovingAveragePeriod: pullbackMaPeriod,
+                pullbackMovingAverage: pullbackMa,
+                postEventScore: postEvent.score,
+                postEventScoreSignals: postEvent.signals,
+                minimumPostEventScore,
+                minimumPostEventGroups,
+                riskRecovered: riskCap >= recoveryCap,
+                marketAllowsRecovery,
+                marketAllowsPullbackRecovery,
+                stockTrendAllowsPullbackRecovery,
+                recoveryPending: false,
+                recoveryHoldRemaining: holdDays,
+                allowRecoveryIncrease: true,
+                targetPosition: pullbackRecoveryTarget
+            };
+        }
+        return {
+            ...previous,
+            active: false,
+            status: 'recovery_pending',
+            resolvedDay: idx,
+            resolvedDate: item.date || '',
+            recoveredRiskHigh,
+            hasFreshPostEventSignal,
+            stableRecovery,
+            recoveryPending: true,
+            recoveryHoldRemaining: 0,
+            targetPosition
+        };
+    }
+
+    if (previous?.recoveryPending) {
+        const recoveryCap = Math.max(0, Number(config.recoveryPositionCap) || 30);
+        const rawSignals = item._signals || [];
+        const freshTakeoverSignals = ['B6', 'B11'].filter(signal => rawSignals.includes(signal));
+        const ma20 = Number(state.indicators?.ma?.[20]?.[idx]);
+        const previousMa20 = Number(state.indicators?.ma?.[20]?.[Math.max(0, idx - 1)]);
+        const trendTakeover = isStock
+            && freshTakeoverSignals.length > 0
+            && Number.isFinite(close)
+            && Number.isFinite(ma20)
+            && Number.isFinite(previousMa20)
+            && close >= ma20
+            && ma20 >= previousMa20
+            && !meta?.inCooldown
+            && !(meta?.exitSignals || []).length
+            && !(meta?.warningSignals || []).length
+            && getRiskPositionCap(decisionContext.risk) >= recoveryCap;
+        const marketRecoveryCap = Number(decisionContext.market?.increaseCaps?.[decisionContext.targetStrength?.tier || 'ordinary']);
+        const marketAllowsRecovery = !Number.isFinite(marketRecoveryCap) || marketRecoveryCap >= recoveryCap;
+        const permittedTrendTakeover = trendTakeover && marketAllowsRecovery;
+        if (targetPosition <= 0 && !permittedTrendTakeover) return { ...previous, status: 'recovery_pending', targetPosition };
+        return {
+            ...previous,
+            status: 'recovery_started',
+            recoveryPending: false,
+            recoveryHoldRemaining: Math.max(0, Number(config.recoveryHoldTradingDays) || 0),
+            freshTakeoverSignals,
+            trendRecovery: permittedTrendTakeover,
+            marketAllowsRecovery,
+            allowRecoveryIncrease: permittedTrendTakeover,
+            targetPosition: Math.min(Math.max(targetPosition, permittedTrendTakeover ? recoveryCap : 0), recoveryCap)
+        };
+    }
+
+    if (Number(previous?.recoveryHoldRemaining) > 0) {
+        const recoveryCap = Math.max(0, Number(config.recoveryPositionCap) || 30);
+        const hardInvalidation = getTodaySignalInvalidations(meta, 'price-break').length > 0;
+        const canPreserveRecovery = previous.allowRecoveryIncrease
+            && !decisionContext.isCriticalExit
+            && !meta?.inCooldown
+            && !hardInvalidation
+            && getRiskPositionCap(decisionContext.risk) >= recoveryCap;
+        const preservedPosition = canPreserveRecovery ? Math.min(Math.max(prevPos, recoveryCap), recoveryCap) : 0;
+        return {
+            ...previous,
+            status: 'recovery_hold',
+            recoveryHoldRemaining: Number(previous.recoveryHoldRemaining) - 1,
+            allowRecoveryIncrease: canPreserveRecovery,
+            targetPosition: canPreserveRecovery
+                ? Math.max(Math.min(targetPosition, recoveryCap), preservedPosition)
+                : Math.min(targetPosition, Math.max(prevPos, recoveryCap))
+        };
+    }
+
+    if (prevPos <= 0) return empty;
+    if (decisionContext.riskCapZeroExitTriggered) {
+        return {
+            active: true,
+            status: 'triggered',
+            eventType: 'risk_cap_zero_exit',
+            triggerDay: idx,
+            triggerDate: item.date || '',
+            triggerHigh: Number(item.high),
+            triggerLow: Number(item.low),
+            triggerClose: close,
+            recoveryCloseLevel: close,
+            sourcePosition: prevPos,
+            targetPosition: 0,
+            riskScore: Number(decisionContext.risk?.score),
+            riskPositionCap: Number(decisionContext.riskPositionCap) || 0,
+            postEventScore: 0,
+            postEventScoreSignals: [],
+            recoveryPending: false,
+            recoveryHoldRemaining: 0
+        };
+    }
+    const entryClose = getWaveRejectionEntryClose(idx, full, prevPos);
+    if (!Number.isFinite(entryClose) || entryClose <= 0) return empty;
+    const lookbackDays = Math.max(1, Number(config.pressureLookbackDays) || 20);
+    const pressureRows = full.slice(Math.max(0, idx - lookbackDays), idx);
+    const volumeRows = full.slice(Math.max(0, idx - 5), idx);
+    if (!pressureRows.length || !volumeRows.length) return empty;
+    const previousHigh = Math.max(...pressureRows.map(row => Number(row?.high) || 0));
+    const averageVolume = volumeRows.reduce((sum, row) => sum + (Number(row?.vol) || 0), 0) / volumeRows.length;
+    const open = Number(item.open);
+    const high = Number(item.high);
+    const low = Number(item.low);
+    const volume = Number(item.vol) || 0;
+    const range = high - low;
+    const body = Math.abs(close - open);
+    const upperShadow = high - Math.max(open, close);
+    const lowerShadow = Math.min(open, close) - low;
+    const closeLocation = range > 0 ? (close - low) / range : 1;
+    const profitRatio = close / entryClose - 1;
+    const volumeRatio = averageVolume > 0 ? volume / averageVolume : 0;
+    const nearPressure = previousHigh > 0 && high >= previousHigh * Number(config.pressureToleranceRatio);
+    const freshEntryConfig = isStock ? config.freshEntryFailure : indexFreshEntryConfig;
+    const downsideConfig = isIndex ? indexDownsideConfig : config.freshEntryDownsideFailure;
+    let entryDay = null;
+    for (let day = idx - 1; day >= 0; day--) {
+        const priorDecision = full?.[day]?._decision;
+        if (!priorDecision || Number(priorDecision.position) <= 0) break;
+        if (Number(priorDecision.prevAdv) === 0 || priorDecision.bsMark === 'B') {
+            entryDay = day;
+            break;
+        }
+    }
+    const entryAge = Number.isInteger(entryDay) ? idx - entryDay : null;
+    const entrySignalLow = Number.isInteger(entryDay) ? Number(full?.[entryDay]?.low) : null;
+    const intradayProfitRatio = high / entryClose - 1;
+    const givebackRatio = high > entryClose ? (high - close) / (high - entryClose) : 0;
+    const upperShadowRangeRatio = range > 0 ? upperShadow / range : 0;
+    const freshEntryPressure = freshEntryConfig
+        ? getWaveFreshEntryPressureContext(idx, full, state.indicators, freshEntryConfig)
+        : { matched: false, sources: [] };
+    const secondDayMinimumHighAdvanceRatio = Number(freshEntryConfig?.secondDayMinimumHighAdvanceRatio);
+    const previousDayHigh = Number(full?.[idx - 1]?.high);
+    const secondDayHighAdvanceRatio = Number.isFinite(previousDayHigh) && previousDayHigh > 0
+        ? high / previousDayHigh - 1
+        : Infinity;
+    const newlyReachedPressureSources = Number.isInteger(entryAge) && entryAge > 1
+        ? freshEntryPressure.sources.filter(source =>
+            !wasWavePressureSourceReachedOnDay(source, idx - 1, full, state.indicators, freshEntryConfig)
+        )
+        : freshEntryPressure.sources;
+    const freshPressureAttack = !Number.isFinite(secondDayMinimumHighAdvanceRatio)
+        || !Number.isInteger(entryAge)
+        || entryAge <= 1
+        || newlyReachedPressureSources.length > 0
+        || secondDayHighAdvanceRatio >= secondDayMinimumHighAdvanceRatio;
+    const pressureAttackType = !Number.isInteger(entryAge) || entryAge <= 1
+        ? 'first_day'
+        : (newlyReachedPressureSources.length > 0 ? 'new_source' : (freshPressureAttack ? 'higher_high' : 'repeat'));
+    const requiredCloseBelowMaPeriod = Number(freshEntryConfig?.requireCloseBelowMovingAveragePeriod);
+    const requiredCloseBelowMa = Number.isFinite(requiredCloseBelowMaPeriod)
+        ? Number(state.indicators?.ma?.[requiredCloseBelowMaPeriod]?.[idx])
+        : null;
+    const stockFreshEntryCloseAllowed = !isStock
+        || !Number.isFinite(requiredCloseBelowMaPeriod)
+        || (Number.isFinite(requiredCloseBelowMa) && close < requiredCloseBelowMa);
+    const ma20RejectionConfig = isStock ? freshEntryConfig?.ma20RejectionExit : null;
+    const rejectionMaPeriod = Number(ma20RejectionConfig?.movingAveragePeriod) || 20;
+    const rejectionLongMaPeriod = Number(ma20RejectionConfig?.longMovingAveragePeriod) || 60;
+    const rejectionMa = Number(state.indicators?.ma?.[rejectionMaPeriod]?.[idx]);
+    const rejectionLongMa = Number(state.indicators?.ma?.[rejectionLongMaPeriod]?.[idx]);
+    const rejectionSlopeDays = Math.max(1, Number(ma20RejectionConfig?.slopeLookbackDays) || 5);
+    const previousRejectionMa = Number(state.indicators?.ma?.[rejectionMaPeriod]?.[idx - rejectionSlopeDays]);
+    const stockMa20RejectionTriggered = ma20RejectionConfig
+        && Number.isInteger(entryAge)
+        && entryAge >= 1
+        && entryAge <= Math.max(1, Number(freshEntryConfig.maximumEntryAgeTradingDays) || 2)
+        && [rejectionMa, rejectionLongMa, previousRejectionMa].every(Number.isFinite)
+        && rejectionMa < rejectionLongMa
+        && rejectionMa < previousRejectionMa
+        && high >= rejectionMa
+        && close < rejectionMa
+        && upperShadowRangeRatio >= Number(ma20RejectionConfig.minimumUpperShadowRangeRatio || 0)
+        && closeLocation <= Number(ma20RejectionConfig.maximumCloseLocation ?? 1)
+        && (!ma20RejectionConfig.requireUpperShadowDominance || upperShadow > lowerShadow)
+        && freshPressureAttack;
+    const stockMa20HoldTriggered = ma20RejectionConfig
+        && Number.isInteger(entryAge)
+        && entryAge >= 1
+        && entryAge <= Math.max(1, Number(freshEntryConfig.maximumEntryAgeTradingDays) || 2)
+        && [rejectionMa, rejectionLongMa, previousRejectionMa].every(Number.isFinite)
+        && rejectionMa < rejectionLongMa
+        && close >= rejectionMa
+        && upperShadowRangeRatio >= Number(ma20RejectionConfig.minimumUpperShadowRangeRatio || 0)
+        && closeLocation <= Number(ma20RejectionConfig.maximumCloseLocation ?? 1)
+        && (!ma20RejectionConfig.requireUpperShadowDominance || upperShadow > lowerShadow)
+        && freshEntryPressure.matched
+        && freshPressureAttack;
+    const classicFreshEntryFailureTriggered = freshEntryConfig
+        && (!freshEntryConfig.requireBearishClose || close < open)
+        && (!Number.isFinite(Number(freshEntryConfig.maximumCloseDefenseGapRatio))
+            || (Number.isFinite(entrySignalLow)
+                && entrySignalLow > 0
+                && close / entrySignalLow - 1 <= Number(freshEntryConfig.maximumCloseDefenseGapRatio)))
+        && Number.isInteger(entryAge)
+        && entryAge >= 1
+        && entryAge <= Math.max(1, Number(freshEntryConfig.maximumEntryAgeTradingDays) || 2)
+        && intradayProfitRatio >= Number(freshEntryConfig.minimumIntradayProfitRatio)
+        && profitRatio <= Number(freshEntryConfig.maximumCloseProfitRatio)
+        && givebackRatio >= Number(freshEntryConfig.minimumGivebackRatio)
+        && volumeRatio >= Number(freshEntryConfig.minimumVolumeRatio)
+        && upperShadowRangeRatio >= Number(freshEntryConfig.minimumUpperShadowRangeRatio)
+        && closeLocation <= Number(freshEntryConfig.maximumCloseLocation)
+        && freshEntryPressure.matched
+        && freshPressureAttack
+        && stockFreshEntryCloseAllowed;
+    const freshEntryFailureTriggered = stockMa20RejectionTriggered || classicFreshEntryFailureTriggered;
+    const downsideCloseGapRatio = Number.isFinite(entrySignalLow) && entrySignalLow > 0 && Number.isFinite(close)
+        ? close / entrySignalLow - 1
+        : Infinity;
+    const downsideBearBodyRangeRatio = range > 0 && close < open ? (open - close) / range : 0;
+    const protectedB11LocalBreak = (meta?.localBreakWindowSignals || []).some(signal =>
+        signal?.signal === 'B11'
+        && Number.isFinite(Number(signal.structureLevel))
+        && close >= Number(signal.structureLevel)
+    );
+    const hardSignalInvalidations = getTodaySignalInvalidations(meta, 'price-break');
+    const signalInvalidationRecoveryLevels = hardSignalInvalidations
+        .map(signal => Number(signal?.invalidationLevel))
+        .filter(level => Number.isFinite(level));
+    const signalInvalidationRecoveryLevel = signalInvalidationRecoveryLevels.length
+        ? Math.max(...signalInvalidationRecoveryLevels)
+        : close;
+    const signalHardInvalidationExitTriggered = isStock
+        && prevPos > 0
+        && targetPosition <= 0
+        && hardSignalInvalidations.length > 0;
+    const freshEntryHardBreakTriggered = downsideConfig
+        && downsideConfig.exitOnCloseBelowEntryLow !== false
+        && Number.isInteger(entryAge)
+        && entryAge >= 1
+        && entryAge <= Math.max(1, Number(downsideConfig.maximumEntryAgeTradingDays) || 2)
+        && Number.isFinite(entrySignalLow)
+        && entrySignalLow > 0
+        && close < entrySignalLow
+        && !protectedB11LocalBreak;
+    const freshEntryDownsideFailureTriggered = downsideConfig
+        && Number.isInteger(entryAge)
+        && entryAge >= 1
+        && entryAge <= Math.max(1, Number(downsideConfig.maximumEntryAgeTradingDays) || 2)
+        && Number.isFinite(entrySignalLow)
+        && entrySignalLow > 0
+        && low < entrySignalLow
+        && close >= entrySignalLow
+        && downsideCloseGapRatio <= Number(downsideConfig.maximumCloseDefenseGapRatio)
+        && downsideBearBodyRangeRatio >= Number(downsideConfig.minimumBearBodyRangeRatio)
+        && closeLocation <= Number(downsideConfig.maximumCloseLocation)
+        && volumeRatio >= Number(downsideConfig.minimumVolumeRatio);
+    const matureProfitRejectionTriggered = isStock && Number.isFinite(profitRatio)
+        && profitRatio >= Number(config.minimumProfitRatio)
+        && volumeRatio >= Number(config.minimumVolumeRatio)
+        && nearPressure
+        && upperShadow >= Math.max(body * Number(config.minimumUpperShadowBodyRatio), 0)
+        && upperShadowRangeRatio >= Number(config.minimumUpperShadowRangeRatio || 0)
+        && (!config.requireUpperShadowDominance || upperShadow > lowerShadow)
+        && closeLocation <= Number(config.maximumCloseLocation);
+    const triggered = freshEntryHardBreakTriggered || freshEntryDownsideFailureTriggered || freshEntryFailureTriggered
+        || signalHardInvalidationExitTriggered || matureProfitRejectionTriggered;
+    if (!triggered && !stockMa20HoldTriggered) return empty;
+    if (!triggered) {
+        const holdPositionCap = Math.max(0, Number(ma20RejectionConfig.holdPositionCap) || 30);
+        return {
+            active: false,
+            status: 'ma20_hold',
+            eventType: 'fresh_entry_ma20_hold',
+            triggerDay: idx,
+            triggerDate: item.date || '',
+            triggerHigh: high,
+            triggerLow: low,
+            triggerClose: close,
+            entryClose,
+            entryDay,
+            entryDate: Number.isInteger(entryDay) ? full?.[entryDay]?.date || '' : '',
+            entryAge,
+            profitRatio,
+            volumeRatio,
+            secondDayHighAdvanceRatio,
+            pressureAttackType,
+            ma20Level: rejectionMa,
+            upperShadowRangeRatio,
+            closeLocation,
+            pressureSources: freshEntryPressure.sources,
+            sourcePosition: prevPos,
+            targetPosition: Math.min(targetPosition, holdPositionCap),
+            holdPositionCap,
+            recoveryPending: false,
+            recoveryHoldRemaining: 0
+        };
+    }
+    return {
+        active: true,
+        status: 'triggered',
+        triggerDay: idx,
+        triggerDate: item.date || '',
+        triggerHigh: high,
+        triggerLow: low,
+        triggerClose: close,
+        recoveryCloseLevel: signalHardInvalidationExitTriggered ? signalInvalidationRecoveryLevel : close,
+        entryClose,
+        entryDay,
+        entryDate: Number.isInteger(entryDay) ? full?.[entryDay]?.date || '' : '',
+        entryAge,
+        entrySignalLow,
+        downsideBearBodyRangeRatio,
+        downsideCloseGapRatio,
+        eventType: freshEntryHardBreakTriggered
+            ? 'fresh_entry_hard_break'
+            : (freshEntryDownsideFailureTriggered
+                ? 'fresh_entry_downside_failure'
+                : (freshEntryFailureTriggered
+                    ? 'fresh_entry_failure'
+                    : (signalHardInvalidationExitTriggered ? 'signal_hard_invalidation' : 'mature_profit_rejection'))),
+        profitRatio,
+        intradayProfitRatio,
+        givebackRatio,
+        volumeRatio,
+        secondDayHighAdvanceRatio,
+        pressureAttackType,
+        ma20RejectionExit: !!stockMa20RejectionTriggered,
+        ma20Level: Number.isFinite(rejectionMa) ? rejectionMa : null,
+        upperShadowBodyRatio: body > 0 ? upperShadow / body : null,
+        lowerShadow,
+        upperShadowRangeRatio,
+        closeLocation,
+        pressureSources: signalHardInvalidationExitTriggered
+            ? hardSignalInvalidations.map(signal => ({
+                type: 'signal_invalidation',
+                period: null,
+                level: Number(signal?.invalidationLevel),
+                day: Number(signal?.day),
+                date: signal?.signalDate || '',
+                signal: signal?.signal || ''
+            }))
+            : ((freshEntryHardBreakTriggered || freshEntryDownsideFailureTriggered)
+            ? [{ type: 'signal_low', period: null, level: entrySignalLow, day: entryDay, date: Number.isInteger(entryDay) ? full?.[entryDay]?.date || '' : '' }]
+            : (freshEntryFailureTriggered ? freshEntryPressure.sources : [{ type: 'recent_high', period: null, level: previousHigh, day: null }])),
+        sourcePosition: prevPos,
+        targetPosition: freshEntryHardBreakTriggered || signalHardInvalidationExitTriggered
+            ? 0
+            : Math.min(targetPosition, getLowerWavePositionStep(prevPos, config.positionSteps)),
+        recoveryPending: false,
+        recoveryHoldRemaining: 0
+    };
+}
+
+function getWaveExpiryHandoffContext(idx, full, meta, prevPos, basePosition, exit, risk, strategy = STRATEGY) {
+    const config = strategy?.waveExpiryHandoff;
+    const empty = { applied: false, reason: '' };
+    const requiredPosition = Math.max(0, Number(config?.position) || 30);
+    if (!config || state.strategy !== '波段抄底型' || state.period !== 'daily') return empty;
+    const previous = full?.[idx - 1]?._decision?.waveExpiryHandoff;
+    if (previous?.applied && previous.observationMode === 'defensive') {
+        const close = Number(full?.[idx]?.close);
+        const invalidatedToday = [
+            ...(meta?.invalidatedWindowSignals || []),
+            ...(meta?.localBreakWindowSignals || [])
+        ].some(item => Number(item?.invalidationDay) === Number(idx));
+        const blocked = meta?.inCooldown
+            || (meta?.exitSignals || []).length > 0
+            || (meta?.warningSignals || []).length > 0
+            || !exit
+            || exit.level !== '无明确离场'
+            || Number(risk?.score) < Math.max(0, Number(config.minimumRiskScore) || 40)
+            || getRiskPositionCap(risk) < requiredPosition
+            || invalidatedToday;
+        const nextPeriods = config.defensiveObservation?.nextDayMovingAveragePeriods || [5, 20];
+        const recoveredMovingAverages = Number.isFinite(close) && nextPeriods.every(period => {
+            const level = Number(state.indicators?.ma?.[Number(period)]?.[idx]);
+            return Number.isFinite(level) && close > level;
+        });
+        const hasFreshSignal = (meta?.windowScoreSignals || []).some(signal => Number(signal.day) > Number(previous.triggerDay));
+        const brokeObservationLow = Number.isFinite(close)
+            && Number.isFinite(Number(previous.triggerLow))
+            && close < Number(previous.triggerLow);
+        const brokeEntryLow = Number.isFinite(close)
+            && Number.isFinite(Number(previous.entryLow))
+            && close < Number(previous.entryLow);
+        const hardBreak = previous.establishedUptrend ? brokeEntryLow : brokeObservationLow;
+        const takeoverPassed = !blocked && !hardBreak && (recoveredMovingAverages || hasFreshSignal);
+        const defensiveConfig = config.defensiveObservation || {};
+        const observationAge = idx - Number(previous.triggerDay);
+        const maxTradingDays = Math.max(1, Number(defensiveConfig.establishedTrendMaxTradingDays) || 1);
+        const trendPeriod = Math.max(1, Number(defensiveConfig.trendMovingAveragePeriod) || 20);
+        const longPeriod = Math.max(1, Number(defensiveConfig.longMovingAveragePeriod) || 60);
+        const trendSlopeDays = Math.max(1, Number(defensiveConfig.establishedTrendSlopeLookbackDays) || 5);
+        const trendMA = Number(state.indicators?.ma?.[trendPeriod]?.[idx]);
+        const longMA = Number(state.indicators?.ma?.[longPeriod]?.[idx]);
+        const priorTrendMA = Number(state.indicators?.ma?.[trendPeriod]?.[idx - trendSlopeDays]);
+        const currentEstablishedUptrend = [trendMA, longMA, priorTrendMA].every(Number.isFinite)
+            && trendMA > longMA
+            && trendMA >= priorTrendMA;
+        const closeGapRatio = Number.isFinite(close) && trendMA > 0 ? Math.max(0, (trendMA - close) / trendMA) : Infinity;
+        const atr = getATR(full, idx);
+        const closeGapAtr = Number.isFinite(close) && Number.isFinite(trendMA) && atr > 0
+            ? Math.max(0, trendMA - close) / atr
+            : Infinity;
+        const withinWashoutRange = closeGapRatio <= Math.max(0, Number(defensiveConfig.maximumCloseGapRatio) || 0.03)
+            && closeGapAtr <= Math.max(0, Number(defensiveConfig.maximumCloseGapAtr) || 1);
+        const continueEstablishedWashout = !takeoverPassed
+            && !blocked
+            && !hardBreak
+            && previous.establishedUptrend
+            && currentEstablishedUptrend
+            && withinWashoutRange
+            && observationAge < maxTradingDays;
+        if (continueEstablishedWashout) {
+            return {
+                ...previous,
+                applied: true,
+                status: 'observing',
+                trendWashout: true,
+                observationAge,
+                maxTradingDays,
+                currentEstablishedUptrend,
+                closeGapRatio,
+                closeGapAtr,
+                recoveredMovingAverages,
+                hasFreshSignal,
+                brokeObservationLow,
+                brokeEntryLow,
+                forceExit: false,
+                forceHold: Number(basePosition) <= 0,
+                targetPosition: requiredPosition,
+                reason: `上涨结构未破，积分到期后的MA${trendPeriod}洗盘观察继续保留${requiredPosition}%`
+            };
+        }
+        return {
+            ...previous,
+            applied: false,
+            status: takeoverPassed ? 'taken_over' : 'expired',
+            followUpDay: idx,
+            followUpDate: full?.[idx]?.date || '',
+            recoveredMovingAverages,
+            hasFreshSignal,
+            brokeObservationLow,
+            brokeEntryLow,
+            forceExit: !takeoverPassed,
+            forceHold: takeoverPassed && Number(basePosition) <= 0,
+            reason: takeoverPassed
+                ? '到期防守观察后重新站上短期与中期均线，或出现新的有效买入信号'
+                : '到期防守观察后未能重新站上短期与中期均线，也没有新的有效买入信号'
+        };
+    }
+    if (prevPos !== requiredPosition || Number(basePosition) > 0 || idx <= 0) return empty;
+    if (meta?.inCooldown || (meta?.exitSignals || []).length || (meta?.warningSignals || []).length) return empty;
+    if (!exit || exit.level !== '无明确离场') return empty;
+    if (Number(risk?.score) < Math.max(0, Number(config.minimumRiskScore) || 40)) return empty;
+    if (getRiskPositionCap(risk) < requiredPosition) return empty;
+    if (previous?.applied) return empty;
+
+    const invalidatedToday = [
+        ...(meta?.invalidatedWindowSignals || []),
+        ...(meta?.localBreakWindowSignals || [])
+    ].some(item => Number(item?.invalidationDay) === Number(idx));
+    if (invalidatedToday) return empty;
+
+    const previousMeta = getSignalMeta(idx - 1, full, state.indicators);
+    const holdThreshold = Math.max(1, Number(strategy?.holdThreshold) || Number(strategy?.buyThreshold) || 1);
+    if (Number(previousMeta?.windowScore) < holdThreshold || Number(meta?.windowScore) >= holdThreshold) return empty;
+    const currentScoreKeys = new Set((meta?.windowScoreSignals || []).map(item => `${item.signal}|${item.day}`));
+    const missingPreviousSignals = (previousMeta?.windowScoreSignals || []).filter(item => !currentScoreKeys.has(`${item.signal}|${item.day}`));
+    const windowDays = Math.max(1, Number(strategy?.windowDays) || 1);
+    if (!missingPreviousSignals.length || !missingPreviousSignals.every(item => idx - Number(item.day) >= windowDays)) return empty;
+
+    let entryDay = null;
+    for (let day = idx - 1; day >= 0; day--) {
+        const priorDecision = full?.[day]?._decision;
+        if (!priorDecision || Number(priorDecision.position) <= 0) break;
+        if (Number(priorDecision.prevAdv) === 0 || priorDecision.bsMark === 'B') {
+            entryDay = day;
+            break;
+        }
+    }
+    const entryLow = Number.isInteger(entryDay) ? Number(full?.[entryDay]?.low) : null;
+    const close = Number(full?.[idx]?.close);
+    const previousClose = Number(full?.[idx - 1]?.close);
+    const movingAveragePeriod = Math.max(1, Number(config.movingAveragePeriod) || 5);
+    const shortMA = Number(state.indicators?.ma?.[movingAveragePeriod]?.[idx]);
+    if (!Number.isFinite(entryLow) || !Number.isFinite(close) || !Number.isFinite(previousClose) || !Number.isFinite(shortMA)) return empty;
+    if (close <= entryLow) return empty;
+
+    const macdBar = Number(state.indicators?.macd?.bar?.[idx]);
+    const previousMacdBar = Number(state.indicators?.macd?.bar?.[idx - 1]);
+    const macdImproving = Number.isFinite(macdBar) && Number.isFinite(previousMacdBar) && macdBar > previousMacdBar;
+    const k = Number(state.indicators?.kdj?.k?.[idx]);
+    const d = Number(state.indicators?.kdj?.d?.[idx]);
+    const previousK = Number(state.indicators?.kdj?.k?.[idx - 1]);
+    const kdjImproving = Number.isFinite(k) && Number.isFinite(d) && Number.isFinite(previousK) && k > d && k > previousK;
+    const strictRecovery = close > previousClose && close > shortMA && (macdImproving || kdjImproving);
+    const defensiveConfig = config.defensiveObservation;
+    const defensiveStocksOnly = defensiveConfig?.stocksOnly !== false;
+    const trendPeriod = Math.max(1, Number(defensiveConfig?.trendMovingAveragePeriod) || 20);
+    const trendSlopeDays = Math.max(1, Number(defensiveConfig?.trendSlopeLookbackDays) || 1);
+    const trendMA = Number(state.indicators?.ma?.[trendPeriod]?.[idx]);
+    const previousTrendMA = Number(state.indicators?.ma?.[trendPeriod]?.[idx - trendSlopeDays]);
+    const trendMANotFalling = Number.isFinite(trendMA) && Number.isFinite(previousTrendMA) && trendMA >= previousTrendMA;
+    const longPeriod = Math.max(1, Number(defensiveConfig?.longMovingAveragePeriod) || 60);
+    const establishedSlopeDays = Math.max(1, Number(defensiveConfig?.establishedTrendSlopeLookbackDays) || 5);
+    const longMA = Number(state.indicators?.ma?.[longPeriod]?.[idx]);
+    const establishedPreviousTrendMA = Number(state.indicators?.ma?.[trendPeriod]?.[idx - establishedSlopeDays]);
+    const establishedUptrend = [trendMA, longMA, establishedPreviousTrendMA].every(Number.isFinite)
+        && trendMA > longMA
+        && trendMA >= establishedPreviousTrendMA;
+    const establishedCloseGapRatio = trendMA > 0 ? Math.max(0, (trendMA - close) / trendMA) : Infinity;
+    const atr = getATR(full, idx);
+    const establishedCloseGapAtr = atr > 0 ? Math.max(0, trendMA - close) / atr : Infinity;
+    const establishedWashoutRange = establishedCloseGapRatio <= Math.max(0, Number(defensiveConfig?.maximumCloseGapRatio) || 0.03)
+        && establishedCloseGapAtr <= Math.max(0, Number(defensiveConfig?.maximumCloseGapAtr) || 1);
+    const positiveMacdBar = Number.isFinite(macdBar) && macdBar > 0;
+    const defensiveObservation = !!defensiveConfig
+        && (!defensiveStocksOnly || state.mode === 'stock')
+        && trendMANotFalling
+        && (!defensiveConfig.requirePositiveMacdBar || positiveMacdBar);
+    if (!strictRecovery && !defensiveObservation) return empty;
+
+    const observationMode = strictRecovery ? 'rebound' : 'defensive';
+    const momentumSignals = strictRecovery
+        ? [macdImproving ? 'MACD柱改善' : '', kdjImproving ? 'KDJ继续修复' : ''].filter(Boolean)
+        : [`MA${trendPeriod}未下行`, 'MACD柱仍为正'];
+    return {
+        applied: true,
+        observationMode,
+        reason: strictRecovery
+            ? '买入积分仅因窗口自然到期，价格与短线动能仍在修复，保留一日低风险仓位等待接管'
+            : '买入积分仅因窗口自然到期，价格仍守住买入日防守位，且中期均线未下行、MACD柱仍为正，保留一日30%防守观察',
+        holdTradingDays: Math.max(1, Number(config.holdTradingDays) || 1),
+        triggerDay: idx,
+        triggerDate: full?.[idx]?.date || '',
+        triggerLow: Number(full?.[idx]?.low),
+        sourcePosition: prevPos,
+        entryDay,
+        entryDate: full?.[entryDay]?.date || '',
+        entryLow,
+        shortMAPeriod: movingAveragePeriod,
+        shortMA,
+        trendMAPeriod: trendPeriod,
+        trendMA,
+        previousTrendMA,
+        longMAPeriod: longPeriod,
+        longMA,
+        establishedUptrend,
+        closeGapRatio: establishedCloseGapRatio,
+        closeGapAtr: establishedCloseGapAtr,
+        trendWashout: observationMode === 'defensive' && establishedUptrend && establishedWashoutRange,
+        previousWindowScore: Number(previousMeta.windowScore) || 0,
+        currentWindowScore: Number(meta?.windowScore) || 0,
+        expiredSignals: missingPreviousSignals.map(item => ({ signal: item.signal, day: item.day, signalDate: item.signalDate || full?.[item.day]?.date || '' })),
+        momentumSignals
+    };
+}
+
+function getWaveMA20PullbackObservationContext(idx, full, meta, prevPos, basePosition, exit, risk, strategy = STRATEGY) {
+    const config = strategy?.waveMA20PullbackObservation;
+    const empty = { applied: false, reason: '' };
+    const requiredPosition = Math.max(0, Number(config?.position) || 30);
+    const trendDefense = config?.trendDefense;
+    if (!config || state.strategy !== '波段抄底型' || state.period !== 'daily') return empty;
+    if (config.stocksOnly !== false && state.mode !== 'stock') return empty;
+
+    const period = Math.max(1, Number(config.movingAveragePeriod) || 20);
+    const item = full?.[idx] || {};
+    const close = Number(item.close);
+    const movingAverage = Number(state.indicators?.ma?.[period]?.[idx]);
+    const rawSignals = item._signals || [];
+    const previous = full?.[idx - 1]?._decision?.waveMA20PullbackObservation;
+    const trendPeriod = Math.max(1, Number(trendDefense?.movingAveragePeriod) || period);
+    const trendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx]);
+    const previousTrendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[Math.max(0, idx - 1)]);
+    const breakoutLookbackDays = Math.max(1, Number(trendDefense?.breakoutLookbackDays) || 3);
+    const breakoutPullbackGapRatio = Math.max(0, Number(trendDefense?.maximumBreakoutPullbackGapRatio) || 0.005);
+    const breakoutLowGapRatio = Math.max(0, Number(trendDefense?.maximumBreakoutLowGapRatio) || breakoutPullbackGapRatio);
+    let breakoutDay = -1;
+    if (trendDefense && idx > 1) {
+        for (let day = idx - 1; day >= Math.max(1, idx - breakoutLookbackDays); day--) {
+            const dayClose = Number(full?.[day]?.close);
+            const dayMa = Number(state.indicators?.ma?.[trendPeriod]?.[day]);
+            const priorClose = Number(full?.[day - 1]?.close);
+            const priorMa = Number(state.indicators?.ma?.[trendPeriod]?.[day - 1]);
+            if ([dayClose, dayMa, priorClose, priorMa].every(Number.isFinite)
+                && priorClose <= priorMa
+                && dayClose > dayMa
+                && dayMa >= priorMa) {
+                breakoutDay = day;
+                break;
+            }
+        }
+    }
+    const breakoutAge = breakoutDay >= 0 ? idx - breakoutDay : Infinity;
+    const breakoutDefenseLevel = Number(risk?.stop);
+    const breakoutPullback = trendDefense
+        && prevPos === requiredPosition
+        && Number(basePosition) <= 0
+        && state.mode === 'stock'
+        && breakoutAge >= 1
+        && breakoutAge <= breakoutLookbackDays
+        && [close, trendMovingAverage, previousTrendMovingAverage].every(Number.isFinite)
+        && trendMovingAverage >= previousTrendMovingAverage
+        && close >= trendMovingAverage * (1 - breakoutPullbackGapRatio)
+        && Number(item.low) <= trendMovingAverage * (1 + breakoutLowGapRatio)
+        && (!Number.isFinite(breakoutDefenseLevel) || close >= breakoutDefenseLevel)
+        && !meta?.inCooldown
+        && !(meta?.exitSignals || []).length
+        && !(meta?.warningSignals || []).length
+        && Number(risk?.score) >= Math.max(0, Number(trendDefense.minimumRiskScore) || 40)
+        && getRiskPositionCap(risk) >= requiredPosition;
+    if (breakoutPullback) {
+        return {
+            applied: true,
+            status: 'observing',
+            defenseType: 'breakout_pullback',
+            overrideCriticalExit: true,
+            reason: `突破MA${trendPeriod}后的第${breakoutAge}个交易日回踩，收盘仍贴近均线，保留${requiredPosition}%观察`,
+            triggerDay: idx,
+            triggerDate: item.date || '',
+            triggerLow: Number(item.low),
+            triggerClose: close,
+            sourcePosition: prevPos,
+            targetPosition: requiredPosition,
+            movingAveragePeriod: trendPeriod,
+            movingAverage: trendMovingAverage,
+            previousMovingAverage: previousTrendMovingAverage,
+            breakoutDay,
+            breakoutDate: full?.[breakoutDay]?.date || '',
+            breakoutAge,
+            defenseLevel: Number.isFinite(breakoutDefenseLevel) ? breakoutDefenseLevel : null
+        };
+    }
+    const invalidatedToday = [
+        ...(meta?.invalidatedWindowSignals || []),
+        ...(meta?.localBreakWindowSignals || [])
+    ].some(signal => Number(signal?.invalidationDay) === Number(idx));
+    const blocked = meta?.inCooldown
+        || (meta?.exitSignals || []).length > 0
+        || (meta?.warningSignals || []).length > 0
+        || !exit
+        || exit.level !== '无明确离场'
+        || Number(risk?.score) < Math.max(0, Number(config.minimumRiskScore) || 40)
+        || getRiskPositionCap(risk) < requiredPosition
+        || invalidatedToday;
+
+    if (previous?.applied) {
+        const defenseLevel = Number(previous.defenseLevel);
+        const recoveredMovingAverage = Number.isFinite(close) && Number.isFinite(movingAverage) && close >= movingAverage;
+        const freshTakeoverSignals = (config.takeoverSignals || ['B6', 'B11']).filter(signal => rawSignals.includes(signal));
+        const brokeObservationLow = Number.isFinite(close)
+            && Number.isFinite(Number(previous.triggerLow))
+            && close < Number(previous.triggerLow);
+        const brokeDefenseLevel = Number.isFinite(close)
+            && Number.isFinite(defenseLevel)
+            && close < defenseLevel;
+        const takeoverPassed = !blocked
+            && !brokeObservationLow
+            && !brokeDefenseLevel
+            && (recoveredMovingAverage || freshTakeoverSignals.length > 0);
+        return {
+            ...previous,
+            applied: false,
+            status: takeoverPassed ? 'taken_over' : 'expired',
+            followUpDay: idx,
+            followUpDate: item.date || '',
+            recoveredMovingAverage,
+            freshTakeoverSignals,
+            brokeObservationLow,
+            brokeDefenseLevel,
+            forceExit: !takeoverPassed,
+            forceHold: takeoverPassed && (previous?.defenseType ? true : Number(basePosition) <= 0),
+            overrideCriticalExit: false,
+            targetPosition: requiredPosition,
+            reason: takeoverPassed
+                ? `MA${period}回踩观察后重新站回均线，或出现新的B6/B11信号`
+                : `MA${period}回踩观察后未重新站回均线，也没有新的B6/B11信号`
+        };
+    }
+
+    if (trendDefense && prevPos === requiredPosition && Number(basePosition) <= 0 && idx > 0) {
+        const trendPeriod = Math.max(1, Number(trendDefense.movingAveragePeriod) || period);
+        const longPeriod = Math.max(1, Number(trendDefense.longMovingAveragePeriod) || 60);
+        const slopeDays = Math.max(1, Number(trendDefense.completeTrendSlopeLookbackDays) || 5);
+        const trendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx]);
+        const previousTrendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx - 1]);
+        const longMovingAverage = Number(state.indicators?.ma?.[longPeriod]?.[idx]);
+        const establishedTrendMovingAverage = Number(state.indicators?.ma?.[trendPeriod]?.[idx - slopeDays]);
+        const atr = getATR(full, idx);
+        const defenseLevel = Number(risk?.stop);
+        const maGap = Number.isFinite(trendMovingAverage) && Number.isFinite(close)
+            ? Math.max(0, trendMovingAverage - close)
+            : Infinity;
+        const maGapRatio = Number.isFinite(trendMovingAverage) && trendMovingAverage > 0
+            ? maGap / trendMovingAverage
+            : Infinity;
+        const maGapAtr = atr > 0 ? maGap / atr : Infinity;
+        const maSupport = [close, trendMovingAverage, previousTrendMovingAverage].every(Number.isFinite)
+            && trendMovingAverage >= previousTrendMovingAverage
+            && maGapRatio <= Math.max(0, Number(trendDefense.maximumCloseBelowMovingAverageRatio) || 0.005)
+            && maGapAtr <= Math.max(0, Number(trendDefense.maximumCloseBelowMovingAverageAtr) || 0.5);
+        const completeUptrend = [close, trendMovingAverage, longMovingAverage, establishedTrendMovingAverage].every(Number.isFinite)
+            && close >= trendMovingAverage
+            && trendMovingAverage > longMovingAverage
+            && trendMovingAverage >= establishedTrendMovingAverage;
+        const defenseIntact = !Number.isFinite(defenseLevel) || close >= defenseLevel;
+        const riskAllows = Number(risk?.score) >= Math.max(0, Number(trendDefense.minimumRiskScore) || 40)
+            && getRiskPositionCap(risk) >= requiredPosition;
+        const currentExitSignals = meta?.exitSignals || [];
+        const blockingSignals = rawSignals.filter(signal => (trendDefense.blockingSignals || []).includes(signal));
+        const invalidationsToday = getTodaySignalInvalidations(meta, 'price-break');
+        const invalidationGap = invalidationsToday.length
+            ? Math.max(...invalidationsToday
+                .map(signal => Math.max(0, Number(signal?.invalidationLevel) - close))
+                .filter(Number.isFinite), 0)
+            : Infinity;
+        const limitedHardInvalidation = invalidationsToday.length > 0
+            && atr > 0
+            && invalidationGap / atr <= Math.max(0, Number(trendDefense.maximumInvalidationGapAtr) || 1);
+        const standaloneExitSignal = trendDefense.standaloneExitSignal || 'L3';
+        const standaloneL3 = currentExitSignals.length === 1
+            && currentExitSignals[0] === standaloneExitSignal
+            && blockingSignals.length === 0
+            && !(meta?.type || '').includes('清仓')
+            && completeUptrend;
+        const hardInvalidationPullback = currentExitSignals.length === 0
+            && !(meta?.warningSignals || []).length
+            && limitedHardInvalidation
+            && close >= trendMovingAverage;
+        const eligible = trendDefense.stocksOnly !== false
+            && state.mode === 'stock'
+            && !meta?.inCooldown
+            && maSupport
+            && defenseIntact
+            && riskAllows
+            && (standaloneL3 || hardInvalidationPullback);
+        if (eligible) {
+            const defenseType = standaloneL3 ? 'standalone_l3' : 'limited_hard_invalidation';
+            return {
+                applied: true,
+                status: 'observing',
+                defenseType,
+                overrideCriticalExit: standaloneL3,
+                reason: standaloneL3
+                    ? '单独MACD死叉，价格仍在完整多头结构中，本日保留30%观察'
+                    : '买点失效位虽被收盘跌破，但价格仍守住MA20，先保留30%观察',
+                triggerDay: idx,
+                triggerDate: item.date || '',
+                triggerLow: Number(item.low),
+                triggerClose: close,
+                sourcePosition: prevPos,
+                targetPosition: requiredPosition,
+                movingAveragePeriod: trendPeriod,
+                movingAverage: trendMovingAverage,
+                previousMovingAverage: previousTrendMovingAverage,
+                defenseLevel: Number.isFinite(defenseLevel) ? defenseLevel : null,
+                invalidationGapAtr: limitedHardInvalidation && atr > 0 ? invalidationGap / atr : null
+            };
+        }
+    }
+
+    if (prevPos !== requiredPosition || Number(basePosition) > 0 || idx <= 0 || blocked) return empty;
+    const slopeDays = Math.max(1, Number(config.slopeLookbackDays) || 1);
+    const previousMovingAverage = Number(state.indicators?.ma?.[period]?.[idx - slopeDays]);
+    const previousClose = Number(full?.[idx - 1]?.close);
+    const high = Number(item.high);
+    const low = Number(item.low);
+    const open = Number(item.open);
+    if (![close, movingAverage, previousMovingAverage, previousClose, high, low, open].every(Number.isFinite)) return empty;
+
+    const closeGapRatio = movingAverage > 0 ? (movingAverage - close) / movingAverage : Infinity;
+    const body = Math.abs(close - open);
+    const lowerShadow = Math.max(0, Math.min(open, close) - low);
+    const range = Math.max(high - low, 0);
+    const lowerShadowRangeRatio = range > 0 ? lowerShadow / range : 0;
+    const maximumGap = Math.max(0, Number(config.maximumCloseGapRatio) || 0.005);
+    const minimumShadowBodyRatio = Math.max(0, Number(config.minimumLowerShadowBodyRatio) || 1.5);
+    const minimumShadowRangeRatio = Math.max(0, Number(config.minimumLowerShadowRangeRatio) || 0.35);
+    const defenseLevel = Number(risk?.stop);
+    const recoveredIntraday = low <= movingAverage
+        && lowerShadow > 0
+        && lowerShadow >= body * minimumShadowBodyRatio
+        && lowerShadowRangeRatio >= minimumShadowRangeRatio;
+    const freshPullback = previousClose >= previousMovingAverage
+        && close < movingAverage
+        && closeGapRatio <= maximumGap
+        && movingAverage >= previousMovingAverage;
+    const defenseIntact = !Number.isFinite(defenseLevel) || close >= defenseLevel;
+    if (!freshPullback || !recoveredIntraday || !defenseIntact) return empty;
+
+    return {
+        applied: true,
+        status: 'observing',
+        reason: `收盘仅小幅低于抬升中的MA${period}，下影线收回且结构防守位未破，保留一日${requiredPosition}%观察`,
+        triggerDay: idx,
+        triggerDate: item.date || '',
+        triggerLow: low,
+        triggerClose: close,
+        sourcePosition: prevPos,
+        targetPosition: requiredPosition,
+        movingAveragePeriod: period,
+        movingAverage,
+        previousMovingAverage,
+        closeGapRatio,
+        lowerShadow,
+        lowerShadowRangeRatio,
+        defenseLevel: Number.isFinite(defenseLevel) ? defenseLevel : null
+    };
+}
+
+function getWaveL10TrendHandoffContext(idx, full, meta, prevPos, strategy = STRATEGY) {
+    const config = strategy?.l10TrendHandoff;
+    const empty = { eligible: false, applied: false, reason: '' };
+    if (!config || (config.stocksOnly && state.mode !== 'stock') || prevPos <= 0) return empty;
+    const rawSignals = full?.[idx]?._signals || [];
+    const strongExitSet = getStrongExitSignals(strategy);
+    const strongExitSignals = (meta?.exitSignals || []).filter(signal => strongExitSet.has(signal));
+    if (strongExitSignals.length !== 1 || strongExitSignals[0] !== 'L10') return empty;
+    if ((config.blockingSignals || []).some(signal => rawSignals.includes(signal))) return empty;
+    const lookbackDays = Math.max(1, Number(config.movingAverageSlopeLookbackDays) || 5);
+    const close = Number(full?.[idx]?.close);
+    const ma20 = Number(state.indicators?.ma?.[20]?.[idx]);
+    const ma60 = Number(state.indicators?.ma?.[60]?.[idx]);
+    const previousMa20 = Number(state.indicators?.ma?.[20]?.[idx - lookbackDays]);
+    const completeUptrend = Number.isFinite(close) && Number.isFinite(ma20) && Number.isFinite(ma60)
+        && Number.isFinite(previousMa20) && close > ma20 && ma20 > ma60 && ma20 >= previousMa20;
+    if (!completeUptrend) return empty;
+    return {
+        eligible: true,
+        applied: false,
+        reason: '完整多头持仓中的单独L10按预警处理，趋势接管后续持仓',
+        sourcePosition: prevPos,
+        targetPositionCap: Math.max(0, Number(config.warningPositionCap) || 30),
+        triggerDay: idx,
+        triggerDate: full?.[idx]?.date || '',
+        triggerHigh: Number(full?.[idx]?.high),
+        triggerClose: close
+    };
+}
+
+function getWaveB6TrendAddContext(idx, full, meta, prevPos, exit, strategy = STRATEGY) {
+    const config = strategy?.waveB6TrendAdd;
+    const empty = { eligible: false, applied: false, reason: '' };
+    const sourcePosition = Math.max(0, Number(config?.sourcePosition) || 30);
+    if (!config || state.strategy !== '波段抄底型' || state.period !== 'daily') return empty;
+    if (config.stocksOnly !== false && state.mode !== 'stock') return empty;
+    if (prevPos !== sourcePosition || meta?.type !== '📈 趋势抱单') return empty;
+    if (meta?.inCooldown || (meta?.exitSignals || []).length || (meta?.warningSignals || []).length) return empty;
+    if (!exit || exit.level !== '无明确离场' || !(full?.[idx]?._signals || []).includes('B6')) return empty;
+
+    const period = Math.max(1, Number(config.movingAveragePeriod) || 20);
+    const slopeDays = Math.max(1, Number(config.slopeLookbackDays) || 1);
+    const close = Number(full?.[idx]?.close);
+    const movingAverage = Number(state.indicators?.ma?.[period]?.[idx]);
+    const previousMovingAverage = Number(state.indicators?.ma?.[period]?.[idx - slopeDays]);
+    if (!Number.isFinite(close) || !Number.isFinite(movingAverage) || !Number.isFinite(previousMovingAverage)) return empty;
+    if (close < movingAverage || movingAverage < previousMovingAverage) return empty;
+
+    return {
+        eligible: true,
+        applied: false,
+        reason: `当日缩量回踩MA${period}后收回，且MA${period}未下行，允许波段试探仓进入趋势修复加仓`,
+        sourcePosition,
+        targetPosition: Math.max(sourcePosition, Number(config.targetPosition) || 50),
+        triggerDay: idx,
+        triggerDate: full?.[idx]?.date || '',
+        movingAveragePeriod: period,
+        movingAverage,
+        previousMovingAverage,
+        triggerLow: Number(full?.[idx]?.low),
+        triggerClose: close
+    };
+}
+
+function computeBaseDecisionForIndex(idx, full, prevPos) {
+    const rawMeta = getSignalMeta(idx, full, state.indicators), market = getMarketContext(full[idx].date);
+    const risk = getRiskContext(idx, full, state.indicators), rawExit = getExitSeverity(rawMeta, idx, full, state.indicators);
+    const trendRegime = getTrendRegimeContext(idx, full, state.indicators);
+    let waveL10TrendHandoff = getWaveL10TrendHandoffContext(idx, full, rawMeta, prevPos, STRATEGY);
+    let meta = rawMeta;
+    if (waveL10TrendHandoff.eligible) {
+        const originalSignals = full[idx]._signals || [];
+        full[idx]._signals = originalSignals.filter(signal => signal !== 'L10');
+        try {
+            meta = getSignalMeta(idx, full, state.indicators);
+        } finally {
+            full[idx]._signals = originalSignals;
+        }
+    }
+    let exit = waveL10TrendHandoff.eligible
+        ? { level: '减仓观察', detail: '完整多头结构中单独出现MACD顶背离，先降仓预警，不单信号归零' }
+        : rawExit;
     const b11StructureDefense = getB11StructureDefenseContext(meta, full, STRATEGY);
+    let waveB6TrendAdd = getWaveB6TrendAddContext(idx, full, meta, prevPos, exit, STRATEGY);
     let base = getBasePosition(idx, full, state.indicators, meta);
+    const isWaveStockTrendHold = state.strategy === '波段抄底型'
+        && state.mode === 'stock'
+        && state.period === 'daily'
+        && meta?.type === '📈 趋势抱单'
+        && prevPos > 0;
+    if (isWaveStockTrendHold) base = prevPos;
+    if (waveB6TrendAdd.eligible) base = Math.max(base, waveB6TrendAdd.targetPosition);
+    const waveExpiryHandoff = getWaveExpiryHandoffContext(idx, full, meta, prevPos, base, exit, risk, STRATEGY);
+    const waveMA20PullbackObservation = getWaveMA20PullbackObservationContext(idx, full, meta, prevPos, base, exit, risk, STRATEGY);
+    if (waveMA20PullbackObservation.overrideCriticalExit) {
+        exit = {
+            level: '减仓观察',
+            detail: '完整多头中的单独MACD死叉先作MA20防守观察'
+        };
+    }
     const softSignalGrace = getSoftSignalGraceContext(meta, prevPos, base, exit, idx, STRATEGY);
     const localStructureDefense = getLocalStructureDefenseContext(meta, b11StructureDefense, prevPos, exit, STRATEGY);
+    if (waveExpiryHandoff.forceExit || waveMA20PullbackObservation.forceExit) base = 0;
+    else if (waveExpiryHandoff.applied || waveExpiryHandoff.forceHold) base = prevPos;
+    if (waveMA20PullbackObservation.applied || waveMA20PullbackObservation.forceHold) base = prevPos;
     if (softSignalGrace.applied) base = prevPos;
     if (localStructureDefense.applied) base = prevPos;
+    if (waveMA20PullbackObservation.forceExit) base = 0;
 
-    let rawPosition = base * risk.coef, position = quantizePosition(rawPosition);
-    const isCriticalExit = exit.level === '清仓防守' || exit.level === '强离场' || (meta.type || '').includes('规避') || (meta.type || '').includes('破位');
+    // 风险评估只决定最高允许档位，不再把仓位连续缩放成10%、20%、40%等中间值。
+    let rawPosition = base, position = quantizePosition(rawPosition);
+    let isCriticalExit = (rawExit.level === '清仓防守' || rawExit.level === '强离场'
+        || (meta.type || '').includes('规避') || (meta.type || '').includes('破位'))
+        && !waveL10TrendHandoff.eligible
+        && !waveMA20PullbackObservation.overrideCriticalExit;
 
     if (isCriticalExit || meta.inCooldown) position = 0;
     else if (exit.level === '减仓观察' || exit.level === '延续防守') position = quantizePosition(Math.min(position, 30));
 
-    if (meta.warningSignals?.length) position = quantizePosition(Math.min(position, 40));
-    if (risk.score < 40) position = quantizePosition(Math.min(position, 20));
+    if (meta.warningSignals?.length) position = quantizePosition(Math.min(position, 30));
+    if (waveL10TrendHandoff.eligible) position = quantizePosition(Math.min(position, waveL10TrendHandoff.targetPositionCap));
+    const positionBeforeRiskCap = position;
+    const riskPositionCap = getRiskPositionCap(risk);
+    position = quantizePosition(Math.min(position, riskPositionCap));
 
-    const positionCap = getPositionCap(meta, prevPos, position);
+    const positionCap = getPositionCap(meta, prevPos, position, idx, full, state.indicators);
     if (positionCap) position = quantizePosition(Math.min(position, positionCap.limit));
 
     if (position > prevPos && Math.abs(position - prevPos) <= 10) position = prevPos;
@@ -1498,7 +3691,81 @@ function computeDecisionForIndex(idx, full, prevPos) {
     const targetStrength = getTargetStrengthTier(meta, idx, full, state.indicators, risk, exit);
     const marketGate = applyMarketRiskGate(market, prevPos, position, targetStrength);
     position = marketGate.position;
-    const positionDriver = getPositionDriverText(meta, market, risk, exit, base, position, prevPos, positionCap, marketGate);
+    const riskCapZeroExitTriggered = state.strategy === '波段抄底型'
+        && state.mode === 'stock'
+        && state.period === 'daily'
+        && !!STRATEGY?.waveRejectionProtection?.riskCapZeroExit
+        && prevPos > 0
+        && positionBeforeRiskCap > 0
+        && riskPositionCap <= 0
+        && !isCriticalExit
+        && !meta?.inCooldown
+        && getTodaySignalInvalidations(meta, 'price-break').length === 0;
+    let waveRejectionProtection = isCriticalExit
+        ? { active: false, status: 'superseded', targetPosition: position }
+        : getWaveRejectionProtectionContext(idx, full, meta, prevPos, position, STRATEGY, {
+            risk,
+            exit,
+            market,
+            targetStrength,
+            positionCap,
+            riskPositionCap,
+            positionBeforeRiskCap,
+            isCriticalExit,
+            riskCapZeroExitTriggered
+        });
+    if (Number.isFinite(Number(waveRejectionProtection.targetPosition))) {
+        const protectedTarget = Number(waveRejectionProtection.targetPosition);
+        position = waveRejectionProtection.allowRecoveryIncrease && protectedTarget > position
+            ? protectedTarget
+            : Math.min(position, protectedTarget);
+    }
+    if (waveB6TrendAdd.eligible) {
+        waveB6TrendAdd = {
+            ...waveB6TrendAdd,
+            applied: position > prevPos,
+            finalPosition: position,
+            limited: position <= prevPos
+        };
+    }
+    if (waveL10TrendHandoff.eligible && position > 0) {
+        waveL10TrendHandoff = { ...waveL10TrendHandoff, applied: true, targetPosition: position };
+    } else if (waveL10TrendHandoff.eligible) {
+        waveL10TrendHandoff = { ...waveL10TrendHandoff, eligible: false, applied: false, targetPosition: 0 };
+        meta = rawMeta;
+        exit = rawExit;
+        isCriticalExit = rawExit.level === '清仓防守' || rawExit.level === '强离场'
+            || (rawMeta.type || '').includes('规避') || (rawMeta.type || '').includes('破位');
+        waveRejectionProtection = { active: false, status: 'superseded', targetPosition: position };
+    }
+    const waveDriver = waveRejectionProtection.status === 'entry_blocked'
+        ? '建仓日触及下降均线压力并长上影受阻，取消本次试探建仓'
+        : (waveRejectionProtection.status === 'ma20_hold'
+        ? '首次建仓后冲击压力回落，但收盘仍站在MA20上方，仅保留30%观察'
+        : (waveRejectionProtection.status === 'triggered'
+        ? (waveRejectionProtection.eventType === 'risk_cap_zero_exit'
+            ? '极端风险归零并隔离事件前旧积分'
+            : (waveRejectionProtection.eventType === 'fresh_entry_hard_break'
+            ? '首次建仓后两日内跌破买入日最低价，当日归零'
+            : (waveRejectionProtection.eventType === 'fresh_entry_downside_failure'
+                ? '首次建仓后两日内下跌失败，当日提前防守'
+                : (waveRejectionProtection.eventType === 'fresh_entry_failure'
+                    ? '首次建仓后冲击压力失败，当日提前防守'
+                    : (waveRejectionProtection.eventType === 'signal_hard_invalidation'
+                        ? '买入信号硬失效导致离场，进入局部重入保护'
+                        : '已有浮盈遇放量冲高回落，当日分档保护利润')))))
+        : (waveRejectionProtection.status === 'locked'
+            ? '冲高回落风险尚未解除，局部阻止旧积分立即回补'
+            : (['released', 'recovery_pending'].includes(waveRejectionProtection.status)
+                ? '冲高回落风险已局部解除'
+                : (['recovery_started', 'recovery_hold'].includes(waveRejectionProtection.status) ? '冲高回落风险解除后分步恢复' : '')))));
+    const basePositionDriver = getPositionDriverText(meta, market, risk, exit, base, position, prevPos, positionCap, marketGate);
+    const handoffDriver = waveL10TrendHandoff.applied ? waveL10TrendHandoff.reason : '';
+    const expiryHandoffDriver = waveExpiryHandoff.applied ? waveExpiryHandoff.reason : '';
+    const ma20PullbackDriver = waveMA20PullbackObservation.applied ? waveMA20PullbackObservation.reason : '';
+    const b6TrendAddDriver = waveB6TrendAdd.applied ? waveB6TrendAdd.reason : '';
+    const extraDrivers = [waveDriver, handoffDriver, expiryHandoffDriver, ma20PullbackDriver, b6TrendAddDriver].filter(Boolean).join('；');
+    const positionDriver = extraDrivers ? `${basePositionDriver}${basePositionDriver ? '；' : ''}${extraDrivers}` : basePositionDriver;
 
     let simpleAction = '持币观望', simpleColorClass = 'text-dim', bsMark = null;
     if (position === 0) {
@@ -1521,6 +3788,7 @@ function computeDecisionForIndex(idx, full, prevPos) {
         basePosition: base,
         position,
         prevAdv: prevPos,
+        trendRegime,
         market,
         marketGate,
         targetStrength,
@@ -1534,6 +3802,11 @@ function computeDecisionForIndex(idx, full, prevPos) {
         softSignalGrace,
         localStructureDefense,
         b11StructureDefense,
+        waveB6TrendAdd,
+        waveMA20PullbackObservation,
+        waveExpiryHandoff,
+        waveL10TrendHandoff,
+        waveRejectionProtection,
         previousSoftSignalGrace: !!full?.[idx - 1]?._decision?.softSignalGrace?.applied,
         simpleAction,
         simpleColorClass,
@@ -1541,6 +3814,196 @@ function computeDecisionForIndex(idx, full, prevPos) {
     };
     const bQuality = getWaveBQualityMetadata(meta, decision);
     return bQuality ? { ...decision, ...bQuality } : decision;
+}
+
+function getWaveExpiryB11TakeoverAddContext(idx, full, meta, prevPos, decision, strategy = STRATEGY) {
+    const config = strategy?.waveExpiryB11TakeoverAdd;
+    const empty = { eligible: false, applied: false, active: false, status: 'none', reason: '' };
+    const sourcePosition = Math.max(0, Number(config?.sourcePosition) || 30);
+    if (!config || state.strategy !== '波段抄底型' || state.period !== 'daily') return empty;
+    if (config.stocksOnly !== false && state.mode !== 'stock') return empty;
+    if (prevPos !== sourcePosition) return empty;
+
+    const previousHandoff = full?.[idx - 1]?._decision?.waveExpiryHandoff;
+    const invalidatedToday = [
+        ...(meta?.invalidatedWindowSignals || []),
+        ...(meta?.localBreakWindowSignals || [])
+    ].some(item => Number(item?.invalidationDay) === Number(idx));
+    const triggerSignal = config.triggerSignal || 'B11';
+    const rawSignals = full?.[idx]?._signals || [];
+    const shortPeriod = Math.max(1, Number(config.shortMovingAveragePeriod) || 5);
+    const trendPeriod = Math.max(1, Number(config.trendMovingAveragePeriod) || 20);
+    const slopeDays = Math.max(1, Number(config.trendSlopeLookbackDays) || 1);
+    const close = Number(full?.[idx]?.close);
+    const shortMA = Number(state.indicators?.ma?.[shortPeriod]?.[idx]);
+    const trendMA = Number(state.indicators?.ma?.[trendPeriod]?.[idx]);
+    const previousTrendMA = Number(state.indicators?.ma?.[trendPeriod]?.[idx - slopeDays]);
+    const eligible = previousHandoff?.applied
+        && previousHandoff.observationMode === 'defensive'
+        && meta?.type === '📈 趋势抱单'
+        && !meta?.inCooldown
+        && !(meta?.exitSignals || []).length
+        && !(meta?.warningSignals || []).length
+        && decision?.exit?.level === '无明确离场'
+        && !invalidatedToday
+        && rawSignals.includes(triggerSignal)
+        && [close, shortMA, trendMA, previousTrendMA].every(Number.isFinite)
+        && close > shortMA
+        && close > trendMA
+        && trendMA >= previousTrendMA;
+    if (!eligible) return empty;
+
+    return {
+        eligible: true,
+        applied: false,
+        active: false,
+        status: 'eligible',
+        reason: `到期防守观察后新触发${triggerSignal}，并重新站上MA${shortPeriod}/MA${trendPeriod}，允许30%基础仓增加20%波段仓`,
+        sourcePosition,
+        targetPosition: Math.max(sourcePosition, Number(config.targetPosition) || 50),
+        basePosition: sourcePosition,
+        extraPosition: Math.max(0, (Number(config.targetPosition) || 50) - sourcePosition),
+        triggerSignal,
+        triggerDay: idx,
+        triggerDate: full?.[idx]?.date || '',
+        shortMovingAveragePeriod: shortPeriod,
+        trendMovingAveragePeriod: trendPeriod,
+        shortMovingAverage: shortMA,
+        trendMovingAverage: trendMA,
+        previousTrendMovingAverage: previousTrendMA
+    };
+}
+
+function computeDecisionForIndex(idx, full, prevPos) {
+    const actualDecision = computeBaseDecisionForIndex(idx, full, prevPos);
+    const config = STRATEGY?.waveExpiryB11TakeoverAdd;
+    const sourcePosition = Math.max(0, Number(config?.sourcePosition) || 30);
+    const targetPosition = Math.max(sourcePosition, Number(config?.targetPosition) || 50);
+    const previousLayer = full?.[idx - 1]?._decision?.waveExpiryB11TakeoverAdd;
+    const inScope = !!config
+        && state.strategy === '波段抄底型'
+        && state.period === 'daily'
+        && (config.stocksOnly === false || state.mode === 'stock');
+    const layerActive = inScope && previousLayer?.active && prevPos > 0;
+
+    if (layerActive) {
+        const basePrevPosition = Number.isFinite(Number(previousLayer.basePosition))
+            ? Number(previousLayer.basePosition)
+            : sourcePosition;
+        const baseDecision = computeBaseDecisionForIndex(idx, full, basePrevPosition);
+        const baseLayerPosition = Number(baseDecision.position) || 0;
+        const actualPosition = Number(actualDecision.position) || 0;
+        const finalPosition = baseLayerPosition === sourcePosition
+            ? Math.min(targetPosition, Math.max(baseLayerPosition, actualPosition))
+            : baseLayerPosition;
+        const fallbackToBase = finalPosition !== actualPosition
+            || (baseLayerPosition !== sourcePosition && baseLayerPosition >= actualPosition);
+        const overlayReleased = finalPosition <= baseLayerPosition || baseLayerPosition !== sourcePosition;
+        const status = !overlayReleased
+            ? 'holding'
+            : (finalPosition <= 0 ? 'closed' : (baseLayerPosition > sourcePosition ? 'taken_over' : 'released'));
+        const sourceDecision = fallbackToBase ? baseDecision : actualDecision;
+        let simpleAction = sourceDecision.simpleAction;
+        let simpleColorClass = sourceDecision.simpleColorClass;
+        if (finalPosition < prevPos && finalPosition > 0) {
+            simpleAction = '防守减仓';
+            simpleColorClass = 'text-warn';
+        } else if (finalPosition === prevPos && finalPosition > sourcePosition) {
+            simpleAction = '积极持有';
+            simpleColorClass = 'text-bull';
+        }
+        const layerReason = status === 'holding'
+            ? `30%基础仓与${targetPosition - sourcePosition}%波段仓继续分层持有`
+            : (status === 'released'
+                ? `额外${targetPosition - sourcePosition}%波段仓先减，原30%基础仓继续按既有规则处理`
+                : (status === 'taken_over' ? '原策略已形成更高基础仓位，结束波段分层' : '30%基础仓已失效，波段分层同步结束'));
+        return {
+            ...sourceDecision,
+            position: finalPosition,
+            prevAdv: prevPos,
+            positionDriver: [sourceDecision.positionDriver, layerReason].filter(Boolean).join('；'),
+            simpleAction,
+            simpleColorClass,
+            bsMark: baseDecision.bsMark,
+            waveExpiryB11TakeoverAdd: {
+                ...previousLayer,
+                eligible: false,
+                applied: false,
+                active: status === 'holding',
+                status,
+                reason: layerReason,
+                basePosition: baseLayerPosition,
+                actualPosition,
+                finalPosition,
+                releaseDay: overlayReleased ? idx : null,
+                releaseDate: overlayReleased ? (full?.[idx]?.date || '') : ''
+            }
+        };
+    }
+
+    const meta = getSignalMeta(idx, full, state.indicators);
+    const addContext = getWaveExpiryB11TakeoverAddContext(idx, full, meta, prevPos, actualDecision, STRATEGY);
+    if (!addContext.eligible) return { ...actualDecision, waveExpiryB11TakeoverAdd: addContext };
+
+    let requestedPosition = addContext.targetPosition;
+    requestedPosition = Math.min(requestedPosition, getRiskPositionCap(actualDecision.risk));
+    const positionCap = getPositionCap(meta, prevPos, requestedPosition, idx, full, state.indicators);
+    if (positionCap) requestedPosition = Math.min(requestedPosition, positionCap.limit);
+
+    const productionMarketGate = applyMarketRiskGate(
+        actualDecision.market,
+        prevPos,
+        requestedPosition,
+        actualDecision.targetStrength
+    );
+    const marketException = requestedPosition === addContext.targetPosition
+        && productionMarketGate.type === 'increase-capped'
+        && Number(productionMarketGate.cap) === sourcePosition
+        && actualDecision.market?.label === '核心宽基偏弱'
+        && actualDecision.targetStrength?.tier === 'ordinary';
+    const marketGate = marketException
+        ? {
+            ...productionMarketGate,
+            position: addContext.targetPosition,
+            applied: false,
+            type: 'wave-expiry-b11-exception',
+            originalType: productionMarketGate.type,
+            originalCap: productionMarketGate.cap,
+            cap: addContext.targetPosition,
+            detail: `到期防守观察成功并新触发${addContext.triggerSignal}，本次仅允许已有30%提高至50%`
+        }
+        : productionMarketGate;
+    requestedPosition = marketGate.position;
+
+    const rejection = getWaveRejectionProtectionContext(idx, full, meta, prevPos, requestedPosition, STRATEGY);
+    if (Number.isFinite(Number(rejection.targetPosition))) {
+        requestedPosition = Math.min(requestedPosition, Number(rejection.targetPosition));
+    }
+    const applied = requestedPosition > prevPos;
+    const finalContext = {
+        ...addContext,
+        applied,
+        active: applied,
+        limited: !applied,
+        status: applied ? 'holding' : 'limited',
+        marketException,
+        finalPosition: applied ? requestedPosition : actualDecision.position,
+        productionMarketGateType: productionMarketGate.type,
+        productionMarketGateCap: productionMarketGate.cap ?? null
+    };
+    if (!applied) return { ...actualDecision, waveExpiryB11TakeoverAdd: finalContext };
+
+    return {
+        ...actualDecision,
+        position: requestedPosition,
+        marketGate,
+        positionCap,
+        positionDriver: [actualDecision.positionDriver, addContext.reason].filter(Boolean).join('；'),
+        simpleAction: '顺势加仓',
+        simpleColorClass: 'text-bull',
+        bsMark: actualDecision.bsMark,
+        waveExpiryB11TakeoverAdd: finalContext
+    };
 }
 
 function getWeeklyDirectionContext(idx, full, ind) {

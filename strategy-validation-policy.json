@@ -39,6 +39,11 @@
       "maximumReturnRegression": 0.01,
       "maximumDrawdownRegression": 0.01
     },
+    "signal_timing": {
+      "maximumReturnRegression": 0.01,
+      "maximumDrawdownRegression": 0.005,
+      "maximumTurnoverIncreaseRatio": 0.10
+    },
     "cohort": {
       "minimumHardGateSymbols": 5,
       "maximumReturnRegression": 0.01,
