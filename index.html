@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260802-01"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260819-03"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260802-01">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260819-03">
 </head>
 <body>
 
@@ -35,7 +35,7 @@
 <div id="loading">系统同步中...</div>
 
 <div id="customModal">
-    <div class="custom-modal-box">
+    <div class="custom-modal-box" role="dialog" aria-modal="true" aria-describedby="customModalMsg">
         <div id="customModalMsg" class="custom-modal-msg"></div>
         <div class="custom-modal-btns">
             <button id="customModalBtnCancel" class="custom-modal-btn btn-cancel">取消</button>
@@ -45,27 +45,25 @@
 </div>
 
 <div id="settingsOverlay">
-    <div id="settingsPanel"></div>
+    <div id="settingsPanel" role="dialog" aria-modal="true" aria-labelledby="settingsDialogTitle"></div>
 </div>
 
 <div id="helpOverlay">
-    <div id="helpPanel">
+    <div id="helpPanel" role="dialog" aria-modal="true" aria-labelledby="helpDialogTitle">
         <div class="sg-header">
-            <h2>系统说明与逻辑</h2>
-            <button class="sg-close" onclick="toggleHelp()">×</button>
+            <h2 id="helpDialogTitle">系统说明与逻辑</h2>
+            <button type="button" class="sg-close" onclick="toggleHelp()" title="关闭帮助" aria-label="关闭帮助">×</button>
         </div>
         <div class="sg-body">
             <div class="terminal-block no-bg">
-                <div class="block-title" style="border:none; padding-bottom:0; margin-bottom:8px;">使用路径</div>
-                <div class="text-dim" style="font-size:13px; line-height:1.6;">系统严格遵循：<strong>左侧导航(选择) -> 中间图表(看盘) -> 右侧面板(决策)</strong>。右侧先给每日结论和策略参考仓位，再用三条关键依据解释结论来源；大盘与指数继续展示风险仓位。</div>
-            </div>
-            <div class="terminal-block no-bg">
-                <div class="block-title" style="border:none; padding-bottom:0; margin-bottom:8px;">多维度逻辑拆解</div>
+                <div class="block-title" style="border:none; padding-bottom:0; margin-bottom:8px;">每日使用</div>
                 <ul class="text-dim" style="margin:0 0 0 18px; font-size:13px; line-height:1.6; padding:0;">
-                    <li style="margin-bottom:8px;"><strong>核心市场环境 / 建仓门禁：</strong> 只由沪深300、中证500、中证1000的多数状态推导；核心宽基偏弱时，普通机会新增风险上限30%，标的自身独立走强上限50%。宽基只限制增加风险，不主动压缩已有仓位。</li>
-                    <li style="margin-bottom:8px;"><strong>指数动能 / 个股信号：</strong> 由策略窗口内的 B/L 技术信号积分推导，判断交易动能是否达标。</li>
-                    <li><strong>市场风险 / 风控防守：</strong> 合并风险评分、L 类离场信号和近窗防守信号；个股还会结合持仓状态，用于控制极端风险与仓位纪律。</li>
+                    <li style="margin-bottom:8px;"><strong>先看状态：</strong> 判断大盘或个股处于什么阶段。</li>
+                    <li style="margin-bottom:8px;"><strong>再看动作：</strong> 关注右侧每日结论和参考仓位。</li>
+                    <li style="margin-bottom:8px;"><strong>最后看风险：</strong> 阅读结论下方的主要依据、风险和防守位。</li>
+                    <li><strong>需要核对策略时：</strong> 打开独立策略页查看完整信号、门槛和限制规则。</li>
                 </ul>
+                <div style="margin-top:12px;"><a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener">查看完整策略说明 ↗</a></div>
             </div>
             <div class="brand-attribution" aria-label="项目归属与版权">
                 <div class="brand-attribution-name">DailyGlance · LINPO LAB</div>
@@ -77,7 +75,7 @@
 </div>
 
 <div id="perfOverlay">
-    <div id="perfPanel"></div>
+    <div id="perfPanel" role="dialog" aria-modal="true" aria-labelledby="perfDialogTitle"></div>
 </div>
 
 <header class="header">
@@ -91,7 +89,7 @@
         </div>
     </div>
     <div class="header-center" id="mainTabs">
-        <button class="nav-btn" data-tab="external">外部环境</button>
+        <button class="nav-btn" data-tab="external">板块趋势</button>
         <button class="nav-btn active" data-tab="index">大盘数据</button>
         <button class="nav-btn" data-tab="stock">自选股池</button>
     </div>
@@ -162,7 +160,7 @@
                         <path d="M24 44C35.0457 44 44 35.0457 44 24C44 12.9543 35.0457 4 24 4C12.9543 4 4 12.9543 4 24C4 35.0457 12.9543 44 24 44Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
                         <path d="M20 24V17.0718L26 20.5359L32 24L26 27.4641L20 30.9282V24Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
                     </svg>
-                    <span>策略回测</span>
+                    <span>回测</span>
                 </button>
                 <button id="updateDataBtn" onclick="handleUpdateData()" title="强制更新数据" class="icon-btn">
                     <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -209,70 +207,101 @@
     <div class="external-shell">
         <div class="external-page-head">
             <div class="external-page-copy">
-                <div class="external-kicker">GLOBAL CONTEXT</div>
-                <h1>隔夜外盘先行观察</h1>
-                <p>先看纳指、半导体、AI 与智能电动车等外盘主题，再映射 A 股可观察概念和代表标的；所有线索都要等 A 股开盘确认。</p>
+                <div class="external-kicker">A-SHARE SECTOR RADAR</div>
+                <h1>板块趋势</h1>
             </div>
             <div class="external-page-actions">
-                <div id="externalMarketStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="外部环境行情尚未加载">
+                <div id="sectorTrendStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="板块趋势尚未扫描">
                     <span class="data-status-dot"></span>
-                    <span class="data-status-label">等待更新</span>
+                    <span class="data-status-label">等待扫描</span>
                 </div>
-                <button id="externalRefreshBtn" type="button" class="icon-btn icon-btn-label" onclick="handleExternalRefresh()" title="更新外部环境和隔夜主题快照">
+                <button id="externalRefreshBtn" type="button" class="icon-btn icon-btn-label" onclick="handleExternalRefresh()" title="重新扫描行业与概念板块">
                     <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                         <path d="M41 13V5M41 5H33M41 5L34.5 11.5C31.8 8.8 28.1 7 24 7C15.7 7 9 13.7 9 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                         <path d="M7 35V43M7 43H15M7 43L13.5 36.5C16.2 39.2 19.9 41 24 41C32.3 41 39 34.3 39 26" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
-                    <span>更新快照</span>
+                    <span>重新扫描</span>
                 </button>
             </div>
         </div>
 
-        <section aria-labelledby="externalSummaryTitle">
-            <div class="external-section-head">
-                <div>
-                    <div class="external-section-kicker">背景判断</div>
-                    <h2 id="externalSummaryTitle">最近一轮外部线索</h2>
-                </div>
-                <div id="externalSnapshotMeta" class="external-snapshot-meta mono">尚无快照</div>
+        <section class="external-env-strip" aria-labelledby="externalLeadStripTitle">
+            <div class="external-env-strip-label">
+                <strong id="externalLeadStripTitle">外部环境推测</strong>
+                <span id="externalLeadStripMeta" class="mono">等待外盘</span>
             </div>
-            <div id="externalEnvironmentSummary" class="external-summary-grid" aria-live="polite"></div>
+            <div id="externalLeadStrip" class="external-env-strip-items" aria-live="polite"></div>
+            <div class="external-env-strip-boundary">待 A 股确认</div>
         </section>
 
-        <section aria-labelledby="externalLeadTitle">
+        <section aria-labelledby="sectorOverviewTitle">
             <div class="external-section-head">
                 <div>
-                    <div class="external-section-kicker">外盘 → A股</div>
-                    <h2 id="externalLeadTitle">隔夜主题映射</h2>
+                    <div class="external-section-kicker">全市场扫描</div>
+                    <h2 id="sectorOverviewTitle">当前板块状态</h2>
                 </div>
-                <div id="externalLeadMeta" class="external-snapshot-meta mono">等待隔夜外盘证据</div>
+                <div id="sectorTrendMeta" class="external-snapshot-meta mono">等待首次扫描</div>
             </div>
-            <div id="externalLeadThemes" class="external-lead-grid" aria-live="polite"></div>
+            <div id="sectorTrendOverview" class="sector-summary-grid" aria-live="polite"></div>
         </section>
 
-        <section aria-labelledby="externalQuotesTitle">
+        <section aria-labelledby="sectorLeadersTitle">
             <div class="external-section-head">
                 <div>
-                    <div class="external-section-kicker">行情快照</div>
-                    <h2 id="externalQuotesTitle">五项外部观察</h2>
+                    <div class="external-section-kicker">多周期同向</div>
+                    <h2 id="sectorLeadersTitle">上涨趋势板块</h2>
                 </div>
+                <div class="external-snapshot-meta mono">5日、10日、60日走强 · 上涨家数扩散</div>
             </div>
-            <div id="externalMarketQuotes" class="external-quote-grid" aria-live="polite"></div>
+            <div id="sectorTrendLeaders" class="sector-trend-grid" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="sectorTurningTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">趋势改善</div>
+                    <h2 id="sectorTurningTitle">刚刚转强</h2>
+                </div>
+                <div class="external-snapshot-meta mono">短中期强度改善 · 尚需继续确认</div>
+            </div>
+            <div id="sectorTrendTurning" class="sector-trend-grid sector-trend-grid-compact" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="sectorMomentumTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">避免追高误判</div>
+                    <h2 id="sectorMomentumTitle">单日异动</h2>
+                </div>
+                <div class="external-snapshot-meta mono">当日强势 ≠ 已形成上涨趋势</div>
+            </div>
+            <div id="sectorTrendMomentum" class="sector-trend-grid sector-trend-grid-compact" aria-live="polite"></div>
+        </section>
+
+        <section aria-labelledby="sectorConceptTitle">
+            <div class="external-section-head">
+                <div>
+                    <div class="external-section-kicker">今日辅助观察</div>
+                    <h2 id="sectorConceptTitle">概念热点</h2>
+                </div>
+                <div class="external-snapshot-meta mono">只取今日涨幅前 100 个 · 不纳入行业趋势统计</div>
+            </div>
+            <div id="sectorConceptHighlights" class="sector-concept-list" aria-live="polite"></div>
         </section>
 
         <div class="external-boundary-note">
             <strong>使用边界</strong>
-            <span>本页外盘行情、主题映射和代表标的仅作只读观察，不参与大盘八指数、建仓门禁、仓位、B/S 或任何策略计算；“待 A 股开盘确认”不是必涨承诺，公开行情可能延迟，缓存状态会明确标记。</span>
+            <span>本页仅根据公开行情对行业与概念板块做趋势排名；顶部外部环境推测只映射美股主题可能影响的行业，必须等待 A 股确认。上述内容不参与大盘八指数、核心门禁、个股仓位、B/S 或收益计算；活跃个股只作只读观察，不代表买入建议。</span>
         </div>
         <div class="chart-copyright-line external-copyright">© 2026 LINPO LAB · 仅供研究观察，不构成投资建议</div>
     </div>
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/01-config-ui.js?v=20260802-01"></script>
-<script src="assets/js/02-data.js?v=20260802-01"></script>
-<script src="assets/js/03-calculations.js?v=20260802-01"></script>
-<script src="assets/js/04-render.js?v=20260802-01"></script>
-<script src="assets/js/05-app.js?v=20260802-01"></script>
+<script src="assets/js/01-config-ui.js?v=20260819-03"></script>
+<script src="assets/js/02-data.js?v=20260819-03"></script>
+<script src="assets/js/03-calculations.js?v=20260819-03"></script>
+<script src="assets/js/04-render.js?v=20260819-03"></script>
+<script src="assets/js/05-app.js?v=20260819-03"></script>
 </body>
 </html>

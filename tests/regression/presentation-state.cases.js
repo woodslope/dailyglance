@@ -1,3 +1,16 @@
+function assertPresentationSummary(summary, { index = false } = {}) {
+    assert.ok(summary.why && summary.positionWhy && summary.nextFocus, 'summary should expose the three presentation fields');
+    assert.strictEqual(summary.reason, summary.why, 'reason should remain a compatibility alias for why');
+    assert.strictEqual(summary.positionExplanation, summary.positionWhy, 'positionExplanation should remain a compatibility alias for positionWhy');
+    assert.strictEqual(summary.invalidCondition, summary.nextFocus, 'invalidCondition should remain a compatibility alias for nextFocus');
+    const visibleCopy = [summary.why, summary.positionWhy, summary.nextFocus].join(' ');
+    assert.ok(!/\b[BLW]\d+\b/.test(visibleCopy), 'main conclusion must not expose internal B/L/W codes');
+    assert.ok(!visibleCopy.includes('风险系数'), 'main conclusion must not expose the risk coefficient');
+    if (index) {
+        assert.ok(!/个股|买入信号|买入积分|试探仓|策略参考仓位/.test(visibleCopy), 'index conclusion must not leak stock wording');
+    }
+}
+
 runTest('regression suite exposes focused business group entrypoints', () => {
     const groups = ['data-cache', 'strategy-decision', 'presentation-state', 'chart-navigation', 'watchlist-lifecycle'];
     for (const group of groups) {
@@ -8,27 +21,134 @@ runTest('regression suite exposes focused business group entrypoints', () => {
     }
 });
 
-runTest('external environment display stays a separate primary workspace with shared component language', () => {
+runTest('application design system registers shared and sector component contracts', () => {
+    assert.ok(agentsSource.includes('docs/product/UI_DESIGN_SYSTEM.md') && agentsSource.includes('实际改变设计契约时必须同步该规范'), 'visual task routing should require design-contract synchronization');
+    assert.ok(readmeSource.includes('docs/product/UI_DESIGN_SYSTEM.md'), 'README document map should expose the application design system');
+    assert.ok(uiDesignSystemSource.includes('## 变更同步边界') && uiDesignSystemSource.includes('## Design Token') && uiDesignSystemSource.includes('## 共享组件'), 'design system should define tokens, shared components and synchronization boundaries');
+    const registeredSelectors = [
+        '.nav-btn', '.icon-btn', '.terminal-block', '.action-panel', '.nav-list-item',
+        '.external-env-strip', '.external-env-strip-item',
+        '.sector-summary-card', '.sector-summary-dot', '.sector-concept-row', '.sector-concept-leader-name', '.sector-concept-leader-code',
+        '.sector-trend-card', '.sector-trend-invalid'
+    ];
+    for (const selector of registeredSelectors) {
+        assert.ok(cssSource.includes(selector), `missing implemented component ${selector}`);
+        assert.ok(uiDesignSystemSource.includes(selector), `missing design-system registration for ${selector}`);
+    }
+    assert.ok(uiDesignSystemSource.includes('#settingsOverlay') && uiDesignSystemSource.includes('#helpOverlay') && uiDesignSystemSource.includes('#perfOverlay') && uiDesignSystemSource.includes('必须关闭 `backdrop-filter`'), 'scrollable dialog performance rule should be documented');
+});
+
+runTest('interactive components preserve hierarchy and keyboard contracts', () => {
+    assert.ok(appSource.includes('class="sector-concept-leader-code mono"') && cssSource.includes('.sector-concept-row .sector-concept-leader-code'), 'representative stock code should use its registered secondary-text component');
+    assert.ok(appSource.includes('class="sector-concept-leader-name"') && cssSource.includes('.sector-concept-row .sector-concept-leader-name'), 'representative stock name should use its registered evidence-text component');
+    assert.ok(!appSource.includes('<strong>${leader ?'), 'representative stock evidence should not reuse the concept-title emphasis element');
+    assert.ok(!appSource.includes('<em class="mono">${escapeHTML(leader.code)}</em>'), 'representative stock code should not inherit default italic emphasis');
+    assert.ok(indexSource.includes('aria-label="关闭帮助"') && appSource.includes('aria-label="关闭设置"') && appSource.includes('aria-label="关闭性能诊断"'), 'icon-only dialog close buttons should expose explicit accessible names');
+    assert.ok(cssSource.includes('opacity: 0; visibility: hidden; pointer-events: none;') && cssSource.includes('opacity: 1; visibility: visible; pointer-events: auto;'), 'closed overlays should leave the keyboard and accessibility path without losing the opacity transition');
+    assert.ok(cssSource.includes('.ma-checkbox:has(input:focus-visible)') && !cssSource.includes('.ma-checkbox input { display: none; }'), 'MA checkboxes should retain native keyboard focus');
+    assert.ok(appSource.includes('<button type="button" class="nav-list-item ${active}"'), 'index rows should use native keyboard-operable buttons');
+    assert.ok(appSource.includes('class="lname-wrap watchlist-select-target"') && appSource.includes('handleWatchlistSelectKeydown(event)'), 'watchlist selection should expose a keyboard target without flattening drag and remove buttons');
+    assert.ok(appSource.includes('role="combobox"') && appSource.includes('role="listbox"') && appSource.includes('role="option"') && appSource.includes('aria-activedescendant'), 'stock search should expose the combobox/listbox option relationship');
+    assert.ok(indexSource.includes('role="dialog"') && indexSource.includes('aria-modal="true"') && appSource.includes('function toggleDialogOverlay('), 'dialogs should expose modal semantics and shared focus entry/return behavior');
+    assert.ok(configSource.includes("if (e.key === 'Tab' && openOverlay)") && configSource.includes("else if (perf.classList.contains('show')) togglePerfPanel()") && configSource.includes('if (!openOverlay &&'), 'open dialogs should trap focus, close with Escape and block background arrow navigation');
+    assert.ok(uiDesignSystemSource.includes('不能用 `display:none` 移除原生控件') && uiDesignSystemSource.includes('不能只依赖 `opacity` 和 `pointer-events`'), 'design system should retain the keyboard and hidden-surface constraints');
+});
+
+runTest('sector trend display stays a separate read-only workspace', () => {
     const externalTab = indexSource.indexOf('data-tab="external"');
     const indexTab = indexSource.indexOf('data-tab="index"');
     const stockTab = indexSource.indexOf('data-tab="stock"');
     assert.ok(externalTab >= 0 && externalTab < indexTab && indexTab < stockTab, 'primary navigation should be external, index, watchlist');
     assert.ok(indexSource.includes('id="marketWorkspace"'), 'A-share terminal should retain its own workspace owner');
-    assert.ok(indexSource.includes('id="externalWorkspace"'), 'external context should have an independent workspace owner');
-    assert.ok(indexSource.includes('本页外盘行情、主题映射和代表标的仅作只读观察，不参与大盘八指数、建仓门禁、仓位、B/S 或任何策略计算'), 'external boundary should be visible at the decision surface');
-    assert.ok(indexSource.includes('待 A 股开盘确认'), 'external context should expose its open-confirmation boundary before the cards');
-    assert.ok(indexSource.includes('最近一轮外部线索'), 'external summary should not imply asynchronous markets belong to the same trading day');
-    assert.ok(indexSource.includes('id="externalLeadThemes"'), 'external workspace should expose a dedicated external-lead owner');
-    assert.ok(indexSource.includes('隔夜主题映射'), 'external lead should have an explicit observation label');
-    assert.ok(indexSource.includes('class="data-status-pill data-status-info"'), 'external status should reuse the shared status component');
-    assert.ok(indexSource.includes('class="icon-btn icon-btn-label" onclick="handleExternalRefresh()"'), 'external refresh should reuse the shared labeled icon button');
-    assert.ok(dataSource.includes("CACHE_KEY: 'dg_external_market_snapshot_v1'"), 'external snapshot should use an independent cache key');
-    assert.ok(dataSource.includes("CACHE_KEY: 'dg_external_lead_snapshot_v1'"), 'external lead should use its own independent cache key');
-    assert.ok(dataSource.includes("state.tab !== 'external' || document.hidden"), 'inactive or hidden external workspace must not request data');
-    assert.ok(!configSource.includes('100.SPX') && !configSource.includes('133.USDCNH'), 'external symbols must not enter core strategy configuration');
+    assert.ok(indexSource.includes('id="externalWorkspace"'), 'sector trend should have an independent workspace owner');
+    assert.ok(indexSource.includes('>板块趋势</button>'), 'primary navigation should use the sector-trend name');
+    assert.ok(indexSource.includes('id="externalLeadStrip"'));
+    assert.ok(indexSource.includes('id="externalLeadStripMeta"'));
+    assert.ok(indexSource.includes('id="sectorTrendOverview"'));
+    assert.ok(indexSource.includes('id="sectorConceptHighlights"'));
+    assert.ok(indexSource.includes('id="sectorTrendLeaders"'));
+    assert.ok(indexSource.includes('id="sectorTrendTurning"'));
+    assert.ok(indexSource.includes('id="sectorTrendMomentum"'));
+    const overviewSection = indexSource.indexOf('id="sectorTrendOverview"');
+    const leadersSection = indexSource.indexOf('id="sectorTrendLeaders"');
+    const turningSection = indexSource.indexOf('id="sectorTrendTurning"');
+    const momentumSection = indexSource.indexOf('id="sectorTrendMomentum"');
+    const conceptSection = indexSource.indexOf('id="sectorConceptHighlights"');
+    assert.ok(overviewSection < leadersSection && leadersSection < turningSection && turningSection < momentumSection && momentumSection < conceptSection, 'sector modules should move from confirmed trends to weaker auxiliary evidence');
+    assert.ok(indexSource.includes('今日辅助观察') && indexSource.includes('不纳入行业趋势统计'), 'concept hotspots should be visibly demoted to auxiliary evidence');
+    assert.ok(indexSource.includes('不参与大盘八指数、核心门禁、个股仓位、B/S 或收益计算'), 'sector boundary should be visible');
+    assert.ok(indexSource.includes('class="icon-btn icon-btn-label" onclick="handleExternalRefresh()"'));
+    assert.ok(cssSource.includes('.sector-summary-grid'));
+    assert.ok(cssSource.includes('.external-env-strip'));
+    assert.ok(cssSource.includes('.sector-trend-card'));
+    assert.ok(cssSource.includes('.sector-trend-etf'));
+    assert.ok(!cssSource.includes('.external-cache-tag'), 'snapshot freshness should not be repeated inside every card');
+    assert.ok(!cssSource.includes('.sector-summary-card.is-positive') && !cssSource.includes('.sector-trend-card.is-positive'), 'read-only sector cards should not reuse conclusion-surface color bars');
+    assert.ok(!cssSource.includes('border-left: 3px solid var(--yellow)'), 'concept rows should not repeat a warning-colored edge');
+    assert.ok(!cssSource.includes('.sector-trend-state') && !appSource.includes('class="sector-trend-state'), 'grouped trend cards should not repeat their section-owned status');
+    assert.ok(appSource.includes('aria-label="${escapeHTML(`${board.name}，${board.trendLabel}，趋势分 ${board.score}`)}"'), 'trend state should remain available to assistive technology');
+    assert.ok(dataSource.includes('INDUSTRY_ETF_MAP'));
+    assert.ok(dataSource.includes("CACHE_KEY: 'dg_external_lead_strip_v1'"));
+    assert.ok(dataSource.includes("CACHE_KEY: 'dg_sector_trend_snapshot_v2'"));
+    assert.ok(dataSource.includes("state.tab !== 'external' || document.hidden"));
+    assert.ok(dataSource.includes('105.SOXX') && dataSource.includes('105.TSLA') && dataSource.includes('105.BOTZ') && dataSource.includes('105.SYM'), 'compact overnight theme evidence should cover the four mapped directions');
+    assert.ok(!dataSource.includes('100.SPX'), 'the broad external-market dashboard should stay removed');
 });
 
-runTest('external environment display renders three contexts and five quotes without a unified trading score', () => {
+runTest('external environment strip maps overnight US themes without entering strategy state', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        externalLeadStripState.cacheLoaded = true;
+        externalLeadStripState.status = 'ready';
+        externalLeadStripState.source = '东方财富';
+        externalLeadStripState.fetchedAt = 1780000000000;
+        externalLeadStripState.items = {
+            soxx: sanitizeExternalLeadStripItem('soxx', { value: 300, changePct: 2.2 }),
+            smh: sanitizeExternalLeadStripItem('smh', { value: 250, changePct: 1.8 }),
+            nvda: sanitizeExternalLeadStripItem('nvda', { value: 180, changePct: 3.1 }),
+            amd: sanitizeExternalLeadStripItem('amd', { value: 160, changePct: 1.2 }),
+            qqq: sanitizeExternalLeadStripItem('qqq', { value: 500, changePct: -1.4 }),
+            msft: sanitizeExternalLeadStripItem('msft', { value: 480, changePct: -1.2 }),
+            tsla: sanitizeExternalLeadStripItem('tsla', { value: 320, changePct: 0.3 }),
+            li: sanitizeExternalLeadStripItem('li', { value: 28, changePct: -0.2 }),
+            botz: sanitizeExternalLeadStripItem('botz', { value: 35, changePct: 2.0 }),
+            sym: sanitizeExternalLeadStripItem('sym', { value: 52, changePct: 1.5 })
+        };
+        Object.keys(externalLeadStripState.items).forEach(function(key) { externalLeadStripState.items[key].quoteAt = 1786132800000; });
+        externalLeadStripState.themes = buildExternalLeadStripThemes(externalLeadStripState.items);
+        var strictThemes = buildExternalLeadStripThemes({
+            qqq: sanitizeExternalLeadStripItem('qqq', { value: 500, changePct: 2.2 }),
+            msft: sanitizeExternalLeadStripItem('msft', { value: 480, changePct: -0.1 }),
+            botz: sanitizeExternalLeadStripItem('botz', { value: 35, changePct: -0.1 }),
+            sym: sanitizeExternalLeadStripItem('sym', { value: 52, changePct: 2.5 }),
+            tsla: sanitizeExternalLeadStripItem('tsla', { value: 320, changePct: 2.5 }),
+            nvda: sanitizeExternalLeadStripItem('nvda', { value: 180, changePct: 2.5 })
+        });
+        renderExternalLeadStrip();
+        var externalStripResult = {
+            html: document.getElementById('externalLeadStrip').innerHTML,
+            meta: document.getElementById('externalLeadStripMeta').textContent,
+            directions: externalLeadStripState.themes.map(function(theme) { return theme.direction; }),
+            strictDirections: [strictThemes[1].direction, strictThemes[3].direction],
+            rawDataKeys: Object.keys(state.rawData)
+        };
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(externalStripResult)', context));
+    assert.strictEqual((result.html.match(/external-env-strip-item/g) || []).length, 4);
+    assert.ok(result.html.includes('半导体与算力') && result.html.includes('半导体、电子元件、通信设备'));
+    assert.ok(result.html.includes('AI 与云计算') && result.html.includes('可能承压'));
+    assert.ok(result.html.includes('智能电动车') && result.html.includes('方向分化'));
+    assert.ok(result.html.includes('机器人与智能制造') && result.html.includes('自动化设备、通用设备、专用设备'));
+    assert.deepStrictEqual(result.directions, ['可能偏强', '可能承压', '方向分化', '可能偏强']);
+    assert.deepStrictEqual(result.strictDirections, ['方向分化', '方向分化'], 'two-item themes need 2/2 agreement and robotics must follow its anchor');
+    assert.strictEqual(result.meta, '美股 08/07 收盘');
+    assert.deepStrictEqual(result.rawDataKeys, []);
+});
+
+runTest('sector trend display separates uptrends, turning boards and one-day momentum', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
@@ -36,133 +156,79 @@ runTest('external environment display renders three contexts and five quotes wit
     vm.runInContext(`
         state.tab = 'external';
         state.mode = 'external';
-        externalMarketState.status = 'partial';
-        externalMarketState.source = '东方财富 + 腾讯';
-        externalMarketState.fetchedAt = 1780000000000;
-        externalMarketState.items = {
-            spx: sanitizeExternalMarketItem('spx', { value: 6200, changePct: 0.4, change: 24, quoteAt: 1780000000000, source: '腾讯' }),
-            ndx: sanitizeExternalMarketItem('ndx', { value: 22000, changePct: -0.2, change: -44, quoteAt: 1780000000000, source: '腾讯' }),
-            hstech: sanitizeExternalMarketItem('hstech', { value: 5100, changePct: -0.3, change: -15, quoteAt: 1780000000000, source: '东方财富' }),
-            a50: sanitizeExternalMarketItem('a50', { value: 14200, changePct: -0.1, change: -14, quoteAt: 1770000000000, source: '东方财富', stale: true }),
-            usdcnh: sanitizeExternalMarketItem('usdcnh', { value: 7.12, changePct: 0.2, change: 0.014, quoteAt: 1780000000000, source: '东方财富' })
-        };
-        renderExternalMarketSnapshot();
-        var externalDisplayResult = {
-            summaries: document.getElementById('externalEnvironmentSummary').innerHTML,
-            quotes: document.getElementById('externalMarketQuotes').innerHTML,
-            meta: document.getElementById('externalSnapshotMeta').textContent
-        };
-    `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(externalDisplayResult)', context));
-    assert.strictEqual((result.summaries.match(/external-context-card/g) || []).length, 3);
-    assert.ok(result.summaries.includes('全球风险偏好'));
-    assert.ok(result.summaries.includes('中国资产情绪'));
-    assert.ok(result.summaries.includes('汇率压力'));
-    assert.ok(result.summaries.indexOf('中国资产情绪') < result.summaries.indexOf('全球风险偏好'), 'A-share readers should see China-asset context before global risk context');
-    assert.match(result.summaries, /（\d{2}\/\d{2}）/, 'summary factors should expose the quote date');
-    assert.strictEqual((result.quotes.match(/external-quote-card/g) || []).length, 5);
-    assert.ok(result.quotes.includes('external-cache-tag'), 'cached quote should be visibly marked');
-    assert.ok(result.quotes.indexOf('恒生科技') < result.quotes.indexOf('A50期指'));
-    assert.ok(result.quotes.indexOf('A50期指') < result.quotes.indexOf('标普500'));
-    assert.ok(result.quotes.indexOf('标普500') < result.quotes.indexOf('纳斯达克'));
-    assert.ok(result.quotes.indexOf('纳斯达克') < result.quotes.indexOf('美元兑离岸人民币'));
-    assert.match(result.quotes, /行情 \d{2}\/\d{2} \d{2}:\d{2}/, 'quote cards should expose date and time instead of time alone');
-    assert.ok(result.meta.includes('东方财富 + 腾讯'));
-    assert.ok(result.meta.startsWith('本页更新 '));
-    assert.ok(!result.summaries.includes('交易评分') && !result.summaries.includes('建议仓位'));
-});
-
-runTest('external lead display exposes overnight evidence, A-share mappings and open confirmation without a trading conclusion', () => {
-    const context = makeBrowserContext();
-    vm.runInContext(configSource, context);
-    vm.runInContext(dataSource, context);
-    vm.runInContext(appSourceNoInit, context);
-    vm.runInContext(`
-        state.tab = 'external';
-        state.mode = 'external';
-        externalLeadState.status = 'cached';
-        externalLeadState.source = '东方财富';
-        externalLeadState.fetchedAt = 1780000000000;
-        externalLeadState.items = {
-            soxx: sanitizeExternalLeadItem('soxx', { value: 500, changePct: 3.0, change: 14.5, quoteAt: 1780000000000, source: '东方财富', stale: true }),
-            smh: sanitizeExternalLeadItem('smh', { value: 530, changePct: 2.4, change: 12.4, quoteAt: 1780000000000, source: '东方财富' }),
-            nvda: sanitizeExternalLeadItem('nvda', { value: 185, changePct: 2.2, change: 4, quoteAt: 1780000000000, source: '东方财富' }),
-            amd: sanitizeExternalLeadItem('amd', { value: 165, changePct: 1.6, change: 2.6, quoteAt: 1780000000000, source: '东方财富' }),
-            qqq: sanitizeExternalLeadItem('qqq', { value: 680, changePct: 0.8, change: 5.4, quoteAt: 1780000000000, source: '东方财富' }),
-            msft: sanitizeExternalLeadItem('msft', { value: 445, changePct: 0.9, change: 4, quoteAt: 1780000000000, source: '东方财富' }),
-            tsla: sanitizeExternalLeadItem('tsla', { value: 305, changePct: 1.8, change: 5.4, quoteAt: 1780000000000, source: '东方财富' })
-        };
-        externalLeadState.themes = buildExternalLeadThemes(externalLeadState.items);
-        renderExternalLeadSnapshot();
-        var externalLeadDisplayResult = {
-            cards: document.getElementById('externalLeadThemes').innerHTML,
-            meta: document.getElementById('externalLeadMeta').textContent,
-            states: externalLeadState.themes.map(theme => theme.state),
-            emptyStates: buildExternalLeadThemes({}).map(theme => theme.state)
+        var snapshot = buildSectorTrendSnapshot([
+            { type: 'industry', f12: 'BK1001', f14: '证券', f3: 3.2, f6: 8000000000, f8: 4.2, f24: 30, f109: 12, f160: 18, f184: 8, f104: 80, f105: 15, f106: 5, f128: '领涨股', f140: '600001', f136: 7.5 },
+            { type: 'concept', f12: 'BK1002', f14: '转强概念', f3: 1.2, f6: 5000000000, f8: 3.1, f24: -3, f109: 9, f160: 6, f184: 2, f104: 60, f105: 30, f106: 10, f128: '转强股', f140: '000002', f136: 4.1 },
+            { type: 'concept', f12: 'BK1003', f14: '单日异动', f3: 4.8, f6: 3000000000, f8: 5.1, f24: -10, f109: -2, f160: -4, f184: -1, f104: 65, f105: 25, f106: 10, f128: '异动股', f140: '300003', f136: 9.8 },
+            { type: 'industry', f12: 'BK1004', f14: '弱势板块', f3: -1.1, f24: -8, f109: -6, f160: -8, f104: 20, f105: 70, f106: 10 },
+            { type: 'industry', f12: 'BK1005', f14: '普通板块', f3: 0.1, f24: -2, f109: -3, f160: -5, f104: 48, f105: 42, f106: 10 }
+        ]);
+        sectorTrendState.status = 'cached';
+        sectorTrendState.source = '东方财富板块行情';
+        sectorTrendState.fetchedAt = 1780000000000;
+        sectorTrendState.boards = snapshot.boards.map(function(board) { return { ...board, stale: true }; });
+        applyIndustryEtfMappings(sectorTrendState.boards);
+        sectorTrendState.concepts = buildSectorConceptSnapshot([
+            { type: 'concept', f12: 'BK1002', f14: '转强概念', f3: 1.2, f24: -3, f109: 9, f160: 6, f104: 60, f105: 30, f106: 10, f128: '转强股', f140: '000002', f136: 4.1 },
+            { type: 'concept', f12: 'BK1003', f14: '单日异动', f3: 4.8, f24: -10, f109: -2, f160: -4, f104: 65, f105: 25, f106: 10, f128: '异动股', f140: '300003', f136: 9.8 }
+        ]).concepts.map(function(board) { return { ...board, stale: true }; });
+        sectorTrendState.groups = restoreSectorTrendGroups(sectorTrendState.boards);
+        sectorTrendState.summary = snapshot.summary;
+        var relatedEtfMapping = getIndustryEtfMapping({ type: 'industry', name: '印制电路板' });
+        renderSectorTrendSnapshot();
+        var sectorDisplayResult = {
+            overview: document.getElementById('sectorTrendOverview').innerHTML,
+            concepts: document.getElementById('sectorConceptHighlights').innerHTML,
+            leaders: document.getElementById('sectorTrendLeaders').innerHTML,
+            leadersText: document.getElementById('sectorTrendLeaders').innerHTML.replace(/<[^>]*>/g, ' '),
+            turning: document.getElementById('sectorTrendTurning').innerHTML,
+            turningText: document.getElementById('sectorTrendTurning').innerHTML.replace(/<[^>]*>/g, ' '),
+            momentum: document.getElementById('sectorTrendMomentum').innerHTML,
+            meta: document.getElementById('sectorTrendMeta').textContent,
+            states: sectorTrendState.boards.map(function(board) { return board.trendState; }),
+            relatedEtfMapping
         };
     `, context);
-    const result = JSON.parse(vm.runInContext('JSON.stringify(externalLeadDisplayResult)', context));
-    assert.strictEqual((result.cards.match(/external-lead-card/g) || []).length, 3);
-    assert.ok(result.cards.includes('半导体与算力'));
-    assert.ok(result.cards.includes('SOXX +3.00%'));
-    assert.deepStrictEqual(result.states, ['隔夜偏强', '隔夜分化', '隔夜偏强']);
-    assert.ok(result.emptyStates.every(state => state === '信息不完整'));
-    assert.ok(result.cards.includes('A 股可观察概念'));
-    assert.ok(result.cards.includes('北方华创'));
-    assert.ok(result.cards.includes('002371'));
-    assert.ok(result.cards.includes('待 A 股开盘确认'));
-    assert.ok(result.cards.includes('external-cache-tag'), 'cached external evidence should be visibly marked');
-    assert.ok(result.meta.includes('7/8 项外盘证据'));
-    assert.ok(!result.cards.includes('selectStock('), 'candidate stocks must stay read-only');
-    assert.ok(!result.cards.includes('交易评分') && !result.cards.includes('建议仓位'));
+    const result = JSON.parse(vm.runInContext('JSON.stringify(sectorDisplayResult)', context));
+    assert.strictEqual((result.overview.match(/sector-summary-card/g) || []).length, 4);
+    assert.deepStrictEqual(result.states.sort(), ['momentum', 'turning', 'uptrend']);
+    assert.ok(result.leadersText.includes('证券') && !result.leadersText.includes('上涨趋势'));
+    assert.ok(result.leaders.includes('中证全指证券公司指数') && result.leaders.includes('券商ETF') && result.leaders.includes('512000'));
+    assert.strictEqual(result.relatedEtfMapping.relation, 'related');
+    assert.strictEqual(result.relatedEtfMapping.etfCode, '515260');
+    assert.ok(result.turningText.includes('转强概念') && !result.turningText.includes('刚刚转强'));
+    assert.ok(result.momentum.includes('单日异动'));
+    assert.ok(result.leaders.includes('领涨股') && result.leaders.includes('600001'));
+    assert.ok(result.leaders.includes('失效观察'));
+    assert.ok(!result.leaders.includes('external-cache-tag') && !result.concepts.includes('external-cache-tag'), 'shared snapshot cache state should only appear at workspace level');
+    assert.ok(result.concepts.includes('转强概念') && result.concepts.includes('单日异动'));
+    assert.ok(result.concepts.includes('转强股') && result.concepts.includes('300003'));
+    assert.ok(result.meta.includes('5/10/60日趋势'));
+    const visibleCards = [result.leaders, result.turning, result.momentum].join(' ');
+    assert.ok(!visibleCards.includes('selectStock('), 'active stocks must stay read-only');
+    assert.ok(!visibleCards.includes('建议仓位') && !visibleCards.includes('买入建议'));
 });
 
-runTest('external workspace status preserves partial availability and combines source errors', () => {
+runTest('sector trend workspace status exposes partial and cached availability', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
     vm.runInContext(appSourceNoInit, context);
     const result = JSON.parse(vm.runInContext(`JSON.stringify((function() {
-        externalMarketState.status = 'ready';
-        externalMarketState.error = '';
-        externalLeadState.status = 'ready';
-        externalLeadState.error = '';
-        const bothReady = getExternalWorkspaceSnapshotStatus();
-
-        externalLeadState.status = 'cached';
-        const readyAndCached = getExternalWorkspaceSnapshotStatus();
-
-        externalLeadState.status = 'error';
-        externalLeadState.error = '隔夜主题行情请求超时';
-        const readyAndError = getExternalWorkspaceSnapshotStatus();
-
-        externalMarketState.status = 'partial';
-        externalMarketState.error = '有 2 项外部环境行情暂未更新';
-        const partialAndError = getExternalWorkspaceSnapshotStatus();
-
-        externalMarketState.status = 'error';
-        externalMarketState.error = '主行情请求超时';
-        const bothError = getExternalWorkspaceSnapshotStatus();
-        return { bothReady, readyAndCached, readyAndError, partialAndError, bothError };
+        sectorTrendState.status = 'ready';
+        sectorTrendState.error = '';
+        const ready = getSectorTrendWorkspaceStatus();
+        sectorTrendState.status = 'partial';
+        sectorTrendState.error = '2个前排板块暂未补齐活跃个股';
+        const partial = getSectorTrendWorkspaceStatus();
+        sectorTrendState.status = 'cached';
+        sectorTrendState.error = '板块列表请求超时';
+        const cached = getSectorTrendWorkspaceStatus();
+        return { ready, partial, cached };
     })())`, context));
-
-    assert.deepStrictEqual(result.bothReady, { key: 'ready', error: '' });
-    assert.deepStrictEqual(result.readyAndCached, {
-        key: 'partial',
-        error: '部分外部快照尚未更新'
-    });
-    assert.deepStrictEqual(result.readyAndError, {
-        key: 'partial',
-        error: '隔夜主题行情请求超时'
-    });
-    assert.deepStrictEqual(result.partialAndError, {
-        key: 'partial',
-        error: '有 2 项外部环境行情暂未更新；隔夜主题行情请求超时'
-    });
-    assert.deepStrictEqual(result.bothError, {
-        key: 'error',
-        error: '主行情请求超时；隔夜主题行情请求超时'
-    });
+    assert.deepStrictEqual(result.ready, { key: 'ready', error: '' });
+    assert.deepStrictEqual(result.partial, { key: 'partial', error: '2个前排板块暂未补齐活跃个股' });
+    assert.deepStrictEqual(result.cached, { key: 'cached', error: '板块列表请求超时' });
 });
 
 runTest('key application state changes use focused write entrypoints', () => {
@@ -633,11 +699,15 @@ runTest('wave B quality stays hidden in production shadow while explicit researc
     assert.strictEqual(vm.runInContext('indexQuality', context), null, 'an index B must never receive stock quality metadata');
     assert.strictEqual(vm.runInContext('unrelatedQuality', context), null, 'other strategies must not receive B quality metadata');
     const trialSummary = JSON.parse(vm.runInContext('JSON.stringify(trialSummary)', context));
-    assert.strictEqual(trialSummary.state, '金色 B（试用）');
-    assert.strictEqual(trialSummary.reason, 'KDJ 金叉确认短期动量修复；超跌止跌反弹确认修复形态');
+    assert.strictEqual(trialSummary.state, '试用确认买点');
+    assertPresentationSummary(trialSummary);
+    assert.ok(!/\b[BLW]\d+\b/.test(`${trialSummary.state} ${trialSummary.why} ${trialSummary.positionWhy} ${trialSummary.nextFocus}`));
+    assert.strictEqual(trialSummary.why, 'KDJ 金叉确认短期动量修复；超跌止跌反弹确认修复形态');
     const strongSummary = JSON.parse(vm.runInContext('JSON.stringify(strongSummary)', context));
     assert.strictEqual(strongSummary.state, '强确认买点');
-    assert.strictEqual(strongSummary.reason, 'MACD底背离确认；周线支撑共同确认');
+    assertPresentationSummary(strongSummary);
+    assert.ok(!/\b[BLW]\d+\b/.test(`${strongSummary.state} ${strongSummary.why} ${strongSummary.positionWhy} ${strongSummary.nextFocus}`));
+    assert.strictEqual(strongSummary.why, 'MACD底背离确认；周线支撑共同确认');
     assert.ok(renderSource.includes("ctx.strokeText('B', px, markerY);") && renderSource.includes("ctx.fillText('B', px, markerY);"), 'daily chart must keep the B glyph for strong metadata');
     assert.ok(renderSource.includes("const isGoldBuy = ['trial', 'strong'].includes(d._decision.bQuality);"), 'daily chart must distinguish trial and approved B with gold');
     assert.ok(renderSource.includes("ctx.fillStyle = isGoldBuy ? (getCssVar('--yellow') || '#f5a623') : colorUpHex;"), 'daily chart must render gold B with gold');
@@ -645,12 +715,15 @@ runTest('wave B quality stays hidden in production shadow while explicit researc
 });
 
 runTest('build version is bumped consistently', () => {
-    assert.ok(configSource.includes("const APP_BUILD = '2026-08-02-01';"));
-    assert.ok(configSource.includes("const SIGNAL_VERSION = 'v4.2.13';"));
+    assert.ok(configSource.includes(`const APP_BUILD = '${VERSION.appBuild}';`));
+    assert.ok(configSource.includes(`const SIGNAL_VERSION = '${VERSION.signalVersion}';`));
+    const strategySnapshots = loadStrategyBaselineSnapshots();
+    assert.ok(!Object.prototype.hasOwnProperty.call(strategySnapshots, 'appBuild'), 'UI APP_BUILD must not invalidate strategy snapshots');
+    assert.strictEqual(strategySnapshots.signalVersion, VERSION.signalVersion, 'strategy snapshots must remain tied to SIGNAL_VERSION');
     const versions = [...indexSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
     assert.ok(versions.length >= 7, 'expected vendor, CSS, and script version parameters');
-    assert.deepStrictEqual([...new Set(versions)], ['20260802-01']);
-    assert.ok(indexSource.includes('assets/vendor/chart.umd.min.js?v=20260802-01'), 'Chart.js should load from local vendor first');
+    assert.deepStrictEqual([...new Set(versions)], [VERSION.resourceVersion]);
+    assert.ok(indexSource.includes(`assets/vendor/chart.umd.min.js?v=${VERSION.resourceVersion}`), 'Chart.js should load from local vendor first');
     assert.ok(!indexSource.includes('https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>'), 'first Chart.js load should not depend on remote CDN');
     assert.ok(!indexSource.includes('fonts.googleapis') && !indexSource.includes('fonts.gstatic'), 'app shell should not block on external font hosts');
     assert.ok(cssSource.includes('font-family: -apple-system, BlinkMacSystemFont'), 'body should use system font stack');
@@ -709,6 +782,10 @@ runTest('settings dialog keeps its body as the bounded scroll container', () => 
     assert.ok(cssSource.includes('flex: 1 1 auto; min-height: 0;') && cssSource.includes('overscroll-behavior: contain;'), 'dialog body should be a bounded isolated scroll container');
 });
 
+runTest('scrollable dialogs avoid backdrop blur during scrolling', () => {
+    assert.ok(cssSource.includes('#settingsOverlay, #helpOverlay, #perfOverlay { background: rgba(11,14,20,0.92); backdrop-filter: none; -webkit-backdrop-filter: none; }'), 'scrollable dialogs should disable backdrop blur to avoid expensive background redraws');
+});
+
 runTest('decision evidence panel uses novice-readable why/action copy', () => {
     assert.ok(renderSource.includes('function getNoviceEvidenceCopy('), 'missing novice evidence copy helper');
     assert.ok(renderSource.includes('核心建仓门禁开放'), 'market evidence must explain the one-way risk gate');
@@ -720,6 +797,31 @@ runTest('decision evidence panel uses novice-readable why/action copy', () => {
     assert.ok(renderSource.includes('noviceEvidence.guardHint'), 'guard hint must be rendered');
 });
 
+runTest('strong exits reset the effective score in stock and index evidence', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(renderSource, context);
+    vm.runInContext(`
+        Object.assign(STRATEGY, STRATEGIES['稳健趋势型']);
+        var exitMeta = { windowScore: STRATEGY.buyThreshold, exitSignals: ['L3'], warningSignals: [], inCooldown: false };
+        var exitDecision = {
+            position: 0, prevAdv: 80, simpleAction: '清仓离场',
+            market: { label: '核心宽基分化' },
+            risk: { flags: [], stop: 96 },
+            exit: { level: '强离场' }
+        };
+        var stockExitEvidence = getNoviceEvidenceCopy(exitMeta, exitDecision, '强离场', 'MACD死叉', 'stock');
+        var indexExitEvidence = getNoviceEvidenceCopy(exitMeta, exitDecision, '强离场', 'MACD死叉', 'index');
+    `, context);
+    const stock = JSON.parse(vm.runInContext('JSON.stringify(stockExitEvidence)', context));
+    const index = JSON.parse(vm.runInContext('JSON.stringify(indexExitEvidence)', context));
+    assert.strictEqual(stock.scoreText, `0/${JSON.parse(vm.runInContext('JSON.stringify(STRATEGY.buyThreshold)', context))}`);
+    assert.ok(stock.signalHint.includes('此前买入依据已失效') && stock.signalHint.includes(stock.scoreText), stock.signalHint);
+    assert.strictEqual(index.scoreText, stock.scoreText);
+    assert.ok(index.signalHint.includes('此前动能依据已失效') && index.signalHint.includes(index.scoreText), index.signalHint);
+});
+
 runTest('market context UI exposes an increase gate instead of a position coefficient', () => {
     assert.ok(appSource.includes('核心建仓门禁'), 'market context card must name the core entry gate');
     assert.ok(appSource.includes('market.increaseCaps') && appSource.includes('market.increaseCaps.ordinary') && appSource.includes('market.increaseCaps.independent'), 'weak market gate must show tiered increase caps');
@@ -727,7 +829,8 @@ runTest('market context UI exposes an increase gate instead of a position coeffi
     assert.ok(appSource.includes("renderLeftListHeader('市场与板块指数')"), 'left list title must cover market and board indices');
     assert.ok(cssSource.includes('.market-gate-panel') && cssSource.includes('.market-core-grid'), 'core gate module must use the compact layout');
     assert.ok(!appSource.includes('建议仓位上限'), 'market context must not present a holding cap');
-    assert.ok(indexSource.includes('普通机会新增风险上限30%') && indexSource.includes('标的自身独立走强上限50%') && indexSource.includes('宽基只限制增加风险'), 'help copy must explain tiered stock/index gate semantics');
+    assert.ok(indexSource.includes('先看状态') && indexSource.includes('再看动作') && indexSource.includes('最后看风险'), 'help copy must keep the compact daily-use path');
+    assert.ok(indexSource.includes('strategy-inspector.html') && indexSource.includes('查看完整策略说明'), 'help copy must route advanced strategy details to the standalone inspector');
     assert.ok(!indexSource.includes('决定市场环境系数和仓位上限'), 'help copy must not describe the retired multiplier model');
 });
 
@@ -757,19 +860,31 @@ runTest('historical exit context does not turn a current hold into a reduce inst
 });
 
 runTest('right panel keeps one decision card and lightweight evidence rows', () => {
-    assert.ok(renderSource.includes('<div class="decision-invalid"><span>失效条件：</span>'), 'decision card must keep an explicit invalidation condition');
+    assert.ok(!renderSource.includes('class="decision-invalid"'), 'invalidation condition should not render as a standalone component');
     assert.ok(!renderSource.includes('decision.positionDriver ?'), 'decision card should not repeat the position driver in a second box');
+    assert.ok(renderSource.includes('<div class="decision-reason-block">'), 'decision cause and position path should share one conclusion block');
+    assert.ok((renderSource.match(/<div class="decision-reason-row">/g) || []).length >= 3, 'decision block should contain three uniform rows');
+    assert.ok(renderSource.includes('<span>为什么这么做：</span>'), 'decision block should explain the action');
+    assert.ok(renderSource.includes('const positionWhyLabel = `为什么是${noviceSummary.positionText}`'), 'stock and index conclusions should both show the actual position in the label');
+    assert.ok(renderSource.includes('<span>${escapeHTML(positionWhyLabel)}：</span>'), 'position changes should expose why the current position is used');
+    assert.ok(!renderSource.includes("UI.sectionTitle('历史信号说明', 'text-main')"), 'historical KDJ detail should move out of the daily panel');
+    assert.ok(!renderSource.includes('why: `${baseNoviceSummary.why || baseNoviceSummary.reason}。${kdjScoreClarification}`'), 'historical KDJ clarification should not be appended to the main conclusion');
+    assert.ok(renderSource.includes('<span>接下来关注：</span>'), 'decision block should keep an explicit next-focus row');
+    assert.ok(!renderSource.includes('decision-reason-main') && !renderSource.includes('decision-position-path'), 'conclusion rows should not have one-off typography variants');
+    assert.ok(!renderSource.includes('class="position-explanation"'), 'position path should not render as a nested standalone card');
+    assert.ok(cssSource.includes('.decision-reason-block') && cssSource.includes('.decision-reason-row'), 'integrated conclusion block styles should be present');
+    assert.ok(cssSource.includes('grid-template-columns: 7.5em minmax(0, 1fr)'), 'conclusion rows should share one label column');
     assert.ok(renderSource.includes('<div class="decision-evidence-list">'), 'evidence should use one lightweight list');
     assert.ok(renderSource.includes('<span>${evidenceTitle1}</span>'), 'market evidence needs a mode-specific leading label');
     assert.ok(renderSource.includes('${escapeHTML(noviceEvidence.marketHint)}'), 'market evidence must keep the novice explanation');
     assert.ok(renderSource.includes('<span>${evidenceTitle2}</span>'), 'signal evidence needs a leading label');
-    assert.ok(renderSource.includes('${meta.windowScore}/${STRATEGY.buyThreshold}'), 'signal evidence must keep the score');
+    assert.ok(renderSource.includes('${escapeHTML(noviceEvidence.scoreText)}'), 'signal evidence must show the effective decision score');
     assert.ok(renderSource.includes('${escapeHTML(noviceEvidence.signalHint)}'), 'signal evidence must keep the novice explanation');
     assert.ok(renderSource.includes('<span>${evidenceTitle3}</span>'), 'guard evidence needs a mode-specific leading label');
     assert.ok(renderSource.includes('${escapeHTML(noviceEvidence.guardHint)}'), 'guard evidence must keep the defensive instruction');
     assert.ok(cssSource.includes('.decision-evidence-row') && cssSource.includes('border-bottom'), 'evidence rows should use separators instead of nested cards');
     assert.ok(!cssSource.includes('.evidence-detail {'), 'nested evidence cards should be removed');
-    assert.ok(renderSource.includes('<details class="terminal-block signal-disclosure">'), 'technical signals should be collapsed by default');
+    assert.ok(!renderSource.includes('<details class="terminal-block signal-disclosure">'), 'daily panel should not render a duplicate technical detail section');
     assert.ok(renderSource.includes('<div class="decision-evidence-list weekly-context-list">'), 'weekly context should reuse the formatted evidence list');
     assert.ok(renderSource.includes('<span>当前位置</span>') && renderSource.includes('${escapeHTML(wk.position)}'), 'weekly position needs a formatted label and value');
     assert.ok(renderSource.includes('<span>趋势修复</span>') && renderSource.includes('${escapeHTML(wk.repair)}'), 'weekly repair needs a formatted label and value');
@@ -822,10 +937,9 @@ runTest('buy conclusion names the effective signal and keeps technical traceabil
     assert.ok(panelText.includes('均线多头'), panelText);
     assert.ok(panelText.includes('动能依据'), panelText);
     assert.ok(panelText.includes('市场风险'), panelText);
-    assert.ok(panelText.includes('风险仓位计算链') && panelText.includes('最终风险仓位 80%'), panelText);
-    assert.ok(panelText.includes('今日 · 计分 +3') && panelText.includes('今日 · 同组去重'), panelText);
-    assert.ok(renderSource.includes('技术细节') && renderSource.includes('今日原始信号') && renderSource.includes('指数动能与离场窗口'), 'technical detail must expose stock/index trace sections');
-    assert.ok(cssSource.includes('.position-calculation-copy'), 'technical detail must style the position calculation chain');
+    assert.ok(!panelText.includes('风险仓位计算链') && !panelText.includes('今日 · 计分 +3'), panelText);
+    assert.ok(!renderSource.includes('技术细节') && !renderSource.includes('今日原始信号') && !renderSource.includes('指数动能与离场窗口'), 'daily panel should leave technical trace to the standalone strategy page');
+    assert.ok(!cssSource.includes('.position-calculation-copy'), 'daily panel should not keep duplicate technical detail styles');
 });
 
 runTest('stock and index conclusions share decisions but use different product language', () => {
@@ -869,17 +983,22 @@ runTest('stock and index conclusions share decisions but use different product l
         state.mode = 'index';
         var indexText = generateAnalysisHTML(64, full, meta).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
         var before = { position: full[64]._decision.position, bsMark: full[64]._decision.bsMark };
-        getNoviceDecisionSummary(meta, full[64]._decision, 'stock');
-        getNoviceDecisionSummary(meta, full[64]._decision, 'index');
+        var stockSummary = getNoviceDecisionSummary(meta, full[64]._decision, 'stock');
+        var indexSummary = getNoviceDecisionSummary(meta, full[64]._decision, 'index');
         var after = { position: full[64]._decision.position, bsMark: full[64]._decision.bsMark };
     `, context);
     const stockText = vm.runInContext('stockText', context);
     const indexText = vm.runInContext('indexText', context);
+    assertPresentationSummary(JSON.parse(vm.runInContext('JSON.stringify(stockSummary)', context)));
+    assertPresentationSummary(JSON.parse(vm.runInContext('JSON.stringify(indexSummary)', context)), { index: true });
+    assert.ok(stockText.includes('为什么是80%'), stockText);
+    assert.ok(indexText.includes('为什么是80%'), indexText);
     assert.ok(stockText.includes('个股每日结论') && stockText.includes('策略参考仓位') && stockText.includes('买入依据'), stockText);
     assert.ok(stockText.includes('核心建仓门禁') && stockText.includes('标的自身独立走强') && stockText.includes('50%'), stockText);
     assert.ok(indexText.includes('大盘每日结论') && indexText.includes('当前风险仓位') && indexText.includes('动能依据'), indexText);
-    assert.ok(indexText.includes('核心市场环境') && indexText.includes('标的自身独立走强') && indexText.includes('50%'), indexText);
-    assert.ok(indexText.includes('指数自身动能') && indexText.includes('市场风险/防守') && indexText.includes('风险仓位计算链'), indexText);
+    assert.ok(indexText.includes('核心市场环境') && indexText.includes('指数自身独立走强') && indexText.includes('50%'), indexText);
+    assert.ok(indexText.includes('指数自身动能') && indexText.includes('市场风险/防守'), indexText);
+    assert.ok(!indexText.includes('风险仓位计算链'), indexText);
     assert.ok(!indexText.includes('个股信号') && !indexText.includes('买入依据') && !indexText.includes('持仓依据'), indexText);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
 });
@@ -972,9 +1091,90 @@ runTest('right panel explains a KDJ dead cross as a one-point soft invalidation 
     assert.ok(panelText.includes('KDJ金叉已转为死叉') && panelText.includes('1分失效'), panelText);
     assert.ok(panelText.includes('4/4降至3/4'), panelText);
     assert.ok(panelText.includes('当前保持30%试探仓观察'), panelText);
-    assert.ok(panelText.includes('2026-05-28触发') && panelText.includes('2026-05-29死叉失效') && panelText.includes('不计分'), panelText);
+    assert.ok(!panelText.includes('2026-05-28触发') && !panelText.includes('2026-05-29死叉失效') && !panelText.includes('不计分'), panelText);
     assert.ok(!panelText.includes('KDJ金叉有效信号'), panelText);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
+});
+
+runTest('historical KDJ detail stays folded while the dated cause remains in the conclusion', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(renderSource, context);
+    vm.runInContext(`
+        Object.assign(STRATEGY, STRATEGIES['波段抄底型']);
+        state.mode = 'stock';
+        state.period = 'daily';
+        var full = Array.from({ length: 70 }, (_, i) => ({
+            date: '2026-07-' + String(i + 1).padStart(2, '0'),
+            close: 3.32,
+            high: 3.38,
+            low: 3.26,
+            open: 3.30,
+            vol: 1000,
+            _signals: []
+        }));
+        full[62].date = '2026-07-22';
+        full[63].date = '2026-07-23';
+        full[64].date = '2026-08-03';
+        full[64]._decision = {
+            basePosition: 80,
+            position: 30,
+            prevAdv: 30,
+            bsMark: null,
+            signalReady: true,
+            simpleAction: '轻仓持有',
+            simpleColorClass: 'text-info',
+            market: { label: '核心宽基偏弱', cls: 'bear' },
+            marketGate: { type: 'increase-capped', cap: 30, strengthTier: 'ordinary', detail: '普通机会新增风险上限30%' },
+            risk: { level: '低波动/偏离', score: 86, coef: 1, flags: [], stop: 3.21, pressure: 3.48 },
+            exit: { level: '无明确离场', detail: '暂无明确离场依据' },
+            positionCap: { limit: 50, reason: '个股尚未形成完整多头结构，高仓位上限50%' }
+        };
+        state.indicators = {
+            ma: {},
+            macd: { diff: [], dea: [] },
+            rsi: { val: [] },
+            kdj: {
+                k: Array.from({ length: 70 }, () => 18),
+                d: Array.from({ length: 70 }, () => 14),
+                j: Array.from({ length: 70 }, () => 26)
+            }
+        };
+        var meta = {
+            currentDay: 64,
+            currentDate: '2026-08-03',
+            currentClose: 3.32,
+            windowScore: 4,
+            windowScoreSignals: [
+                { day: 62, dayOffset: 2, signalDate: '2026-07-22', signal: 'B16', score: 3 },
+                { day: 63, dayOffset: 1, signalDate: '2026-07-23', signal: 'B8', score: 1 }
+            ],
+            windowSignals: [
+                { day: 62, signal: 'B16' },
+                { day: 63, signal: 'B8' }
+            ],
+            invalidatedWindowSignals: [],
+            buySignals: ['B16', 'B8'],
+            exitSignals: [],
+            warningSignals: [],
+            inCooldown: false,
+            allSignals: {}
+        };
+        var summary = getNoviceDecisionSummary(meta, full[64]._decision, 'stock');
+        var panelHtml = generateAnalysisHTML(64, full, meta);
+        var conclusionStart = panelHtml.indexOf('decision-reason-block');
+        var conclusionEnd = panelHtml.indexOf('<div class="level-line">', conclusionStart);
+        var conclusionHtml = panelHtml.slice(conclusionStart, conclusionEnd);
+    `, context);
+    const summary = JSON.parse(vm.runInContext('JSON.stringify(summary)', context));
+    const conclusionHtml = vm.runInContext('conclusionHtml', context);
+    const panelHtml = vm.runInContext('panelHtml', context);
+    assert.ok(summary.why.includes('2026-07-23出现KDJ金叉，目前仍有效'), summary.why);
+    assert.ok(conclusionHtml.includes('2026-07-23出现KDJ金叉，目前仍有效'), conclusionHtml);
+    assert.ok(!conclusionHtml.includes('KDJ说明'), conclusionHtml);
+    assert.ok(!panelHtml.includes('历史信号说明') && !panelHtml.includes('KDJ说明'), 'daily panel should not render the detailed KDJ explanation');
 });
 
 runTest('right panel explains a price-break hard invalidation with score delta and trial exit', () => {
@@ -1024,7 +1224,7 @@ runTest('right panel explains a price-break hard invalidation with score delta a
     assert.ok(panelText.includes('收盘7.27跌破信号防守位7.35'), panelText);
     assert.ok(panelText.includes('MACD底背离(+4)') && panelText.includes('回踩周线支撑企稳(+3)'), panelText);
     assert.ok(panelText.includes('7/4降至0/4') && panelText.includes('退出30%试探仓'), panelText);
-    assert.strictEqual((panelText.match(/回踩周线支撑企稳/g) || []).length, 2, 'conclusion plus technical details should each show B16 once');
+    assert.strictEqual((panelText.match(/回踩周线支撑企稳/g) || []).length, 1, 'daily conclusion should show B16 once without duplicate technical details');
     assert.ok(!panelText.includes('2026-06-08触发'), panelText);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
 });
@@ -1173,13 +1373,15 @@ runTest('hard invalidation copy follows the final entry or holding position', ()
     `, context);
     const entrySummary = JSON.parse(vm.runInContext('JSON.stringify(entrySummary)', context));
     const holdSummary = JSON.parse(vm.runInContext('JSON.stringify(holdSummary)', context));
-    assert.strictEqual(entrySummary.action, '只适合轻仓');
-    assert.ok(entrySummary.reason.includes('买入积分当前为6/6'), entrySummary.reason);
-    assert.ok(entrySummary.reason.includes('本次由空仓转为20%轻仓试探'), entrySummary.reason);
-    assert.ok(!entrySummary.reason.includes('当前空仓观察'), entrySummary.reason);
-    assert.ok(!entrySummary.reason.includes('3/6降至6/6'), entrySummary.reason);
-    assert.ok(holdSummary.reason.includes('当前维持30%轻仓观察'), holdSummary.reason);
-    assert.ok(!holdSummary.reason.includes('当前空仓观察'), holdSummary.reason);
+    assertPresentationSummary(entrySummary);
+    assertPresentationSummary(holdSummary);
+    assert.strictEqual(entrySummary.action, '轻仓观察');
+    assert.ok(entrySummary.why.includes('买入积分当前为6/6'), entrySummary.why);
+    assert.ok(entrySummary.positionWhy.includes('最终由空仓转为20%'), entrySummary.positionWhy);
+    assert.ok(!entrySummary.positionWhy.includes('当前空仓观察'), entrySummary.positionWhy);
+    assert.ok(!entrySummary.why.includes('3/6降至6/6'), entrySummary.why);
+    assert.ok(holdSummary.positionWhy.includes('最终维持30%'), holdSummary.positionWhy);
+    assert.ok(!holdSummary.positionWhy.includes('当前空仓观察'), holdSummary.positionWhy);
     assert.deepStrictEqual(vm.runInContext('entryAfter', context), vm.runInContext('entryBefore', context));
     assert.deepStrictEqual(vm.runInContext('holdAfter', context), vm.runInContext('holdBefore', context));
 });
@@ -1209,18 +1411,19 @@ runTest('novice copy explains the one-day soft-invalidation grace and its expiry
         };
         var expiredSummary = getNoviceDecisionSummary(expiredMeta, expiredDecision, 'stock');
     `, context);
-    const graceReason = vm.runInContext('graceSummary.reason', context);
-    const expiredReason = vm.runInContext('expiredSummary.reason', context);
+    const graceReason = vm.runInContext('graceSummary.why', context);
+    const expiredReason = vm.runInContext('expiredSummary.why', context);
     assert.ok(graceReason.includes('3/4降至2/4') && graceReason.includes('30%试探仓保留1个交易日观察'), graceReason);
     assert.ok(expiredReason.includes('1日观察期结束') && expiredReason.includes('退出30%试探仓'), expiredReason);
 });
 
 runTest('product guide fixes the right panel copy standard', () => {
     assert.ok(productGuideSource.includes('右侧决策面板话术规范'), 'missing right-panel copy standard');
-    assert.ok(productGuideSource.includes('结论 -> 推导依据 -> 技术细节'), 'copy standard must define the three-level writing order');
+    assert.ok(productGuideSource.includes('结论 -> 关键推导依据') && productGuideSource.includes('独立策略页'), 'copy standard must define the two-level daily panel and standalone detail page');
     assert.ok(productGuideSource.includes('只限制增加风险') && productGuideSource.includes('普通机会新增风险上限为30%') && productGuideSource.includes('标的自身独立走强') && productGuideSource.includes('上限为50%'), 'copy standard must explain the tiered market gate');
     assert.ok(productGuideSource.includes('买入依据') && productGuideSource.includes('持仓依据') && productGuideSource.includes('未买入原因'), 'copy standard must cover novice evidence language');
     assert.ok(productGuideSource.includes('信号发生日') && productGuideSource.includes('失效原因'), 'copy standard must expose historical signal timing and invalidation reason');
+    assert.ok(productGuideSource.includes('实际压力类型与价格') && productGuideSource.includes('上影占全天振幅的比例'), 'pressure-failure copy must expose verifiable price evidence');
     assert.ok(productGuideSource.includes('不新增第二套策略判断'), 'copy standard must preserve the strategy boundary');
 });
 
@@ -1264,13 +1467,13 @@ runTest('novice summary explains bullish market but defensive stock state withou
     `, context);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
     assert.strictEqual(vm.runInContext('summary.state', context), '破位防守');
-    assert.strictEqual(vm.runInContext('summary.action', context), '空仓观望');
-    assert.ok(vm.runInContext('summary.reason.startsWith("市场环境为全面多头")', context));
-    assert.ok(vm.runInContext('summary.reason.includes("L1 跌破短期趋势")', context));
-    assert.ok(vm.runInContext('summary.reason.includes("当前按减仓观察处理")', context));
-    assert.ok(vm.runInContext('summary.reason.includes("策略参考仓位降至 0%")', context));
-    assert.ok(vm.runInContext('summary.reason.includes("先空仓防守")', context));
-    assert.ok(vm.runInContext('!summary.reason.includes("；")', context), 'main reason should stay a single novice-readable sentence');
+    assert.strictEqual(vm.runInContext('summary.action', context), '离场观察');
+    assertPresentationSummary(JSON.parse(vm.runInContext('JSON.stringify(summary)', context)));
+    assert.ok(vm.runInContext('summary.why.startsWith("跌破短期趋势")', context));
+    assert.ok(vm.runInContext('summary.why.includes("跌破短期趋势")', context));
+    assert.ok(vm.runInContext('summary.positionWhy.includes("当前按0%处理") || summary.positionWhy.includes("最终保持0%空仓")', context));
+    assert.ok(vm.runInContext('summary.nextFocus.includes("买入积分重新达到5/5")', context));
+    assert.ok(vm.runInContext('!summary.why.includes("；")', context), 'main why should stay a single novice-readable sentence');
 });
 
 runTest('novice summary does not claim an undefined exit signal caused a defensive action', () => {
@@ -1302,12 +1505,13 @@ runTest('novice summary does not claim an undefined exit signal caused a defensi
     const summaries = JSON.parse(vm.runInContext('JSON.stringify(summaries)', context));
     for (const summary of summaries) {
         assert.strictEqual(summary.state, '信号失效');
-        assert.strictEqual(summary.action, '空仓观望');
-        assert.ok(summary.reason.includes('此前试探仓依赖的买入信号已失效'));
-        assert.ok(summary.reason.includes('买入积分降为 0/5'));
-        assert.ok(summary.reason.includes('退出30%试探仓，当前仓位为 0%'));
-        assert.ok(!summary.reason.includes('破位防守'));
-        assert.ok(!summary.reason.includes('已出现无明确离场信号'));
+        assertPresentationSummary(summary);
+        assert.strictEqual(summary.action, '离场观察');
+        assert.ok(summary.why.includes('此前试探仓依赖的买入信号已失效'));
+        assert.ok(summary.why.includes('买入积分降为 0/5'));
+        assert.ok(summary.positionWhy.includes('最终由30%降至0%'));
+        assert.ok(!summary.why.includes('破位防守'));
+        assert.ok(!summary.why.includes('已出现无明确离场信号'));
     }
 });
 
@@ -1340,14 +1544,15 @@ runTest('novice summary names the strong exit and explains why the score resets'
         var after = { position: decision.position, bsMark: decision.bsMark, action: decision.simpleAction };
     `, context);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
-    const reason = vm.runInContext('summary.reason', context);
-    assert.ok(reason.includes('L9 高点回撤破位'), reason);
-    assert.ok(reason.includes('L1 跌破短期趋势'), reason);
-    assert.ok(reason.includes('强离场会让此前买入积分失效'), reason);
-    assert.ok(reason.includes('当前清零为 0/5'), reason);
-    assert.ok(reason.includes('当前从30%降至 0%'), reason);
-    assert.ok(reason.includes('从下一交易日起进入3个交易日冷静期'), reason);
-    assert.ok(reason.includes('先空仓防守'), reason);
+    const summary = JSON.parse(vm.runInContext('JSON.stringify(summary)', context));
+    assertPresentationSummary(summary);
+    assert.ok(summary.why.includes('高点回撤破位'), summary.why);
+    assert.ok(summary.why.includes('跌破短期趋势'), summary.why);
+    assert.ok(summary.why.includes('此前买入依据失效'), summary.why);
+    assert.ok(summary.why.includes('积分清零至0/5'), summary.why);
+    assert.ok(summary.why.includes('当前从30%降至 0%'), summary.why);
+    assert.ok(summary.why.includes('从下一交易日起进入3个交易日冷静期'), summary.why);
+    assert.ok(summary.positionWhy.includes('最终由30%降至0%'), summary.positionWhy);
 });
 
 runTest('strong-exit copy exposes repeated reset and cooldown progress', () => {
@@ -1403,24 +1608,28 @@ runTest('strong-exit copy exposes repeated reset and cooldown progress', () => {
     `, context);
     const repeated = JSON.parse(vm.runInContext('JSON.stringify(repeatedSummary)', context));
     assert.strictEqual(repeated.state, '破位防守');
-    assert.ok(repeated.reason.includes('再次触发强离场 L3 MACD死叉'), repeated.reason);
-    assert.ok(repeated.reason.includes('3个交易日冷静期从下一交易日起重新计时'), repeated.reason);
-    assert.ok(repeated.invalidCondition.includes('今日再次触发强离场'), repeated.invalidCondition);
-    assert.ok(repeated.invalidCondition.includes('冷静期结束且买入积分重新达到 4/4'), repeated.invalidCondition);
+    assertPresentationSummary(repeated);
+    assert.ok(repeated.why.includes('再次触发强离场：MACD死叉'), repeated.why);
+    assert.ok(repeated.why.includes('3个交易日冷静期从下一交易日起重新计时'), repeated.why);
+    assert.ok(repeated.nextFocus.includes('3个交易日冷静期'), repeated.nextFocus);
+    assert.ok(repeated.nextFocus.includes('买入积分重新达到4/4后'), repeated.nextFocus);
     const cooldown = JSON.parse(vm.runInContext('JSON.stringify(cooldownSummary)', context));
     assert.strictEqual(cooldown.state, '离场冷静期');
-    assert.ok(cooldown.reason.includes('第 2/3 个交易日，还剩 1 个交易日'), cooldown.reason);
-    assert.ok(cooldown.invalidCondition.includes('第 2/3 个交易日，还剩 1 个交易日'), cooldown.invalidCondition);
+    assertPresentationSummary(cooldown);
+    assert.ok(cooldown.why.includes('第 2/3 个交易日，还剩 1 个交易日'), cooldown.why);
+    assert.ok(cooldown.nextFocus.includes('剩余1个冷静期交易日'), cooldown.nextFocus);
     const repeatedIndex = JSON.parse(vm.runInContext('JSON.stringify(repeatedIndexSummary)', context));
     assert.strictEqual(repeatedIndex.state, '指数破位防守');
-    assert.ok(repeatedIndex.reason.includes('今日指数再次触发强离场'), repeatedIndex.reason);
-    assert.ok(repeatedIndex.reason.includes('3个交易日冷静期从下一交易日起重新计时'), repeatedIndex.reason);
-    assert.ok(repeatedIndex.invalidCondition.includes('指数动能积分重新达到 4/4'), repeatedIndex.invalidCondition);
-    assert.ok(!repeatedIndex.reason.includes('买入积分'), repeatedIndex.reason);
+    assertPresentationSummary(repeatedIndex, { index: true });
+    assert.ok(repeatedIndex.why.includes('今日指数再次触发强离场'), repeatedIndex.why);
+    assert.ok(repeatedIndex.why.includes('3个交易日冷静期从下一交易日起重新计时'), repeatedIndex.why);
+    assert.ok(repeatedIndex.nextFocus.includes('指数动能积分重新达到4/4'), repeatedIndex.nextFocus);
+    assert.ok(!repeatedIndex.why.includes('买入积分'), repeatedIndex.why);
     const cooldownIndex = JSON.parse(vm.runInContext('JSON.stringify(cooldownIndexSummary)', context));
     assert.strictEqual(cooldownIndex.state, '指数冷静期');
-    assert.ok(cooldownIndex.reason.includes('第 2/3 个交易日，还剩 1 个交易日'), cooldownIndex.reason);
-    assert.ok(cooldownIndex.reason.includes('指数动能积分'), cooldownIndex.reason);
+    assertPresentationSummary(cooldownIndex, { index: true });
+    assert.ok(cooldownIndex.why.includes('第 2/3 个交易日，还剩 1 个交易日'), cooldownIndex.why);
+    assert.ok(cooldownIndex.why.includes('指数动能积分'), cooldownIndex.why);
 });
 
 runTest('strong-exit metadata distinguishes a repeated trigger from cooldown days', () => {
@@ -1502,13 +1711,14 @@ runTest('novice summary attributes position compression to stock risk instead of
         };
         var summary = getNoviceDecisionSummary(meta, decision);
     `, context);
-    const reason = vm.runInContext('summary.reason', context);
-    assert.ok(reason.includes('买入积分为 5/5'), reason);
-    assert.ok(reason.includes('基础仓位原为 40%'), reason);
-    assert.ok(reason.includes('风险系数 0.25'), reason);
-    assert.ok(!reason.includes('市场系数'), reason);
-    assert.ok(reason.includes('当前从40%降至 0%'), reason);
-    assert.ok(reason.includes('先空仓防守'), reason);
+    const summary = JSON.parse(vm.runInContext('JSON.stringify(summary)', context));
+    assertPresentationSummary(summary);
+    assert.ok(summary.why.includes('买入积分为 5/5'), summary.why);
+    assert.ok(summary.why.includes('基础仓位原为 40%'), summary.why);
+    assert.ok(!summary.why.includes('风险系数'), summary.why);
+    assert.ok(!summary.why.includes('市场系数'), summary.why);
+    assert.ok(summary.why.includes('当前从40%降至 0%'), summary.why);
+    assert.ok(summary.positionWhy.includes('最终由40%降至0%'), summary.positionWhy);
 });
 
 runTest('novice invalid condition is executable for empty defensive state', () => {
@@ -1541,10 +1751,12 @@ runTest('novice invalid condition is executable for empty defensive state', () =
         var after = { position: decision.position, bsMark: decision.bsMark, action: decision.simpleAction };
     `, context);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
-    assert.ok(vm.runInContext('summary.invalidCondition.includes("买入积分重新达到 5/5")', context));
-    assert.ok(vm.runInContext('!summary.invalidCondition.includes("冷静期")', context));
-    assert.ok(vm.runInContext('summary.invalidCondition.includes("才重新考虑")', context));
-    assert.ok(vm.runInContext('summary.invalidCondition.includes("跌破防守位 3927.85")', context));
+    const summary = JSON.parse(vm.runInContext('JSON.stringify(summary)', context));
+    assertPresentationSummary(summary);
+    assert.ok(summary.nextFocus.includes('买入积分重新达到5/5后'), summary.nextFocus);
+    assert.ok(!summary.nextFocus.includes('冷静期'), summary.nextFocus);
+    assert.ok(summary.nextFocus.includes('才考虑开仓'), summary.nextFocus);
+    assert.ok(summary.nextFocus.includes('跌破防守位3927.85'), summary.nextFocus);
 });
 runTest('right panel selection state replaces stale identity and hides old refresh status', () => {
     const context = makeBrowserContext();

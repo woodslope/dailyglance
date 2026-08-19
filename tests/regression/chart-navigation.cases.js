@@ -519,7 +519,7 @@ runTest('status smoke script validates data status attributes and chart recovery
     const scriptSource = read('scripts/status-smoke.js');
     assert.ok(scriptSource.includes("const DEFAULT_PORT = 8766"), 'status smoke should default to the project smoke port');
     assert.ok(scriptSource.includes("viewport: { width: 1440, height: 900 }"), 'status smoke should force a desktop viewport');
-    assert.ok(scriptSource.includes("20260802-01"), 'status smoke should assert the current build resource version');
+    assert.ok(scriptSource.includes("const EXPECTED_VERSION = VERSION.resourceVersion;"), 'status smoke should read the expected resource version from version.json');
     assert.ok(scriptSource.includes("data-dg-display-mode"), 'status smoke must read display mode attributes');
     assert.ok(scriptSource.includes("data-dg-confirmed-status"), 'status smoke must read confirmed status attributes');
     assert.ok(scriptSource.includes("data-dg-confirmed-date"), 'status smoke must read confirmed date attributes');
@@ -544,8 +544,8 @@ runTest('status smoke script validates data status attributes and chart recovery
 runTest('live dataflow smoke script validates realtime overlay, left tab, and drag performance', () => {
     const scriptSource = read('scripts/live-dataflow-smoke.js');
     assert.ok(scriptSource.includes('https://woodslope.github.io/dailyglance'), 'live dataflow smoke should default to the deployed GitHub Pages URL');
-    assert.ok(scriptSource.includes("const EXPECTED_RESOURCE_VERSION = '20260802-01';"), 'live dataflow smoke should assert the current resource version');
-    assert.ok(scriptSource.includes("const EXPECTED_APP_BUILD = '2026-08-02-01';"), 'live dataflow smoke should assert the current app build');
+    assert.ok(scriptSource.includes("const EXPECTED_RESOURCE_VERSION = VERSION.resourceVersion;"), 'live dataflow smoke should read the current resource version from version.json');
+    assert.ok(scriptSource.includes("const EXPECTED_APP_BUILD = VERSION.appBuild;"), 'live dataflow smoke should read the current app build from version.json');
     assert.ok(scriptSource.includes("APP_BUILD: window.__DG_BUILD__"), 'live dataflow smoke should read the deployed app build');
     assert.ok(scriptSource.includes("SIGNAL_VERSION"), 'live dataflow smoke should read the deployed signal version');
     assert.ok(scriptSource.includes("rawLatest"), 'live dataflow smoke must inspect confirmed raw history');

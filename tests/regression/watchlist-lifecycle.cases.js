@@ -1383,6 +1383,53 @@ runTest('left list header exposes its own refresh timestamp', () => {
     assert.ok(cssSource.includes('.left-list-refresh-time'), 'left-list timestamp should have a lightweight style');
 });
 
+runTest('watchlist rerender keeps the search input node and active query intact', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var searchBox = { value: '600' };
+        var headerSlot = { innerHTML: '' };
+        var itemsSlot = { innerHTML: '' };
+        var stickyHead = {
+            querySelector(selector) {
+                if (selector === '.watchlist-header-slot') return headerSlot;
+                if (selector === '.stock-search') return searchBox;
+                return null;
+            }
+        };
+        var containerWrites = 0;
+        var stockNavContainer = {
+            querySelector(selector) {
+                if (selector === '.watchlist-sticky-head') return stickyHead;
+                if (selector === '.watchlist-items') return itemsSlot;
+                return null;
+            },
+            set innerHTML(value) { containerWrites++; },
+            get innerHTML() { return ''; }
+        };
+        var originalGetElementById = document.getElementById;
+        document.getElementById = function(id) {
+            if (id === 'stockNavList') return stockNavContainer;
+            return originalGetElementById.call(document, id);
+        };
+        state.watchlist = [];
+        renderWatchlist();
+        var searchPreserveResult = {
+            containerWrites,
+            query: searchBox.value,
+            headerHtml: headerSlot.innerHTML,
+            itemsHtml: itemsSlot.innerHTML
+        };
+    `, context);
+    const result = vm.runInContext('searchPreserveResult', context);
+    assert.strictEqual(result.containerWrites, 0, 'existing search shell should not be replaced during data refresh');
+    assert.strictEqual(result.query, '600');
+    assert.ok(result.headerHtml.includes('自选股池 · 0/'));
+    assert.ok(result.itemsHtml.includes('还没有自选股'));
+    assert.ok(cssSource.includes('.stock-search input:focus-visible { outline: none; }'), 'search focus should avoid the duplicate hard outline');
+});
+
 runTest('startup cache preload covers the full watchlist and rerenders the stock list', () => {
     assert.ok(!dataSource.includes('state.watchlist.slice(0, 5)'), 'startup cache preload should not leave later watchlist rows blank');
     assert.ok(appSource.includes("if (state.mode === 'stock' || state.tab === 'stock') {") && appSource.includes("renderWatchlist();"), 'stock tab should rerender after startup cache preload');
@@ -1532,10 +1579,16 @@ runTest('OTC funds are rejected while exchange ETFs remain supported', () => {
     assert.ok(result.watchlistHtml.includes('onclick="showUnsupportedSecurityNotice()"'), result.watchlistHtml);
 });
 
-runTest('watchlist title and search share one sticky header', () => {
-    assert.ok(appSource.includes('class="watchlist-sticky-head"'), 'watchlist should render one shared sticky head');
-    assert.match(appSource, /watchlist-sticky-head[\s\S]*?headerHtml[\s\S]*?sHtml/, 'title and search should be inside the same sticky head');
-    assert.ok(cssSource.includes('.watchlist-sticky-head { position: sticky; top: 0;'), 'watchlist sticky head should stay at the top of the left scroll area');
+runTest('left list headers stay outside scrollable content and scrollbars stay intentionally hidden', () => {
+    assert.match(appSource, /index-list-sticky-head[\s\S]*?市场与板块指数[\s\S]*?index-list-items[\s\S]*?leftMarketContext/, 'index title should stay outside the scrollable index and market context area');
+    assert.ok(appSource.includes("document.getElementById('indexNavList').style.display = 'flex';"), 'index list should restore its flex layout when shown');
+    assert.ok(appSource.includes('class="watchlist-sticky-head"'), 'watchlist should render one shared header');
+    assert.match(appSource, /watchlist-sticky-head[\s\S]*?watchlist-header-slot[\s\S]*?sHtml[\s\S]*?watchlist-items/, 'title, search, and items should have separate slots');
+    assert.ok(cssSource.includes('#indexNavList { min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }'), 'index shell should constrain its own layout');
+    assert.ok(cssSource.includes('#stockNavList { min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }'), 'watchlist shell should constrain its own layout');
+    assert.match(cssSource, /\.index-list-items,\s*\.watchlist-items \{[^}]*margin-right: calc\(0px - var\(--space-4\)\);[^}]*overflow-y: auto;[^}]*padding-right: var\(--space-4\);[^}]*scrollbar-width: none;/, 'both left-list scroll areas should align content with the fixed header and hide Firefox scrollbars');
+    assert.match(cssSource, /\.index-list-items::\-webkit-scrollbar,\s*\.watchlist-items::\-webkit-scrollbar \{[^}]*width: 0;[^}]*height: 0;[^}]*display: none;/, 'both left-list scroll areas should explicitly hide Chromium and Safari scrollbars');
+    assert.doesNotMatch(cssSource, /\.index-list-items,\s*\.watchlist-items \{[^}]*scrollbar-gutter:/, 'hidden left-list scrollbars should not reserve an unused gutter');
 });
 
 runTest('watchlist drag handle replaces the active dot and persists reordered items', async () => {
@@ -1948,4 +2001,4 @@ runTest('only four formal strategies are exposed and white-fat research signals 
 // [Archived] Baipang candidate research frozen. White-fat test cases removed:
 //   "white-fat candidate research uses an isolated position and B/S chain"
 //   "white-fat candidate research detects half-breakout pullback confirmation and key-level failure"
-// Scripts moved to scripts/_archived/; conclusions in STRATEGY_DECISION_RULES.md
+// 对应研究脚本已退役，结论保留在 docs/history/strategy/。
