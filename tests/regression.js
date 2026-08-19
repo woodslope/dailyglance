@@ -2,9 +2,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
-// baipang research runtime archived to scripts/_archived/ (baipang candidate frozen)
+// 白胖候选研究已冻结，结论保留在 docs/history/strategy/。
 
 const root = path.resolve(__dirname, '..');
+const VERSION = require(path.join(root, 'version.json'));
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 
 const stripInit = (source) => source.replace(/\n\/\/ 启动应用\ninit\(\);\s*$/, '');
@@ -16,10 +17,14 @@ const indexSource = read('index.html');
 const calcSource = read('assets/js/03-calculations.js');
 const renderSource = read('assets/js/04-render.js');
 const cssSource = read('assets/css/dailyglance.css');
+const agentsSource = read('AGENTS.md');
+const readmeSource = read('README.md');
+const uiDesignSystemSource = read('docs/product/UI_DESIGN_SYSTEM.md');
 const productGuideSource = read('docs/product/PRODUCT_DECISION_GUIDE.md');
 const dataContractSource = read('docs/data/DATA_CONTRACT.md');
 const strategyBaselineSnapshotPath = path.join(root, 'tests', 'strategy-baseline-snapshots.json');
 const TEST_FILTER = process.env.TEST_FILTER ? new RegExp(process.env.TEST_FILTER) : null;
+let executedTests = 0;
 
 function normalizeStrategyForValidation(strategy) {
     const normalized = {
@@ -35,6 +40,7 @@ function normalizeStrategyForValidation(strategy) {
         holdThreshold: strategy.holdThreshold || 0,
         softInvalidationGraceDays: strategy.softInvalidationGraceDays || 0,
         monotonicSignalLifecycle: !!strategy.monotonicSignalLifecycle,
+        l10TrendHandoff: strategy.l10TrendHandoff || null,
         readyPosition: strategy.readyPosition || 0,
         cautiousPosition: strategy.cautiousPosition || 0,
         holdPosition: strategy.holdPosition || 0,
@@ -70,7 +76,8 @@ function loadBaselineFixtures(snapshots) {
 function setupBaselineSnapshotContext({ includeRender = false } = {}) {
     const snapshots = loadStrategyBaselineSnapshots();
     assert.strictEqual(snapshots.schemaVersion, 1);
-    assert.strictEqual(snapshots.signalVersion, 'v4.2.13');
+    assert.ok(!Object.prototype.hasOwnProperty.call(snapshots, 'appBuild'));
+    assert.strictEqual(snapshots.signalVersion, VERSION.signalVersion);
     assert.ok(Array.isArray(snapshots.samples) && snapshots.samples.length >= 5);
 
     const context = makeBrowserContext();
@@ -221,6 +228,7 @@ function makeBrowserContext(extra = {}) {
 
 async function runTest(name, fn) {
     if (TEST_FILTER && !TEST_FILTER.test(name)) return;
+    executedTests++;
     try {
         await fn();
         console.log(`ok - ${name}`);
@@ -232,11 +240,16 @@ async function runTest(name, fn) {
 }
 
 const REGRESSION_GROUPS = ["data-cache","strategy-decision","presentation-state","chart-navigation","watchlist-lifecycle"];
-const selectedRegressionGroups = process.env.TEST_GROUP
-    ? process.env.TEST_GROUP.split(',').filter(group => REGRESSION_GROUPS.includes(group))
+const requestedRegressionGroups = process.env.TEST_GROUP
+    ? process.env.TEST_GROUP.split(',').map(group => group.trim()).filter(Boolean)
     : REGRESSION_GROUPS;
+const unknownRegressionGroups = requestedRegressionGroups.filter(group => !REGRESSION_GROUPS.includes(group));
+if (unknownRegressionGroups.length) throw new Error(`unknown regression group: ${unknownRegressionGroups.join(', ')}`);
+const selectedRegressionGroups = requestedRegressionGroups;
 
 for (const group of selectedRegressionGroups) {
     const groupSource = read(`tests/regression/${group}.cases.js`);
     eval(groupSource);
 }
+
+if (executedTests === 0) throw new Error('no regression tests matched the requested group/filter');

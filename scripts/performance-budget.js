@@ -5,9 +5,10 @@ const os = require('os');
 const { createRequire } = require('module');
 
 const ROOT = path.resolve(__dirname, '..');
+const VERSION = require(path.join(ROOT, 'version.json'));
 const DEFAULT_URL = 'https://woodslope.github.io/dailyglance';
-const EXPECTED_RESOURCE_VERSION = '20260722-09';
-const EXPECTED_APP_BUILD = '2026-07-22-09';
+const EXPECTED_RESOURCE_VERSION = VERSION.resourceVersion;
+const EXPECTED_APP_BUILD = VERSION.appBuild;
 const STOCK_COLD_TARGET = { code: '600519', name: '贵州茅台' };
 
 const args = new Map();

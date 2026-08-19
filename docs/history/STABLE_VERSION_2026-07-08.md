@@ -50,7 +50,7 @@
 - `CURRENT_STATUS.md`：压缩为当前线上状态、待办与风险、文档整理状态和下一步。
 - 旧独立待测池：合并到 `CURRENT_STATUS.md` 后删除。
 - `STABILITY_CHECKLIST.md`：继续作为版本号、生产验证和 smoke 的唯一规则源。
-- `docs/strategy/STRATEGY_DECISION_RULES.md`：保留当前规则和候选池；历史验证记录归档到 `docs/history/strategy/STRATEGY_VALIDATION_LOG_2026-06.md`。
+- `docs/strategy/STRATEGY_DECISION_RULES.md`：当时保留当前规则和候选池；历史验证记录归档到 `docs/history/strategy/STRATEGY_VALIDATION_LOG_2026-06.md`。
 
 后续接续：
 
