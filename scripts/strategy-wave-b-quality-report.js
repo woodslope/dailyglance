@@ -504,7 +504,8 @@ function main() {
         },
         sourceSnapshot: {
             hash: stableHash({
-                config: hashFile(path.join(ROOT, 'assets/js/01-config-ui.js')),
+                strategyConfig: hashFile(path.join(ROOT, 'assets/js/00-strategy-config.js')),
+                uiConfig: hashFile(path.join(ROOT, 'assets/js/01-config-ui.js')),
                 data: hashFile(path.join(ROOT, 'assets/js/02-data.js')),
                 calculations: hashFile(path.join(ROOT, 'assets/js/03-calculations.js')),
                 policy: hashFile(path.join(ROOT, 'strategy-validation-policy.json')),
@@ -513,7 +514,8 @@ function main() {
                 qualityShadow: hashFile(path.join(ROOT, 'scripts/strategy-wave-b-quality-shadow.js'))
             }),
             files: {
-                config: hashFile(path.join(ROOT, 'assets/js/01-config-ui.js')),
+                strategyConfig: hashFile(path.join(ROOT, 'assets/js/00-strategy-config.js')),
+                uiConfig: hashFile(path.join(ROOT, 'assets/js/01-config-ui.js')),
                 data: hashFile(path.join(ROOT, 'assets/js/02-data.js')),
                 calculations: hashFile(path.join(ROOT, 'assets/js/03-calculations.js')),
                 policy: hashFile(path.join(ROOT, 'strategy-validation-policy.json')),

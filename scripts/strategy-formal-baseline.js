@@ -89,7 +89,7 @@ function makeBrowserContext() {
 
 function createProductionContext(indexData) {
     const context = makeBrowserContext();
-    vm.runInContext(read('assets/js/01-config-ui.js'), context);
+    vm.runInContext(`${read('assets/js/00-strategy-config.js')}\n${read('assets/js/01-config-ui.js')}`, context);
     vm.runInContext(read('assets/js/02-data.js'), context);
     vm.runInContext(read('assets/js/03-calculations.js'), context);
     context.__indexData = Object.fromEntries(Object.entries(indexData).map(([id, rows]) => [id, cloneRows(rows)]));

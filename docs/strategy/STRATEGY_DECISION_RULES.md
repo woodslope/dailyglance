@@ -245,7 +245,7 @@
 
 ## 当前信号台账
 
-台账基于 `assets/js/01-config-ui.js` 的策略配置和 `assets/js/03-calculations.js` 的 `SIGNAL_RULES`。这里记录的是“当前应如何理解”，不是建议交易。
+台账基于 `assets/js/00-strategy-config.js` 的策略配置和 `assets/js/03-calculations.js` 的 `SIGNAL_RULES`。这里记录的是“当前应如何理解”，不是建议交易。
 
 ### 买入信号
 

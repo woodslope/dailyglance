@@ -22,7 +22,7 @@ python3 -m http.server 8000
 
 然后访问 `http://localhost:8000`。
 
-策略查看器：访问 `http://localhost:8000/strategy-inspector.html`，或在主应用“设置”中打开“独立策略页”。该页面直接读取 `assets/js/01-config-ui.js` 的生产配置，用于查看策略结构，不维护独立副本。
+策略查看器：访问 `http://localhost:8000/strategy-inspector.html`，或在主应用“设置”中打开“独立策略页”。该页面直接读取 `assets/js/00-strategy-config.js` 的生产配置，用于查看策略结构，不维护独立副本。
 
 ## 文档地图
 

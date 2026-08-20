@@ -12,8 +12,11 @@ const stripInit = (source) => source.replace(/\n\/\/ 启动应用\ninit\(\);\s*$
 const appSource = read('assets/js/05-app.js');
 const appSourceNoInit = stripInit(appSource);
 const dataSource = read('assets/js/02-data.js');
-const configSource = read('assets/js/01-config-ui.js');
+const strategyConfigSource = read('assets/js/00-strategy-config.js');
+const uiConfigSource = read('assets/js/01-config-ui.js');
+const configSource = `${strategyConfigSource}\n${uiConfigSource}`;
 const indexSource = read('index.html');
+const strategyInspectorSource = read('strategy-inspector.html');
 const calcSource = read('assets/js/03-calculations.js');
 const renderSource = read('assets/js/04-render.js');
 const cssSource = read('assets/css/dailyglance.css');

@@ -55,8 +55,8 @@
 
 | 改动范围 | 典型文件 | 最低检查 |
 | --- | --- | --- |
-| 每日一览展示 | `index.html`、`assets/css/dailyglance.css`、`assets/js/04-render.js`、策略查看器页面与样式 | `node scripts/check.js --files=...`，对应 `presentation-state` |
-| 共享配置 | `assets/js/01-config-ui.js` | 当前同时包含界面常量、正式策略、仓位档位与信号分数；执行 `node scripts/check.js --files=...`，同时覆盖 `presentation-state` 与 `strategy-decision`。拆分前不得按纯界面修改处理 |
+| 每日一览展示 | `index.html`、`assets/css/dailyglance.css`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、策略查看器页面与样式 | `node scripts/check.js --files=...`，对应 `presentation-state` |
+| 正式策略配置 | `assets/js/00-strategy-config.js` | `node scripts/check.js --files=...`，对应 `strategy-decision`；真实改变参数时再补策略专项验证 |
 | 主应用交互 | `assets/js/05-app.js`、自选股/设置/刷新事件 | `node scripts/check.js --files=...`，对应 `chart-navigation`、`watchlist-lifecycle` |
 | 数据与缓存 | `assets/js/02-data.js`、`docs/data/` | `node scripts/check.js --files=...`，对应 `data-cache` |
 | 策略决策 | `assets/js/03-calculations.js`、`docs/strategy/`、策略脚本和策略用例 | `node scripts/check.js --group=strategy-decision`，必要时补专项验证 |

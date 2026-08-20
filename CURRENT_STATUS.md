@@ -15,8 +15,8 @@
 
 当前 `HEAD`（`4a1cca4`）作为已提交对照基线；未提交修改按职责分为以下几层，后续任务只进入其中一层，跨层改动必须明确说明：
 
-- **界面调整**：`index.html`、`assets/css/`、`assets/js/04-render.js`、`strategy-inspector.html`、`assets/css/strategy-inspector.css`、`assets/js/strategy-inspector.js`。
-- **共享配置**：`assets/js/01-config-ui.js`。该文件同时承载界面常量和正式策略配置，现阶段改动视为跨层；待生产策略稳定后，再单独拆分为策略配置与界面配置。
+- **界面调整**：`index.html`、`assets/css/`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、`strategy-inspector.html`、`assets/css/strategy-inspector.css`、`assets/js/strategy-inspector.js`。
+- **正式策略配置**：`assets/js/00-strategy-config.js`。该文件独立承载正式策略、信号分数、统一仓位档位和策略版本；普通界面任务不再读取或修改它。
 - **生产数据与策略**：`assets/js/02-data.js`、`assets/js/03-calculations.js`、`docs/data/`、`docs/strategy/STRATEGY_DECISION_RULES.md`、`strategy-validation-policy.json`。
 - **策略研究与验证**：`scripts/strategy-*.js`、`tests/strategy-*.js`、`tests/regression/strategy-decision.cases.js`、`tests/strategy-baseline-snapshots.json`、`docs/history/strategy/`。
 - **协作与工具链**：`AGENTS.md`、`README.md`、`STABILITY_CHECKLIST.md`、`CURRENT_STATUS.md`、`scripts/check.js`、`scripts/sync-version.js`、`version.json` 及相关归档清理。

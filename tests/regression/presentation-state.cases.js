@@ -715,14 +715,19 @@ runTest('wave B quality stays hidden in production shadow while explicit researc
 });
 
 runTest('build version is bumped consistently', () => {
-    assert.ok(configSource.includes(`const APP_BUILD = '${VERSION.appBuild}';`));
-    assert.ok(configSource.includes(`const SIGNAL_VERSION = '${VERSION.signalVersion}';`));
+    assert.ok(strategyConfigSource.includes(`const APP_BUILD = '${VERSION.appBuild}';`));
+    assert.ok(strategyConfigSource.includes(`const SIGNAL_VERSION = '${VERSION.signalVersion}';`));
     const strategySnapshots = loadStrategyBaselineSnapshots();
     assert.ok(!Object.prototype.hasOwnProperty.call(strategySnapshots, 'appBuild'), 'UI APP_BUILD must not invalidate strategy snapshots');
     assert.strictEqual(strategySnapshots.signalVersion, VERSION.signalVersion, 'strategy snapshots must remain tied to SIGNAL_VERSION');
     const versions = [...indexSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
-    assert.ok(versions.length >= 7, 'expected vendor, CSS, and script version parameters');
+    assert.ok(versions.length >= 8, 'expected vendor, CSS, strategy config, and application script version parameters');
     assert.deepStrictEqual([...new Set(versions)], [VERSION.resourceVersion]);
+    const inspectorVersions = [...strategyInspectorSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
+    assert.ok(inspectorVersions.length >= 3, 'strategy inspector must version its CSS, strategy config, and renderer');
+    assert.deepStrictEqual([...new Set(inspectorVersions)], [VERSION.resourceVersion]);
+    assert.ok(indexSource.indexOf('assets/js/00-strategy-config.js') < indexSource.indexOf('assets/js/01-config-ui.js'), 'production strategy config must load before UI state');
+    assert.ok(strategyInspectorSource.includes('assets/js/00-strategy-config.js') && !/<script[^>]+assets\/js\/01-config-ui\.js/.test(strategyInspectorSource), 'strategy inspector must read production strategy config without initializing the main application UI');
     assert.ok(indexSource.includes(`assets/vendor/chart.umd.min.js?v=${VERSION.resourceVersion}`), 'Chart.js should load from local vendor first');
     assert.ok(!indexSource.includes('https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>'), 'first Chart.js load should not depend on remote CDN');
     assert.ok(!indexSource.includes('fonts.googleapis') && !indexSource.includes('fonts.gstatic'), 'app shell should not block on external font hosts');

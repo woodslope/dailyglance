@@ -14,7 +14,10 @@ const REPORT_DIR = path.join(ROOT, '.local', 'strategy-reports');
 const OUT = path.join(REPORT_DIR, `strategy-autopsy-${STRATEGY_NAME}.md`);
 process.stdout.write(`🔬 尸检: ${STRATEGY_NAME}\n`);
 
-const configSrc = fs.readFileSync(path.join(ROOT, 'assets/js/01-config-ui.js'), 'utf8');
+const configSrc = [
+    fs.readFileSync(path.join(ROOT, 'assets/js/00-strategy-config.js'), 'utf8'),
+    fs.readFileSync(path.join(ROOT, 'assets/js/01-config-ui.js'), 'utf8')
+].join('\n');
 const dataSrc = fs.readFileSync(path.join(ROOT, 'assets/js/02-data.js'), 'utf8');
 const calcSrc = fs.readFileSync(path.join(ROOT, 'assets/js/03-calculations.js'), 'utf8');
 

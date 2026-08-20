@@ -121,13 +121,13 @@ function groupsForFile(file) {
     if (file === 'tests/regression.js') return REGRESSION_GROUPS;
     const match = file.match(/^tests\/regression\/([\w-]+)(?:\.cases)?\.js$/);
     if (match && REGRESSION_GROUPS.includes(match[1])) return [match[1]];
-    // 此文件尚未拆分策略配置与界面工具，避免策略参数改动被误判为纯展示改动。
-    if (file.startsWith('assets/js/01-')) return ['presentation-state', 'strategy-decision'];
+    if (file.startsWith('assets/js/00-')) return ['strategy-decision'];
+    if (file.startsWith('assets/js/01-')) return ['presentation-state'];
     if (file.startsWith('assets/js/02-') || file.includes('data-contract')) return ['data-cache'];
     if (file.startsWith('assets/js/03-') || file.startsWith('scripts/strategy-')) return ['strategy-decision'];
     if (file.startsWith('assets/js/04-')) return ['chart-navigation', 'presentation-state'];
     if (file.startsWith('assets/js/05-')) return ['chart-navigation', 'watchlist-lifecycle'];
-    if (file === 'index.html' || file.startsWith('assets/css/')) return ['presentation-state'];
+    if (file === 'index.html' || file === 'strategy-inspector.html' || file === 'assets/js/strategy-inspector.js' || file.startsWith('assets/css/')) return ['presentation-state'];
     if (file === 'scripts/status-smoke.js' || file === 'scripts/live-dataflow-smoke.js' || file === 'scripts/performance-budget.js') return ['chart-navigation'];
     return [];
 }

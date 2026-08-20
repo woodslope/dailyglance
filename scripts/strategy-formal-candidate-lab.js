@@ -659,7 +659,7 @@ function latestBaselinePath() {
 
 function createContext(indexData) {
     const context = makeBrowserContext();
-    vm.runInContext(read('assets/js/01-config-ui.js'), context);
+    vm.runInContext(`${read('assets/js/00-strategy-config.js')}\n${read('assets/js/01-config-ui.js')}`, context);
     vm.runInContext(read('assets/js/02-data.js'), context);
     vm.runInContext(read('assets/js/03-calculations.js'), context);
     vm.runInContext('globalThis.__formalBaseStrategies = JSON.parse(JSON.stringify(STRATEGIES));', context);
