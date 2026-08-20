@@ -6,8 +6,8 @@
 <meta name="description" content="DailyGlance 当前生产策略查看器。">
 <title>策略查看器 · DailyGlance</title>
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260819-03">
-<link rel="stylesheet" href="assets/css/strategy-inspector.css?v=20260819-03">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260820-01">
+<link rel="stylesheet" href="assets/css/strategy-inspector.css?v=20260820-01">
 </head>
 <body class="strategy-inspector-page">
 <main class="strategy-inspector-shell">
@@ -50,7 +50,8 @@
     <section class="strategy-section strategy-files-section">
         <div class="strategy-section-heading"><span class="strategy-section-index">06</span><div><h2>文件职责</h2><p>调整策略时按职责定位，避免在展示层和计算层来回寻找。</p></div></div>
         <div class="strategy-file-map">
-            <div><code>assets/js/01-config-ui.js</code><span>策略配置、信号分数、统一仓位档位</span></div>
+            <div><code>assets/js/00-strategy-config.js</code><span>正式策略配置、信号分数、统一仓位档位和版本</span></div>
+            <div><code>assets/js/01-config-ui.js</code><span>页面状态、刷新租约、UI 工具和应用交互</span></div>
             <div><code>assets/js/03-calculations.js</code><span>信号计算、趋势解释、仓位限制和最终决策</span></div>
             <div><code>assets/js/04-render.js</code><span>图表与右侧策略结论展示</span></div>
             <div><code>assets/js/05-app.js</code><span>策略切换、设置页和交互生命周期</span></div>
@@ -60,7 +61,7 @@
     </section>
     <footer class="strategy-inspector-footer">仅用于观察、研究和复盘，不构成投资建议。趋势状态为只读解释字段。</footer>
 </main>
-<script src="assets/js/01-config-ui.js?v=20260819-03"></script>
-<script src="assets/js/strategy-inspector.js?v=20260819-03"></script>
+<script src="assets/js/00-strategy-config.js?v=20260820-01"></script>
+<script src="assets/js/strategy-inspector.js?v=20260820-01"></script>
 </body>
 </html>
