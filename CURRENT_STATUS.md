@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-- 当前线上与本地生产策略版本均为 `v4.2.32`；Pages `main=cbf27f2`，资源版本 `20260819-02`，本次发布接入 MA20 趋势防守：波段个股完整多头中的单独 `L3`、以及守住 MA20 的有限硬失效，可保留 `30%` 观察一天；复合强离场、结构破位、风险归零和指数路径不放宽。发布前完整回归与桌面状态 smoke 已通过，线上入口已确认加载新资源版本。
+- 当前线上与本地生产策略版本均为 `v4.2.32`；Pages `main=8697672`，资源版本 `20260820-01`。本次发布包含刷新调度与观察数据层拆分；发布前完整回归、桌面状态 smoke 和线上入口资源版本检查均已通过。
 - 四个正式策略继续共用 `0% / 30% / 50% / 80%` 四档仓位和统一 `B/S` 契约；当前生产细则以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
 - “板块趋势”仍是独立只读扫描层，行业趋势、概念热点、活跃个股和外部环境推测均不进入核心宽基门禁、个股策略、仓位、`B/S` 或收益计算。
 - 本地维护边界已进一步收敛：`assets/js/07-refresh-controller.js` 独立承载刷新调度，`assets/js/02-observation-data.js` 独立承载外部环境与板块趋势观察；本次拆分未改变策略参数、历史/实时数据契约或 `B/S` 行为。
@@ -14,7 +14,7 @@
 
 ## 工作区分层
 
-当前 `HEAD`（`caf9125`）作为已提交对照基线；未提交修改按职责分为以下几层，后续任务只进入其中一层，跨层改动必须明确说明：
+当前 `HEAD`（`0ed8323`）作为已提交对照基线；未提交修改按职责分为以下几层，后续任务只进入其中一层，跨层改动必须明确说明：
 
 - **界面调整**：`index.html`、`assets/css/`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、`assets/js/06-settings.js`、`strategy-inspector.html`、`assets/css/strategy-inspector.css`、`assets/js/strategy-inspector.js`。
 - **主应用交互**：`assets/js/05-app.js`、`assets/js/07-refresh-controller.js` 及自选股、设置、刷新生命周期。
