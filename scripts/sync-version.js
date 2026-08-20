@@ -45,7 +45,7 @@ function main() {
     assertVersion(VERSION.signalVersion, /^v\d+(?:\.\d+){2}$/, 'signalVersion');
     replaceOrCheck('assets/js/00-strategy-config.js', /const APP_BUILD = '[^']+';/, `const APP_BUILD = '${VERSION.appBuild}';`, 'APP_BUILD');
     replaceOrCheck('assets/js/00-strategy-config.js', /const SIGNAL_VERSION = '[^']+';/, `const SIGNAL_VERSION = '${VERSION.signalVersion}';`, 'SIGNAL_VERSION');
-    syncHtmlResources('index.html', 9);
+    syncHtmlResources('index.html', 11);
     syncHtmlResources('strategy-inspector.html', 3);
     console.log(CHECK_ONLY ? '版本同步检查通过' : '版本同步完成');
 }

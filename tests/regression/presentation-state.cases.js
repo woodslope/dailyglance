@@ -721,12 +721,15 @@ runTest('build version is bumped consistently', () => {
     assert.ok(!Object.prototype.hasOwnProperty.call(strategySnapshots, 'appBuild'), 'UI APP_BUILD must not invalidate strategy snapshots');
     assert.strictEqual(strategySnapshots.signalVersion, VERSION.signalVersion, 'strategy snapshots must remain tied to SIGNAL_VERSION');
     const versions = [...indexSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
-    assert.ok(versions.length >= 9, 'expected vendor, CSS, strategy config, application, and settings script version parameters');
+    assert.ok(versions.length >= 11, 'expected vendor, CSS, strategy config, core data, observation data, application, settings, and refresh controller version parameters');
     assert.deepStrictEqual([...new Set(versions)], [VERSION.resourceVersion]);
     const inspectorVersions = [...strategyInspectorSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
     assert.ok(inspectorVersions.length >= 3, 'strategy inspector must version its CSS, strategy config, and renderer');
     assert.deepStrictEqual([...new Set(inspectorVersions)], [VERSION.resourceVersion]);
     assert.ok(indexSource.indexOf('assets/js/00-strategy-config.js') < indexSource.indexOf('assets/js/01-config-ui.js'), 'production strategy config must load before UI state');
+    assert.ok(indexSource.indexOf('assets/js/02-data.js') < indexSource.indexOf('assets/js/02-observation-data.js'), 'core market data must load before the observation data layer');
+    assert.ok(indexSource.indexOf('assets/js/02-observation-data.js') < indexSource.indexOf('assets/js/03-calculations.js'), 'observation data must load before application calculations and lifecycle scripts');
+    assert.ok(indexSource.indexOf('assets/js/06-settings.js') < indexSource.indexOf('assets/js/07-refresh-controller.js'), 'refresh controller must load after settings controller');
     assert.ok(strategyInspectorSource.includes('assets/js/00-strategy-config.js') && !/<script[^>]+assets\/js\/01-config-ui\.js/.test(strategyInspectorSource), 'strategy inspector must read production strategy config without initializing the main application UI');
     assert.ok(indexSource.includes(`assets/vendor/chart.umd.min.js?v=${VERSION.resourceVersion}`), 'Chart.js should load from local vendor first');
     assert.ok(!indexSource.includes('https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>'), 'first Chart.js load should not depend on remote CDN');

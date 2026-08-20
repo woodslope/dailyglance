@@ -2137,30 +2137,6 @@ async function handleExternalRefresh() {
     return result;
 }
 
-function scheduleIdleTask(fn, timeout = 300) {
-    if (typeof window.requestIdleCallback === 'function') {
-        return window.requestIdleCallback(fn, { timeout });
-    }
-    return window.setTimeout(fn, timeout);
-}
-
-function scheduleStartupBackgroundHydration() {
-    scheduleIdleTask(async () => {
-        await preloadCacheOnly();
-        await ensureMarketTemperatureData();
-        if (state.mode === 'index') {
-            renderIndexList();
-            if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
-        } else if (state.mode === 'stock' || state.tab === 'stock') {
-            const leftTxn = beginRefreshTransaction('leftList', { source: 'startup-cache-preload', area: 'stock-list' });
-            renderWatchlist();
-            markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
-            if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
-        }
-    }, 600);
-    scheduleIdleTask(() => refreshWatchlistSignalSnapshots(), 900);
-}
-
 function shouldUseMobileGate() {
     const gate = document.getElementById('mobileGate');
     return !!gate && getComputedStyle(gate).display === 'flex';
@@ -2263,48 +2239,8 @@ async function init() {
     document.querySelectorAll('#rangeTabs .seg-btn').forEach(btn => {
         btn.classList.toggle('active', parseInt(btn.dataset.range) === state.range);
     });
-    
-    setInterval(() => { 
-        if (document.hidden) return;
-        const d = getBJDate(); 
-        document.getElementById('liveClock').innerText = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; 
-    }, 1000);
-    
-    // 30s 批量侧边栏价格刷新：1 次 JSONP 拿全部侧边栏标的实时价格
-    setInterval(() => {
-        if (document.hidden) return;
-        if (!isMarketOpen()) return;
-        refreshSidebarRealtime();
-    }, SYS_CONFIG.THROTTLE_MS);
 
-    // 30s 当前标的完整同步：增量历史 + 实时合并 + 图表重绘（延迟 15s 启动，与侧边栏刷新错峰）
-    setTimeout(() => {
-        setInterval(() => { 
-            if (document.hidden) return;
-            if (!isMarketOpen()) return;
-            if(state.mode === 'index') cachedFetch(state.id); 
-            else if(state.mode === 'stock' && state.id) cachedFetch(state.id); 
-        }, SYS_CONFIG.THROTTLE_MS);
-    }, SYS_CONFIG.THROTTLE_MS / 2);
-
-    // 90s 侧边栏全量历史同步：受控并发（并发数 3），覆盖大盘和自选
-    startSidebarFullSync();
-
-    // P0-4: 后台切回前台时若在交易时段，立即刷新侧边栏 + 当前标的
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) return;
-        if (state.tab === 'external') {
-            Promise.all([
-                refreshSectorTrendSnapshot({ reason: 'visibility' }),
-                refreshExternalLeadStripSnapshot({ reason: 'visibility' })
-            ]);
-            return;
-        }
-        if (!isMarketOpen()) return;
-        refreshSidebarRealtime();
-        if (state.mode === 'index') cachedFetch(state.id);
-        else if (state.mode === 'stock' && state.id) cachedFetch(state.id);
-    });
+    startRefreshSchedulers();
 
     await _selectIndexImpl('sh');  // init 直接调用 impl，跳过防抖
     PERF.mark(startupPerf, 'initial-selection');
@@ -2312,6 +2248,3 @@ async function init() {
 
     scheduleStartupBackgroundHydration();
 }
-
-// 启动应用
-init();

@@ -1,6 +1,6 @@
 # DailyGlance 当前接续状态
 
-更新时间：2026-08-19
+更新时间：2026-08-20
 
 上一阶段完整记录：`docs/history/CURRENT_STATUS_ARCHIVE_2026-08-09.md`
 
@@ -9,15 +9,17 @@
 - 当前线上与本地生产策略版本均为 `v4.2.32`；Pages `main=cbf27f2`，资源版本 `20260819-02`，本次发布接入 MA20 趋势防守：波段个股完整多头中的单独 `L3`、以及守住 MA20 的有限硬失效，可保留 `30%` 观察一天；复合强离场、结构破位、风险归零和指数路径不放宽。发布前完整回归与桌面状态 smoke 已通过，线上入口已确认加载新资源版本。
 - 四个正式策略继续共用 `0% / 30% / 50% / 80%` 四档仓位和统一 `B/S` 契约；当前生产细则以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
 - “板块趋势”仍是独立只读扫描层，行业趋势、概念热点、活跃个股和外部环境推测均不进入核心宽基门禁、个股策略、仓位、`B/S` 或收益计算。
+- 本地维护边界已进一步收敛：`assets/js/07-refresh-controller.js` 独立承载刷新调度，`assets/js/02-observation-data.js` 独立承载外部环境与板块趋势观察；本次拆分未改变策略参数、历史/实时数据契约或 `B/S` 行为。
 - 本地完整源码在 `codex/full-project`；工作区现有未提交修改继续保留，不属于当前 Pages 部署包。
 
 ## 工作区分层
 
-当前 `HEAD`（`4a1cca4`）作为已提交对照基线；未提交修改按职责分为以下几层，后续任务只进入其中一层，跨层改动必须明确说明：
+当前 `HEAD`（`caf9125`）作为已提交对照基线；未提交修改按职责分为以下几层，后续任务只进入其中一层，跨层改动必须明确说明：
 
 - **界面调整**：`index.html`、`assets/css/`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、`assets/js/06-settings.js`、`strategy-inspector.html`、`assets/css/strategy-inspector.css`、`assets/js/strategy-inspector.js`。
+- **主应用交互**：`assets/js/05-app.js`、`assets/js/07-refresh-controller.js` 及自选股、设置、刷新生命周期。
 - **正式策略配置**：`assets/js/00-strategy-config.js`。该文件独立承载正式策略、信号分数、统一仓位档位和策略版本；普通界面任务不再读取或修改它。
-- **生产数据与策略**：`assets/js/02-data.js`、`assets/js/03-calculations.js`、`docs/data/`、`docs/strategy/STRATEGY_DECISION_RULES.md`、`strategy-validation-policy.json`。
+- **生产数据与策略**：`assets/js/02-data.js` 负责核心历史、缓存与实时行情，`assets/js/02-observation-data.js` 负责独立的外部环境与板块趋势观察；策略决策位于 `assets/js/03-calculations.js`、`docs/strategy/STRATEGY_DECISION_RULES.md` 和 `strategy-validation-policy.json`。
 - **策略研究与验证**：`scripts/strategy-*.js`、`tests/strategy-*.js`、`tests/regression/strategy-decision.cases.js`、`tests/strategy-baseline-snapshots.json`、`docs/history/strategy/`。
 - **协作与工具链**：`AGENTS.md`、`README.md`、`STABILITY_CHECKLIST.md`、`CURRENT_STATUS.md`、`scripts/check.js`、`scripts/sync-version.js`、`version.json` 及相关归档清理。
 

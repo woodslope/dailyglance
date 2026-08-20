@@ -892,8 +892,29 @@ runTest('startup selects default index before background hydration rerenders ind
     assert.ok(hydratedRenderIndex >= 0, events.join(' > '));
     assert.ok(firstRealtimeIndex >= 0, events.join(' > '));
     assert.ok(selectIndex >= 0, events.join(' > '));
+    assert.ok(events.indexOf('startFullSync') < selectIndex, events.join(' > '));
     assert.ok(selectIndex < hydratedRenderIndex, events.join(' > '));
     assert.ok(selectIndex < firstRealtimeIndex, events.join(' > '));
+});
+
+runTest('refresh schedulers start only once', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    const result = JSON.parse(vm.runInContext(`
+        var schedulerCalls = { intervals: 0, timeouts: 0, visibility: 0, fullSync: 0 };
+        setInterval = function() { schedulerCalls.intervals++; return schedulerCalls.intervals; };
+        setTimeout = function() { schedulerCalls.timeouts++; return schedulerCalls.timeouts; };
+        document.addEventListener = function(type) {
+            if (type === 'visibilitychange') schedulerCalls.visibility++;
+        };
+        startSidebarFullSync = function() { schedulerCalls.fullSync++; };
+        startRefreshSchedulers();
+        startRefreshSchedulers();
+        JSON.stringify(schedulerCalls);
+    `, context));
+    assert.deepStrictEqual(result, { intervals: 2, timeouts: 1, visibility: 1, fullSync: 1 });
 });
 
 runTest('startup market hydration refreshes stale index caches even when row count is enough', async () => {

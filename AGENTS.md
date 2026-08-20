@@ -57,8 +57,8 @@
 | --- | --- | --- |
 | 每日一览展示 | `index.html`、`assets/css/dailyglance.css`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、`assets/js/06-settings.js`、策略查看器页面与样式 | `node scripts/check.js --files=...`，对应 `presentation-state` |
 | 正式策略配置 | `assets/js/00-strategy-config.js` | `node scripts/check.js --files=...`，对应 `strategy-decision`；真实改变参数时再补策略专项验证 |
-| 主应用交互 | `assets/js/05-app.js`、自选股/设置/刷新事件 | `node scripts/check.js --files=...`，对应 `chart-navigation`、`watchlist-lifecycle` |
-| 数据与缓存 | `assets/js/02-data.js`、`docs/data/` | `node scripts/check.js --files=...`，对应 `data-cache` |
+| 主应用交互 | `assets/js/05-app.js`、`assets/js/07-refresh-controller.js`、自选股/设置/刷新事件 | `node scripts/check.js --files=...`，对应 `chart-navigation`、`watchlist-lifecycle` |
+| 数据与缓存 | `assets/js/02-data.js`、`assets/js/02-observation-data.js`、`docs/data/` | `node scripts/check.js --files=...`，对应 `data-cache` |
 | 策略决策 | `assets/js/03-calculations.js`、`docs/strategy/`、策略脚本和策略用例 | `node scripts/check.js --group=strategy-decision`，必要时补专项验证 |
 | 仅文档或协作规则 | `AGENTS.md`、`README.md`、`CURRENT_STATUS.md`、`docs/` | `git diff --check` 和 Markdown 结构/链接检查 |
 | 跨层或正式发布 | 同时触及两类及以上，或明确要求发布 | 先跑各自定向检查；发布时再读 `STABILITY_CHECKLIST.md` 执行完整回归和 smoke |
