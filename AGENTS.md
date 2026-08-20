@@ -55,7 +55,7 @@
 
 | 改动范围 | 典型文件 | 最低检查 |
 | --- | --- | --- |
-| 每日一览展示 | `index.html`、`assets/css/dailyglance.css`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、策略查看器页面与样式 | `node scripts/check.js --files=...`，对应 `presentation-state` |
+| 每日一览展示 | `index.html`、`assets/css/dailyglance.css`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、`assets/js/06-settings.js`、策略查看器页面与样式 | `node scripts/check.js --files=...`，对应 `presentation-state` |
 | 正式策略配置 | `assets/js/00-strategy-config.js` | `node scripts/check.js --files=...`，对应 `strategy-decision`；真实改变参数时再补策略专项验证 |
 | 主应用交互 | `assets/js/05-app.js`、自选股/设置/刷新事件 | `node scripts/check.js --files=...`，对应 `chart-navigation`、`watchlist-lifecycle` |
 | 数据与缓存 | `assets/js/02-data.js`、`docs/data/` | `node scripts/check.js --files=...`，对应 `data-cache` |

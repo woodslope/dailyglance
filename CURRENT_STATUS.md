@@ -15,7 +15,7 @@
 
 当前 `HEAD`（`4a1cca4`）作为已提交对照基线；未提交修改按职责分为以下几层，后续任务只进入其中一层，跨层改动必须明确说明：
 
-- **界面调整**：`index.html`、`assets/css/`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、`strategy-inspector.html`、`assets/css/strategy-inspector.css`、`assets/js/strategy-inspector.js`。
+- **界面调整**：`index.html`、`assets/css/`、`assets/js/01-config-ui.js`、`assets/js/04-render.js`、`assets/js/06-settings.js`、`strategy-inspector.html`、`assets/css/strategy-inspector.css`、`assets/js/strategy-inspector.js`。
 - **正式策略配置**：`assets/js/00-strategy-config.js`。该文件独立承载正式策略、信号分数、统一仓位档位和策略版本；普通界面任务不再读取或修改它。
 - **生产数据与策略**：`assets/js/02-data.js`、`assets/js/03-calculations.js`、`docs/data/`、`docs/strategy/STRATEGY_DECISION_RULES.md`、`strategy-validation-policy.json`。
 - **策略研究与验证**：`scripts/strategy-*.js`、`tests/strategy-*.js`、`tests/regression/strategy-decision.cases.js`、`tests/strategy-baseline-snapshots.json`、`docs/history/strategy/`。

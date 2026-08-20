@@ -721,7 +721,7 @@ runTest('build version is bumped consistently', () => {
     assert.ok(!Object.prototype.hasOwnProperty.call(strategySnapshots, 'appBuild'), 'UI APP_BUILD must not invalidate strategy snapshots');
     assert.strictEqual(strategySnapshots.signalVersion, VERSION.signalVersion, 'strategy snapshots must remain tied to SIGNAL_VERSION');
     const versions = [...indexSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
-    assert.ok(versions.length >= 8, 'expected vendor, CSS, strategy config, and application script version parameters');
+    assert.ok(versions.length >= 9, 'expected vendor, CSS, strategy config, application, and settings script version parameters');
     assert.deepStrictEqual([...new Set(versions)], [VERSION.resourceVersion]);
     const inspectorVersions = [...strategyInspectorSource.matchAll(/[?&]v=(\d{8}-\d{2})/g)].map((match) => match[1]);
     assert.ok(inspectorVersions.length >= 3, 'strategy inspector must version its CSS, strategy config, and renderer');

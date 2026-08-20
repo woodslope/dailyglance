@@ -9,8 +9,10 @@ const VERSION = require(path.join(root, 'version.json'));
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 
 const stripInit = (source) => source.replace(/\n\/\/ 启动应用\ninit\(\);\s*$/, '');
-const appSource = read('assets/js/05-app.js');
-const appSourceNoInit = stripInit(appSource);
+const appLifecycleSource = read('assets/js/05-app.js');
+const settingsSource = read('assets/js/06-settings.js');
+const appSource = `${appLifecycleSource}\n${settingsSource}`;
+const appSourceNoInit = `${stripInit(appLifecycleSource)}\n${settingsSource}`;
 const dataSource = read('assets/js/02-data.js');
 const strategyConfigSource = read('assets/js/00-strategy-config.js');
 const uiConfigSource = read('assets/js/01-config-ui.js');
