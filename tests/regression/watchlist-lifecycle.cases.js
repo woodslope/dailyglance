@@ -5,6 +5,7 @@ runTest('empty watchlist exposes one guided workspace state and disables chart c
     vm.runInContext(appSourceNoInit, context);
     vm.runInContext(`
         var chartSection = { classList: { active: false, toggle(name, active) { this.active = active; } } };
+        var marketWorkspace = { classList: { active: false, toggle(name, active) { this.active = active; } } };
         var chartControls = [{ disabled: false }, { disabled: false }];
         var removedHints = 0;
         var sidebarHidden = false;
@@ -21,6 +22,7 @@ runTest('empty watchlist exposes one guided workspace state and disables chart c
             return [];
         };
         document.getElementById = function(id) {
+            if (id === 'marketWorkspace') return marketWorkspace;
             var el = originalGetElementById.call(document, id);
             if (id === 'stockSearchInput') {
                 el.focus = function() { inputFocused = true; };
@@ -35,8 +37,8 @@ runTest('empty watchlist exposes one guided workspace state and disables chart c
         focusWatchlistSearch();
         var emptyResult = {
             chartClass: chartSection.classList.active,
+            workspaceClass: marketWorkspace.classList.active,
             chartHidden: document.getElementById('watchlistEmptyState').hidden,
-            infoHidden: document.getElementById('watchlistInfoEmptyState').hidden,
             controlsDisabled: chartControls.every(control => control.disabled),
             removedHints,
             sidebarHidden,
@@ -49,8 +51,8 @@ runTest('empty watchlist exposes one guided workspace state and disables chart c
         setWatchlistEmptyState(false);
         var readyResult = {
             chartClass: chartSection.classList.active,
+            workspaceClass: marketWorkspace.classList.active,
             chartHidden: document.getElementById('watchlistEmptyState').hidden,
-            infoHidden: document.getElementById('watchlistInfoEmptyState').hidden,
             controlsEnabled: chartControls.every(control => !control.disabled),
             backtestDisplay: document.getElementById('btnBacktest').style.display
         };
@@ -59,8 +61,8 @@ runTest('empty watchlist exposes one guided workspace state and disables chart c
     const readyResult = JSON.parse(vm.runInContext('JSON.stringify(readyResult)', context));
     assert.deepStrictEqual(emptyResult, {
         chartClass: true,
+        workspaceClass: true,
         chartHidden: false,
-        infoHidden: false,
         controlsDisabled: true,
         removedHints: 2,
         sidebarHidden: true,
@@ -71,13 +73,14 @@ runTest('empty watchlist exposes one guided workspace state and disables chart c
     });
     assert.deepStrictEqual(readyResult, {
         chartClass: false,
+        workspaceClass: false,
         chartHidden: true,
-        infoHidden: true,
         controlsEnabled: true,
         backtestDisplay: 'flex'
     });
     assert.ok(indexSource.includes('id="watchlistEmptyState"'), 'center workspace needs a dedicated empty state');
-    assert.ok(indexSource.includes('id="watchlistInfoEmptyState"'), 'right panel needs a dedicated empty state');
+    assert.ok(!indexSource.includes('id="watchlistInfoEmptyState"'), 'right panel must not duplicate the center empty state');
+    assert.ok(cssSource.includes('.main-container.is-watchlist-empty .info-section { display: none; }'), 'right panel should yield its width to the empty workspace');
     assert.ok(!indexSource.includes('K 线图 — 暂无数据'), 'the page shell must not hard-code repeated chart empty copy');
     assert.ok(appSource.includes('renderLeftListHeader(`自选股池 · 0/${SYS_CONFIG.WATCHLIST_LIMIT}`, { showRefresh: false })'), 'empty watchlist header should show the configured limit and hide stale refresh time');
     assert.match(appSource, /function showEmptyWatchlistView\(\) \{[\s\S]*?setWatchlistEmptyState\(true\);[\s\S]*?hideLoading\(\);[\s\S]*?\}/, 'empty watchlist should dismiss a superseded loading overlay');
@@ -1447,7 +1450,7 @@ runTest('watchlist rerender keeps the search input node and active query intact'
     assert.strictEqual(result.containerWrites, 0, 'existing search shell should not be replaced during data refresh');
     assert.strictEqual(result.query, '600');
     assert.ok(result.headerHtml.includes('自选股池 · 0/'));
-    assert.ok(result.itemsHtml.includes('还没有自选股'));
+    assert.ok(result.itemsHtml.includes('watchlist-items-empty') && !result.itemsHtml.includes('还没有自选股'));
     assert.ok(cssSource.includes('.stock-search input:focus-visible { outline: none; }'), 'search focus should avoid the duplicate hard outline');
 });
 

@@ -745,16 +745,13 @@ runTest('production UI keeps offline strategy certification out of daily decisio
     assert.ok(!appSource.includes('健康等级'));
 });
 
-runTest('header and desktop sidebars keep fixed asymmetric columns', () => {
-    assert.ok(cssSource.includes('grid-template-columns: 260px minmax(0, 1fr) 350px;'), 'header grid should match the fixed 260px/350px sidebars');
-    assert.ok(cssSource.includes('.nav-section { width: 260px;'), 'left sidebar should stay fixed at 260px');
-    assert.ok(cssSource.includes('.info-section { width: 350px;'), 'right sidebar should stay fixed at 350px');
-    assert.ok(!cssSource.includes('grid-template-columns: 220px minmax(0, 1fr) 300px;') &&
-        !cssSource.includes('grid-template-columns: 200px minmax(0, 1fr) 280px;'), 'responsive rules should not resize the header columns');
-    assert.ok(!cssSource.includes('.nav-section { width: 220px;') &&
-        !cssSource.includes('.nav-section { width: 200px;') &&
-        !cssSource.includes('.info-section { width: 300px;') &&
-        !cssSource.includes('.info-section { width: 280px;'), 'responsive rules should not resize either sidebar');
+runTest('header and desktop sidebars share default and narrow-desktop column tokens', () => {
+    assert.ok(cssSource.includes('--nav-width: 260px;') && cssSource.includes('--info-width: 350px;'), 'default desktop columns should stay 260px/350px');
+    assert.ok(cssSource.includes('grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--info-width);'), 'header should consume the shared column tokens');
+    assert.ok(cssSource.includes('.nav-section { width: var(--nav-width);'), 'left sidebar should consume the shared column token');
+    assert.ok(cssSource.includes('.info-section { width: var(--info-width);'), 'right sidebar should consume the shared column token');
+    assert.ok(cssSource.includes('@media (min-width: 1024px) and (max-width: 1180px)') &&
+        cssSource.includes('--nav-width: 248px;') && cssSource.includes('--info-width: 338px;'), '1024px narrow desktop should use the governed compact columns');
 });
 
 runTest('project ownership and copyright metadata are visible', () => {

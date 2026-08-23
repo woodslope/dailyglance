@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260820-01"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260824-01"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260820-01">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260824-01">
 </head>
 <body>
 
@@ -26,8 +26,8 @@
         <div class="mobile-gate-icon">
             <img src="assets/icons/logo.svg" alt="" aria-hidden="true">
         </div>
-        <div class="mobile-gate-title">DailyGlance 更适合在电脑端使用</div>
-        <div class="mobile-gate-text">请在电脑或大屏设备上打开，以完整查看 K 线、信号依据和每日结论。</div>
+        <div class="mobile-gate-title">请使用电脑端打开 DailyGlance</div>
+        <div class="mobile-gate-text">完整终端需要至少 1024px 的可用宽度，以查看 K 线、信号依据和每日结论。</div>
         <div class="mobile-gate-brand">DailyGlance · LINPO LAB · © 2026</div>
     </div>
 </div>
@@ -56,14 +56,14 @@
         </div>
         <div class="sg-body">
             <div class="terminal-block no-bg">
-                <div class="block-title" style="border:none; padding-bottom:0; margin-bottom:8px;">每日使用</div>
-                <ul class="text-dim" style="margin:0 0 0 18px; font-size:13px; line-height:1.6; padding:0;">
-                    <li style="margin-bottom:8px;"><strong>先看状态：</strong> 判断大盘或个股处于什么阶段。</li>
-                    <li style="margin-bottom:8px;"><strong>再看动作：</strong> 关注右侧每日结论和参考仓位。</li>
-                    <li style="margin-bottom:8px;"><strong>最后看风险：</strong> 阅读结论下方的主要依据、风险和防守位。</li>
+                <div class="block-title help-title">每日使用</div>
+                <ul class="text-dim help-steps">
+                    <li><strong>先看状态：</strong> 判断大盘或个股处于什么阶段。</li>
+                    <li><strong>再看动作：</strong> 关注右侧每日结论和参考仓位。</li>
+                    <li><strong>最后看风险：</strong> 阅读结论下方的主要依据、风险和防守位。</li>
                     <li><strong>需要核对策略时：</strong> 打开独立策略页查看完整信号、门槛和限制规则。</li>
                 </ul>
-                <div style="margin-top:12px;"><a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener">查看完整策略说明 ↗</a></div>
+                <div class="help-link-row"><a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener">查看完整策略说明 ↗</a></div>
             </div>
             <div class="brand-attribution" aria-label="项目归属与版权">
                 <div class="brand-attribution-name">DailyGlance · LINPO LAB</div>
@@ -80,7 +80,7 @@
 
 <header class="header">
     <div class="header-left">
-        <a class="logo-box" href="#" aria-label="首页" title="首页" style="text-decoration:none;">
+        <a class="logo-box" href="#" aria-label="首页" title="首页">
             <img src="assets/icons/logo.svg" alt="DailyGlance" class="logo-img">
         </a>
         <div class="header-title-group">
@@ -89,15 +89,15 @@
         </div>
     </div>
     <div class="header-center" id="mainTabs">
-        <button class="nav-btn" data-tab="external">板块趋势</button>
-        <button class="nav-btn active" data-tab="index">大盘数据</button>
-        <button class="nav-btn" data-tab="stock">自选股池</button>
+        <button type="button" class="nav-btn" data-tab="external">板块趋势</button>
+        <button type="button" class="nav-btn active" data-tab="index" aria-current="page">大盘数据</button>
+        <button type="button" class="nav-btn" data-tab="stock">自选股池</button>
     </div>
     <div class="header-right">
         <div id="liveClock" class="live-clock mono text-dim">00:00:00</div>
         <span class="header-tool-divider" aria-hidden="true"></span>
         <div class="header-action-group" aria-label="全局工具">
-            <button id="btnSettings" onclick="closeHeaderMoreMenu();toggleSettings()" title="设置" aria-label="设置" class="icon-btn">
+            <button id="btnSettings" onclick="closeHeaderMoreMenu();toggleSettings()" title="策略设置" aria-label="策略设置" class="icon-btn">
                 <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M34.0003 41L44 24L34.0003 7H14.0002L4 24L14.0002 41H34.0003Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
                     <path d="M24 29C26.7614 29 29 26.7614 29 24C29 21.2386 26.7614 19 24 19C21.2386 19 19 21.2386 19 24C19 26.7614 21.2386 29 24 29Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
@@ -144,13 +144,13 @@
         <div class="chart-toolbar">
             <div class="toolbar-left">
                 <div class="segmented-control" id="periodTabs">
-                    <button class="seg-btn active" data-period="daily">日线</button>
-                    <button class="seg-btn" data-period="weekly">周线</button>
+                    <button type="button" class="seg-btn active" data-period="daily" aria-pressed="true">日线</button>
+                    <button type="button" class="seg-btn" data-period="weekly" aria-pressed="false">周线</button>
                 </div>
                 <div class="segmented-control" id="rangeTabs">
-                    <button class="seg-btn active" data-range="90">90天</button>
-                    <button class="seg-btn" data-range="180">180天</button>
-                    <button class="seg-btn" data-range="360">360天</button>
+                    <button type="button" class="seg-btn active" data-range="90" aria-pressed="true">90天</button>
+                    <button type="button" class="seg-btn" data-range="180" aria-pressed="false">180天</button>
+                    <button type="button" class="seg-btn" data-range="360" aria-pressed="false">360天</button>
                 </div>
                 <div class="ma-selector" id="indicatorGroup"></div>
             </div>
@@ -194,16 +194,12 @@
     
     <aside class="info-section">
         <div id="lastRefreshBar" class="refresh-bar" style="display:none;"><span class="text-dim mono refresh-time-text">图表及右侧刷新于 <span id="lastRefreshTime">--:--:--</span></span></div>
-        <div id="watchlistInfoEmptyState" class="info-empty" hidden>
-            <div class="info-empty-title">等待选择股票</div>
-            <div class="info-empty-copy">选择后显示今日状态、动作、仓位与风险</div>
-        </div>
         <div id="cardPrice" style="display: none;"></div>
         <div id="cardAnalysis" style="display: none;"></div>
     </aside>
 </main>
 
-<main id="externalWorkspace" class="external-workspace" hidden>
+<main id="externalWorkspace" class="external-workspace" data-ui-state="idle" hidden>
     <div class="external-shell">
         <div class="external-page-head">
             <div class="external-page-copy">
@@ -211,7 +207,7 @@
                 <h1>板块趋势</h1>
             </div>
             <div class="external-page-actions">
-                <div id="sectorTrendStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" data-tooltip="板块趋势尚未扫描">
+                <div id="sectorTrendStatus" class="data-status-pill data-status-info" role="status" aria-live="polite" tabindex="0" aria-label="等待扫描：进入页面后将扫描 A 股行业与概念板块" data-tooltip="进入页面后将扫描 A 股行业与概念板块">
                     <span class="data-status-dot"></span>
                     <span class="data-status-label">等待扫描</span>
                 </div>
@@ -245,7 +241,7 @@
             <div id="sectorTrendOverview" class="sector-summary-grid" aria-live="polite"></div>
         </section>
 
-        <section aria-labelledby="sectorLeadersTitle">
+        <section class="external-data-section" aria-labelledby="sectorLeadersTitle">
             <div class="external-section-head">
                 <div>
                     <div class="external-section-kicker">多周期同向</div>
@@ -256,7 +252,7 @@
             <div id="sectorTrendLeaders" class="sector-trend-grid" aria-live="polite"></div>
         </section>
 
-        <section aria-labelledby="sectorTurningTitle">
+        <section class="external-data-section" aria-labelledby="sectorTurningTitle">
             <div class="external-section-head">
                 <div>
                     <div class="external-section-kicker">趋势改善</div>
@@ -267,7 +263,7 @@
             <div id="sectorTrendTurning" class="sector-trend-grid sector-trend-grid-compact" aria-live="polite"></div>
         </section>
 
-        <section aria-labelledby="sectorMomentumTitle">
+        <section class="external-data-section" aria-labelledby="sectorMomentumTitle">
             <div class="external-section-head">
                 <div>
                     <div class="external-section-kicker">避免追高误判</div>
@@ -278,7 +274,7 @@
             <div id="sectorTrendMomentum" class="sector-trend-grid sector-trend-grid-compact" aria-live="polite"></div>
         </section>
 
-        <section aria-labelledby="sectorConceptTitle">
+        <section class="external-data-section" aria-labelledby="sectorConceptTitle">
             <div class="external-section-head">
                 <div>
                     <div class="external-section-kicker">今日辅助观察</div>
@@ -298,14 +294,14 @@
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/00-strategy-config.js?v=20260820-01"></script>
-<script src="assets/js/01-config-ui.js?v=20260820-01"></script>
-<script src="assets/js/02-data.js?v=20260820-01"></script>
-<script src="assets/js/02-observation-data.js?v=20260820-01"></script>
-<script src="assets/js/03-calculations.js?v=20260820-01"></script>
-<script src="assets/js/04-render.js?v=20260820-01"></script>
-<script src="assets/js/05-app.js?v=20260820-01"></script>
-<script src="assets/js/06-settings.js?v=20260820-01"></script>
-<script src="assets/js/07-refresh-controller.js?v=20260820-01"></script>
+<script src="assets/js/00-strategy-config.js?v=20260824-01"></script>
+<script src="assets/js/01-config-ui.js?v=20260824-01"></script>
+<script src="assets/js/02-data.js?v=20260824-01"></script>
+<script src="assets/js/02-observation-data.js?v=20260824-01"></script>
+<script src="assets/js/03-calculations.js?v=20260824-01"></script>
+<script src="assets/js/04-render.js?v=20260824-01"></script>
+<script src="assets/js/05-app.js?v=20260824-01"></script>
+<script src="assets/js/06-settings.js?v=20260824-01"></script>
+<script src="assets/js/07-refresh-controller.js?v=20260824-01"></script>
 </body>
 </html>

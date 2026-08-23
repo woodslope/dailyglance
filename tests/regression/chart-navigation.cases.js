@@ -1517,6 +1517,7 @@ runTest('empty chart placeholders do not intercept chart pointer interactions', 
         function makeCanvas(id) {
             var parent = {
                 style: {},
+                classList: { add() {} },
                 querySelector(sel) {
                     if (sel !== '.empty-hint') return null;
                     return placeholders[id] || null;
@@ -1530,13 +1531,12 @@ runTest('empty chart placeholders do not intercept chart pointer interactions', 
         document.getElementById = function(id) { return makeCanvas(id); };
         Chart = { getChart() { return null; } };
         clearCharts();
-        var placeholderStyles = Object.fromEntries(Object.entries(placeholders).map(([id, el]) => [id, el.style.cssText]));
+        var placeholderClasses = Object.fromEntries(Object.entries(placeholders).map(([id, el]) => [id, el.className]));
     `, context);
-    const styles = JSON.parse(vm.runInContext('JSON.stringify(placeholderStyles)', context));
-    assert.ok(Object.keys(styles).length >= 4);
-    for (const cssText of Object.values(styles)) {
-        assert.ok(cssText.includes('pointer-events:none'), cssText);
-    }
+    const classes = JSON.parse(vm.runInContext('JSON.stringify(placeholderClasses)', context));
+    assert.ok(Object.keys(classes).length >= 4);
+    assert.ok(Object.values(classes).every(className => className.includes('empty-hint')));
+    assert.ok(cssSource.includes('.empty-hint {') && cssSource.includes('pointer-events: none;'), 'shared placeholder CSS should never intercept pointer input');
 });
 
 runTest('failed chart placeholders are distinct from an unselected empty chart', () => {
@@ -1548,6 +1548,7 @@ runTest('failed chart placeholders are distinct from an unselected empty chart',
         function makeCanvas(id) {
             var parent = {
                 style: {},
+                classList: { add() {} },
                 querySelector() { return placeholders[id] || null; },
                 appendChild(el) { placeholders[id] = el; }
             };
@@ -1577,14 +1578,15 @@ runTest('chart area footer shows a subtle copyright and risk line with spacing',
 
 runTest('mobile viewport shows desktop-use gate instead of the trading terminal', () => {
     assert.ok(indexSource.includes('id="mobileGate"'), 'missing mobile gate markup');
-    assert.ok(indexSource.includes('DailyGlance 更适合在电脑端使用'), 'missing desktop-use copy');
-    assert.ok(indexSource.includes('请在电脑或大屏设备上打开'), 'missing mobile gate instruction');
+    assert.ok(indexSource.includes('请使用电脑端打开 DailyGlance'), 'missing desktop-use copy');
+    assert.ok(indexSource.includes('至少 1024px'), 'missing minimum desktop width instruction');
+    assert.ok(strategyInspectorSource.includes('id="mobileGate"') && strategyInspectorSource.includes('至少 1024px'), 'strategy inspector should share the desktop-use gate');
     assert.ok(indexSource.includes('class="mobile-gate-icon"'), 'missing visible icon holder');
 
     const cssSource = read('assets/css/dailyglance.css');
     assert.ok(cssSource.includes('#mobileGate'), 'missing mobile gate styles');
-    assert.ok(cssSource.includes('@media(max-width: 768px)'), 'missing mobile breakpoint');
-    assert.ok(/@media\(max-width:\s*768px\)\s*\{[\s\S]*\.header\s*\{[\s\S]*display:\s*none;[\s\S]*\.main-container\s*\{[\s\S]*display:\s*none;[\s\S]*#mobileGate\s*\{[\s\S]*display:\s*flex;/m.test(cssSource), 'mobile breakpoint must hide terminal and show gate');
+    assert.ok(cssSource.includes('@media(max-width: 1023px)'), 'missing governed minimum-width breakpoint');
+    assert.ok(/@media\(max-width:\s*1023px\)\s*\{[\s\S]*\.header\s*\{[\s\S]*display:\s*none;[\s\S]*\.main-container\s*\{[\s\S]*display:\s*none;[\s\S]*#mobileGate\s*\{[\s\S]*display:\s*flex;/m.test(cssSource), 'unsupported viewport must hide terminal and show gate');
     assert.ok(appSource.includes("getComputedStyle(gate).display === 'flex'"), 'mobile startup gate should reuse the rendered breakpoint state');
     assert.ok(appSource.includes("window.addEventListener('resize', handleResize)"), 'mobile gate should watch for a supported desktop viewport');
     assert.ok(appSource.includes("window.location.reload()"), 'desktop viewport recovery should restart the application from a clean lifecycle');

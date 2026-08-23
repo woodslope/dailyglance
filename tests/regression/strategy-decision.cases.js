@@ -326,7 +326,7 @@ runTest('strategy switch performance excludes confirmation wait time', async () 
 runTest('strategy tracking signal tag uses a subdued status style', () => {
     assert.ok(cssSource.includes('.signal-row .tag'), 'signal tag style should exist');
     assert.ok(!cssSource.includes('.signal-row .tag { flex-shrink: 0; background: var(--dark-bg);'), 'strategy tracking tag should not use a heavy black fill');
-    assert.ok(cssSource.includes('rgba(61, 109, 249, 0.08)'), 'strategy tracking tag should use a quiet tinted background');
+    assert.ok(cssSource.includes('rgba(55, 101, 237, 0.08)'), 'strategy tracking tag should use the governed action-blue tint');
 });
 
 runTest('switching strategies clears stale signal weight overrides', async () => {

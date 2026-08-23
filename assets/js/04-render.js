@@ -7,10 +7,9 @@ function clearCharts(reason = 'empty'){
     ['mainChart','volumeChart','macdChart','kdjChart'].forEach(id => { const c = Chart.getChart(id); if(c) c.destroy(); }); state.charts = {};
     ['mainChart','volumeChart','macdChart','kdjChart'].forEach(id => {
         const el = document.getElementById(id); if(!el) return; 
-        const p = el.parentElement; p.style.position = 'relative';
+        const p = el.parentElement; p.classList.add('chart-placeholder-host');
         let ph = p.querySelector('.empty-hint'); 
         if(!ph) { ph = document.createElement('div'); ph.className = 'empty-hint text-dim mono'; p.appendChild(ph); }
-        ph.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;letter-spacing:1px;z-index:5;pointer-events:none;';
         const statusText = reason === 'error' ? '加载失败' : '暂无数据';
         ph.innerText = {'mainChart': 'K 线图', 'volumeChart': '成交量', 'macdChart': 'MACD', 'kdjChart': 'KDJ'}[id] + ' — ' + statusText;
     });
@@ -526,7 +525,7 @@ function renderChartViewport(perfTrace) {
     const colorDim = getCssVar('--text-dim') || '#8b9eb7';
     const colorUpHex = getCssVar('--up-color') || '#f6465d';
     const colorDownHex = getCssVar('--down-color') || '#0ecb81';
-    const colorBlueHex = getCssVar('--blue') || '#3d6df9';
+    const colorBlueHex = getCssVar('--blue') || '#3765ed';
     
     const getLayout = () => ({ padding: { left: 8, right: 8, top: 10, bottom: 0 } });
     const getYScale = (isVol = false) => ({
@@ -805,7 +804,7 @@ function generateAnalysisHTML(idx, full, meta) {
 
         return `
             <div class="action-panel ${wkClass}">
-                <div class="block-title" style="border:none; padding-bottom:0; margin:0 0 8px 0; color:var(--text-dim);">宏观趋势过滤</div>
+                <div class="block-title weekly-filter-title">宏观趋势过滤</div>
                 <div class="action-line">
                     <div class="action-name ${wkTextClass}">${wk.direction}</div>
                 </div>
@@ -869,7 +868,7 @@ function generateAnalysisHTML(idx, full, meta) {
     else if (['轻仓建仓', '缓慢加仓', '轻仓持有'].includes(a)) { panelClass = 'panel-info'; } 
     else if (['积极建仓', '顺势加仓', '顺势抱单', '积极持有'].includes(a)) { panelClass = 'panel-bull'; }
 
-    const cooldownHtml = meta.inCooldown ? `<div style="position:absolute; top:0; right:0; background:var(--yellow); color:#000; font-size:9px; font-weight:800; padding:2px 8px; border-bottom-left-radius:6px; border-top-right-radius:7px;">防守冷静期</div>` : '';
+    const cooldownHtml = meta.inCooldown ? '<div class="cooldown-ribbon">防守冷静期</div>' : '';
     const titleHtml = getConclusionTitleHTML(isIndexMode);
     const evidenceTitle1 = isIndexMode ? '核心市场环境' : '核心建仓门禁';
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
@@ -890,9 +889,9 @@ function generateAnalysisHTML(idx, full, meta) {
     const actionPanelHtml = `
         <div class="action-panel ${panelClass}">
             ${cooldownHtml}
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div class="conclusion-heading-row">
                 <div class="conclusion-title-row">
-                    <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleHtml}</div>
+                    <div class="block-title conclusion-block-title">${titleHtml}</div>
                 </div>
                 <div class="kicker text-main conclusion-state-kicker">${escapeHTML(noviceSummary.state)}</div>
             </div>
@@ -1090,7 +1089,7 @@ function renderAnalysisPendingHTML(message = '信号正在同步，结论生成�
     return `
         <div class="action-panel panel-neutral analysis-pending-panel">
             <div class="conclusion-title-row">
-                <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleHtml}</div>
+                <div class="block-title conclusion-block-title">${titleHtml}</div>
             </div>
             <div class="action-line">
                 <div class="action-name text-dim">分析同步中</div>
@@ -1140,9 +1139,9 @@ function renderActiveSelectionStatus(status = 'loading') {
         </div>
     `;
     const analysisHtml = `
-        <div class="action-panel panel-neutral analysis-pending-panel">
+        <div class="action-panel ${isError ? 'panel-warning analysis-error-panel' : 'panel-neutral analysis-pending-panel'}" role="${isError ? 'alert' : 'status'}">
             <div class="conclusion-title-row">
-                <div class="block-title" style="border:none; padding-bottom:0; margin:0;">${titleHtml}</div>
+                <div class="block-title conclusion-block-title">${titleHtml}</div>
             </div>
             <div class="action-line">
                 <div class="action-name text-dim">${stateText}</div>
@@ -1152,6 +1151,7 @@ function renderActiveSelectionStatus(status = 'loading') {
                 </div>
             </div>
             <div class="action-sub">${detailText}</div>
+            ${isError ? '<button type="button" class="state-retry-action" onclick="handleUpdateData()">重新加载当前数据</button>' : ''}
         </div>
     `;
     applySidebarHTML({ priceHtml, analysisHtml, isHide: false }, `${state.mode}_${state.id}_selection_${status}`);
@@ -1392,7 +1392,7 @@ function generateSidebarBundle(item, prev, safeIdx, rd) {
         if (state.mode === 'stock' && state.stockId) return { visible: state.stockId, title: state.stockId };
         return null;
     })();
-    const headerMeta = `${item.date}${headerIdentity ? `<span class="text-dim" style="margin:0 8px;">|</span><span class="text-main" title="${escapeHTML(headerIdentity.title)}">${escapeHTML(headerIdentity.visible)}</span>` : ''}`;
+    const headerMeta = `${item.date}${headerIdentity ? `<span class="text-dim header-meta-separator">|</span><span class="text-main" title="${escapeHTML(headerIdentity.title)}">${escapeHTML(headerIdentity.visible)}</span>` : ''}`;
     
     const priceHtml = `
         <div class="terminal-block price-panel">
