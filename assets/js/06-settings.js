@@ -32,37 +32,15 @@ function renderSettings() {
     if (!panel) return;
 
     const strategyHtml = Object.entries(STRATEGIES).map(([name, config]) => `
-        <button class="${state.strategy === name ? 'active' : ''}" onclick="switchStrategy('${name}')" style="padding:10px;">
-            ${name}
-            <span class="sg-desc" style="margin-top:4px;">${config.desc}</span>
+        <button type="button" class="settings-strategy-option${state.strategy === name ? ' active' : ''}" aria-pressed="${state.strategy === name}" onclick="switchStrategy('${name}')">
+            <strong>${name}</strong>
+            <span class="sg-desc">${config.desc}</span>
         </button>
     `).join('');
 
-    const signalConfigHtml = SIGNAL_RULES.map(rule => {
-        const score = getSignalScore(rule.id);
-        const isBuy = rule.id.startsWith('B');
-        const isWarning = rule.id.startsWith('W');
-        const baseColorVar = isBuy ? '--red' : (isWarning ? '--yellow' : '--green');
-        const isUsed = STRATEGY.buySignals?.includes(rule.id) || STRATEGY.exitSignals?.includes(rule.id) || STRATEGY.warningSignals?.includes(rule.id);
-
-        const opacity = isUsed ? '1' : '0.4';
-        const idBg = isUsed ? 'rgba(255,255,255,0.08)' : 'transparent';
-        const idColor = isUsed ? `var(${baseColorVar})` : 'var(--text-dim)';
-        const textColor = isUsed ? 'var(--text-main)' : 'var(--text-dim)';
-        return `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:var(--inner-bg); border-radius:var(--radius-sm); border:1px solid var(--border-light); opacity:${opacity}; transition: opacity 0.2s;">
-                <div style="display:flex; align-items:center; gap:6px;">
-                    <span class="mono" style="font-size:10px; font-weight:700; background:${idBg}; padding:2px 4px; border-radius:3px; color:${idColor}; line-height:1;">${rule.id}</span>
-                    <span style="font-size:11px; color:${textColor};">${getUserSignalText(rule.id)}</span>
-                </div>
-                <span class="mono" style="font-size:11px; color:${textColor}; font-weight:700;">${score > 0 ? '+' + score : score}</span>
-            </div>
-        `;
-    }).join('');
-
     panel.innerHTML = `
         <div class="sg-header">
-            <h2 id="settingsDialogTitle">系统设置</h2>
+            <h2 id="settingsDialogTitle">策略设置</h2>
             <button type="button" class="sg-close" onclick="toggleSettings()" title="关闭设置" aria-label="关闭设置">×</button>
         </div>
         <div class="sg-body">
@@ -73,17 +51,10 @@ function renderSettings() {
                 </div>
                 <a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener" title="在独立页面查看当前策略">打开独立策略页 ↗</a>
             </div>
-            <div class="terminal-block" style="padding:12px 16px;">
-                <div class="block-title" style="margin-bottom:8px;">量化策略选择 (当前: ${state.strategy})</div>
-                <div class="sg-strategy" style="gap:8px;">${strategyHtml}</div>
-            </div>
-            <div class="terminal-block" style="padding:12px 16px;">
-                <div class="block-title" style="display:flex;justify-content:space-between; margin-bottom:8px;">
-                    <span>信号积分配置 (SOP 4.1.2)</span>
-                    <span class="text-dim" style="font-weight:400;">买入阈值: ${STRATEGY.buyThreshold}分</span>
-                </div>
-                <div class="signal-config-grid">${signalConfigHtml}</div>
-                <div class="risk-note" style="margin-top:8px;">注：灰色未点亮的信号表示当前策略未将该信号纳入核心驱动模型。积分配置由当前策略动态决定，不同策略对同一信号的赋分可能不同。</div>
+            <div class="terminal-block settings-strategy-block">
+                <div class="block-title settings-strategy-title"><span>量化策略选择</span><span class="settings-current-strategy">应用当前：${state.strategy}</span></div>
+                <div class="sg-strategy settings-strategy-grid">${strategyHtml}</div>
+                <div class="settings-boundary-note">切换会更新主应用使用的策略；完整信号、积分和风险限制请在独立策略页只读核对。</div>
             </div>
         </div>
     `;

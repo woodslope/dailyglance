@@ -122,54 +122,54 @@ async function runBacktest() {
         let tradeRows = [...trades].reverse().map(t => {
             const colorClass = t.posTo > t.posFrom ? 'text-bull' : 'text-bear';
             return `
-                <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px dashed var(--border-color); font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:11px;">
-                    <span class="text-dim" style="flex:1.35; text-align:left;">信号 ${t.signalDate.length > 5 ? t.signalDate.substring(5) : t.signalDate}</span>
-                    <span class="${colorClass}" style="font-weight:bold; width:50px; text-align:center; flex-shrink:0;">${t.action.substring(0, 4)}</span>
-                    <span class="text-main" style="flex:1; text-align:right;">执行 ${t.executionDate.length > 5 ? t.executionDate.substring(5) : t.executionDate}</span>
-                    <span class="text-dim" style="flex:1.2; text-align:right;">${t.posFrom}%➔${t.posTo}%</span>
+                <div class="backtest-trade-row mono">
+                    <span class="text-dim backtest-trade-signal">信号 ${t.signalDate.length > 5 ? t.signalDate.substring(5) : t.signalDate}</span>
+                    <span class="${colorClass} backtest-trade-action">${t.action.substring(0, 4)}</span>
+                    <span class="text-main backtest-trade-execution">执行 ${t.executionDate.length > 5 ? t.executionDate.substring(5) : t.executionDate}</span>
+                    <span class="text-dim backtest-trade-position">${t.posFrom}%➔${t.posTo}%</span>
                 </div>
             `;
         }).join('');
         
         const tradeListHtml = trades.length > 0 
-            ? `<div style="margin-top:16px; border:1px solid var(--border-color); border-radius:var(--radius-sm); max-height:180px; overflow-y:auto; padding:0 12px; text-align:left;">${tradeRows}</div>` 
-            : `<div style="margin-top:16px; padding:20px; font-size:12px; text-align:center; border:1px dashed var(--border-color); border-radius:var(--radius-sm);" class="text-dim">区间内无调仓动作</div>`;
+            ? `<div class="backtest-trade-list">${tradeRows}</div>`
+            : '<div class="text-dim backtest-trade-empty">区间内无调仓动作</div>';
 
         const reportHtml = `
-            <div class="mono text-main" style="font-size:15px;font-weight:800;margin-bottom:16px;letter-spacing:0.5px;text-align:center;">
+            <div class="mono text-main backtest-report-title">
                 历史回放: ${state.stockId}
             </div>
-            <div class="text-dim" style="font-size:12px;margin-bottom:20px;text-align:center;">
+            <div class="text-dim backtest-report-meta">
                 基于「${state.strategy}」${summary.startDate} 至 ${summary.endDate} 的 ${summary.sampleDays} 根日线；信号确认后延迟 ${summary.delayBars} 根日K执行，单边成本 ${(summary.costRate * 100).toFixed(2)}%
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;text-align:left;">
-                <div class="terminal-block" style="padding:14px;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">策略收益</div>
-                    <div class="mono ${ret >= 0 ? 'text-bull' : 'text-bear'}" style="font-size:20px;font-weight:800;">${ret > 0 ? '+' : ''}${ret}%</div>
+            <div class="backtest-metric-grid">
+                <div class="terminal-block backtest-metric-card">
+                    <div class="text-dim backtest-metric-label">策略收益</div>
+                    <div class="mono ${ret >= 0 ? 'text-bull' : 'text-bear'} backtest-metric-value">${ret > 0 ? '+' : ''}${ret}%</div>
                 </div>
-                <div class="terminal-block" style="padding:14px;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">买入持有收益</div>
-                    <div class="mono ${benchmarkRet >= 0 ? 'text-bull' : 'text-bear'}" style="font-size:20px;font-weight:800;">${benchmarkRet > 0 ? '+' : ''}${benchmarkRet}%</div>
+                <div class="terminal-block backtest-metric-card">
+                    <div class="text-dim backtest-metric-label">买入持有收益</div>
+                    <div class="mono ${benchmarkRet >= 0 ? 'text-bull' : 'text-bear'} backtest-metric-value">${benchmarkRet > 0 ? '+' : ''}${benchmarkRet}%</div>
                 </div>
-                <div class="terminal-block" style="padding:14px;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">超额收益</div>
-                    <div class="mono ${excessRet >= 0 ? 'text-bull' : 'text-bear'}" style="font-size:20px;font-weight:800;">${excessRet > 0 ? '+' : ''}${excessRet}%</div>
+                <div class="terminal-block backtest-metric-card">
+                    <div class="text-dim backtest-metric-label">超额收益</div>
+                    <div class="mono ${excessRet >= 0 ? 'text-bull' : 'text-bear'} backtest-metric-value">${excessRet > 0 ? '+' : ''}${excessRet}%</div>
                 </div>
-                <div class="terminal-block" style="padding:14px;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">最大回撤</div>
-                    <div class="mono text-main" style="font-size:20px;font-weight:800;">${md}%</div>
-                    <div class="text-dim" style="font-size:10px;margin-top:3px;">买入持有 ${benchmarkMaxDrawdown}%</div>
+                <div class="terminal-block backtest-metric-card">
+                    <div class="text-dim backtest-metric-label">最大回撤</div>
+                    <div class="mono text-main backtest-metric-value">${md}%</div>
+                    <div class="text-dim backtest-metric-note">买入持有 ${benchmarkMaxDrawdown}%</div>
                 </div>
-                <div class="terminal-block" style="padding:14px;grid-column:1/-1;">
-                    <div class="text-dim" style="font-size:11px;margin-bottom:6px;font-weight:600;">完整交易样本</div>
-                    <div style="display:flex;justify-content:space-between;align-items:end;">
-                        <div class="mono ${summary.winRateQualified ? 'text-info' : 'text-dim'}" style="font-size:24px;font-weight:800;">${summary.winRateQualified ? `${winRate}%` : '样本不足'}</div>
-                        <div class="text-dim" style="font-size:12px;font-weight:500;">${totalTrades} 次清仓结算，获利 ${winCount} 次；${summary.openPositionAtEnd ? '期末仍有未平仓仓位' : '期末无未平仓仓位'}</div>
+                <div class="terminal-block backtest-metric-card backtest-sample-card">
+                    <div class="text-dim backtest-metric-label">完整交易样本</div>
+                    <div class="backtest-sample-row">
+                        <div class="mono ${summary.winRateQualified ? 'text-info' : 'text-dim'} backtest-win-rate">${summary.winRateQualified ? `${winRate}%` : '样本不足'}</div>
+                        <div class="text-dim backtest-sample-note">${totalTrades} 次清仓结算，获利 ${winCount} 次；${summary.openPositionAtEnd ? '期末仍有未平仓仓位' : '期末无未平仓仓位'}</div>
                     </div>
                 </div>
             </div>
             ${tradeListHtml}
-            <div class="text-dim" style="margin-top:16px;font-size:10px;line-height:1.5;text-align:justify;">
+            <div class="text-dim backtest-boundary-note">
                 注：收益按实际仓位比例滚动计算，买入持有基准按同区间满仓持有并计入一次入场成本。未完整模拟涨跌停无法成交、盘中滑点、冲击成本和 T+1 约束。主图 B/S 是策略决策标记，不代表实际成交点；中途加减仓仅在交易记录中展示。
             </div>
         `;
@@ -896,15 +896,15 @@ function focusWatchlistSearch() {
 
 function setWatchlistEmptyState(isEmpty) {
     const active = !!isEmpty;
+    const marketWorkspace = document.getElementById('marketWorkspace');
     const chartSection = document.querySelector('.chart-section');
     const chartEmpty = document.getElementById('watchlistEmptyState');
-    const infoEmpty = document.getElementById('watchlistInfoEmptyState');
     const refreshBar = document.getElementById('lastRefreshBar');
     const backtestBtn = document.getElementById('btnBacktest');
 
+    if (marketWorkspace) marketWorkspace.classList.toggle('is-watchlist-empty', active);
     if (chartSection) chartSection.classList.toggle('watchlist-empty-mode', active);
     if (chartEmpty) chartEmpty.hidden = !active;
-    if (infoEmpty) infoEmpty.hidden = !active;
     document.querySelectorAll('.chart-toolbar button, .chart-toolbar input').forEach(control => {
         control.disabled = active;
     });
@@ -1113,7 +1113,7 @@ async function _selectIndexImpl(id) {
     setWatchlistEmptyState(false);
     resetViewportToLatest(null);
 
-    document.querySelectorAll('#mainTabs .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === 'index'));
+    syncPrimaryNavigationState('index');
     document.getElementById('indexNavList').style.display = 'flex';
     document.getElementById('stockNavList').style.display = 'none';
     document.getElementById('btnBacktest').style.display = 'none';
@@ -1163,7 +1163,7 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
     setWatchlistEmptyState(false);
     resetViewportToLatest(null);
 
-    document.querySelectorAll('#mainTabs .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === 'stock'));
+    syncPrimaryNavigationState('stock');
     document.getElementById('indexNavList').style.display = 'none';
     document.getElementById('stockNavList').style.display = 'flex';
     document.getElementById('btnBacktest').style.display = 'flex';
@@ -1183,26 +1183,14 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
         if (!(data && data.length >= 30 && isValidPrice(data[data.length - 1].close, targetSecid))) {
             setRawData(targetSecid, null);
             clearCharts('error');
-            const cPrice = document.getElementById('cardPrice');
-            const cAnalysis = document.getElementById('cardAnalysis');
-            if (cPrice) {
-                cPrice.style.display = 'flex';
-                cPrice.innerHTML = '<div class="stock-empty">该股票数据暂时加载失败，请稍后重试或更换标的。</div>';
-            }
-            if (cAnalysis) cAnalysis.style.display = 'none';
+            renderActiveSelectionStatus('unavailable');
         }
         PERF.mark(perfTrace, 'post-check', { points: data?.length || 0 });
     } catch(e) {
         if (selectionSeq !== globalSelectionSeq || state.id !== targetSecid || state.stockId !== safeCode) return;
         setRawData(targetSecid, null);
         clearCharts('error');
-        const cPrice = document.getElementById('cardPrice');
-        const cAnalysis = document.getElementById('cardAnalysis');
-        if (cPrice) {
-            cPrice.style.display = 'flex';
-            cPrice.innerHTML = '<div class="stock-empty">该股票数据暂时加载失败，请稍后重试或更换标的。</div>';
-        }
-        if (cAnalysis) cAnalysis.style.display = 'none';
+        renderActiveSelectionStatus('unavailable');
     } finally {
         if (selectionSeq === globalSelectionSeq) {
             hideLoading();
@@ -1365,7 +1353,7 @@ function renderWatchlist() {
     if(!state.watchlist.length) { 
         updateWatchlistShell(
             renderLeftListHeader(`自选股池 · 0/${SYS_CONFIG.WATCHLIST_LIMIT}`, { showRefresh: false }),
-            '<div class="stock-empty"><strong>还没有自选股</strong><br/>在上方搜索并添加</div>'
+            '<div class="watchlist-items-empty" aria-hidden="true"></div>'
         );
         return; 
     }
@@ -1707,7 +1695,7 @@ function renderPerfPanel() {
     const baselineHtml = `
         <div class="perf-section-note">交互手感：点击、切换、绘图等用户能直接感到的耗时。</div>
         <div class="perf-list">${renderBaselineList(baselineGroups.interaction, '暂无交互性能基线。')}</div>
-        <div class="perf-item-title" style="margin:12px 0 8px;">后台同步</div>
+        <div class="perf-item-title perf-subheading">后台同步</div>
         <div class="perf-section-note">后台同步：网络等待或刷新应用，不直接代表点击卡顿。</div>
         <div class="perf-list">${renderBaselineList(baselineGroups.background, '暂无后台同步性能基线。')}</div>
     `;
@@ -1752,13 +1740,13 @@ function renderPerfPanel() {
                 <button type="button" onclick="copyPerfSummary()">复制摘要</button>
                 <button type="button" onclick="clearPerfSummary()">清空记录</button>
             </div>
-            <div class="perf-item-title" style="margin:10px 0 8px;">性能基线</div>
+            <div class="perf-item-title perf-root-heading">性能基线</div>
             <div class="perf-list">${baselineHtml}</div>
-            <div class="perf-item-title" style="margin:14px 0 8px;">长任务</div>
+            <div class="perf-item-title perf-section-heading">长任务</div>
             <div class="perf-list">${longTaskHtml}</div>
-            <div class="perf-item-title" style="margin:14px 0 8px;">交互手感</div>
+            <div class="perf-item-title perf-section-heading">交互手感</div>
             <div class="perf-list">${interactionHtml}</div>
-            <div class="perf-item-title" style="margin:14px 0 8px;">后台同步</div>
+            <div class="perf-item-title perf-section-heading">后台同步</div>
             <div class="perf-section-note">网络等待或刷新应用，不直接代表点击卡顿。</div>
             <div class="perf-list">${backgroundHtml}</div>
         </div>
@@ -1888,6 +1876,25 @@ function renderExternalLeadStrip() {
 function renderSectorTrendOverview() {
     const container = document.getElementById('sectorTrendOverview');
     if (!container) return;
+    if (isSectorTrendUnavailable()) {
+        container.innerHTML = `
+            <div class="sector-workspace-state is-error" role="alert">
+                <div class="sector-workspace-state-kicker">行情连接异常</div>
+                <h3>板块行情暂不可用</h3>
+                <p>未取得可用于趋势统计的板块快照，因此不会把缺失数据显示为 0。</p>
+                <button type="button" class="state-retry-action" onclick="handleExternalRefresh()">重新扫描板块</button>
+            </div>`;
+        return;
+    }
+    if ((sectorTrendState.status === 'idle' || sectorTrendState.status === 'loading') && !hasSectorTrendSnapshot()) {
+        container.innerHTML = `
+            <div class="sector-workspace-state" role="status">
+                <div class="sector-workspace-state-kicker">正在准备行情</div>
+                <h3>${sectorTrendState.status === 'loading' ? '正在扫描板块趋势' : '等待首次扫描'}</h3>
+                <p>扫描完成后会显示上涨趋势、刚刚转强和单日异动。</p>
+            </div>`;
+        return;
+    }
     const summary = sectorTrendState.summary || {};
     const items = [
         { label: '上涨趋势', value: summary.uptrendCount || 0, note: '多周期同向且上涨家数扩散', tone: 'is-positive' },
@@ -1909,7 +1916,7 @@ function renderSectorTrendCandidates(board) {
     if (!candidates.length) return '<div class="sector-candidate-empty">暂无可用活跃个股</div>';
     return candidates.map(candidate => `
         <span class="sector-candidate-chip">
-            <span>${escapeHTML(candidate.name)}</span>
+            <span>${escapeHTML(normalizeStockDisplayName(candidate.code, candidate.name))}</span>
             <span class="mono">${escapeHTML(candidate.code)} · ${formatSectorTrendSigned(candidate.changePct, 2, '%')}</span>
         </span>
     `).join('');
@@ -1936,7 +1943,7 @@ function renderSectorConceptHighlights() {
                 <div><span>10日</span><strong class="mono ${getSectorTrendMetricClass(concept.return10)}">${formatSectorTrendSigned(concept.return10, 2, '%')}</strong></div>
                 <div>
                     <span>代表股</span>
-                    <span class="sector-concept-leader">${leader ? `<span class="sector-concept-leader-name">${escapeHTML(leader.name)}</span><span class="sector-concept-leader-code mono">${escapeHTML(leader.code)}</span>` : '--'}</span>
+                    <span class="sector-concept-leader">${leader ? `<span class="sector-concept-leader-name">${escapeHTML(normalizeStockDisplayName(leader.code, leader.name))}</span><span class="sector-concept-leader-code mono">${escapeHTML(leader.code)}</span>` : '--'}</span>
                 </div>
             </article>
         `;
@@ -2012,6 +2019,14 @@ function getSectorTrendWorkspaceStatus() {
     return { key: sectorTrendState.status || 'idle', error: sectorTrendState.error || '' };
 }
 
+function hasSectorTrendSnapshot() {
+    return !!((sectorTrendState.boards && sectorTrendState.boards.length) || (sectorTrendState.concepts && sectorTrendState.concepts.length));
+}
+
+function isSectorTrendUnavailable() {
+    return sectorTrendState.status === 'error' && !hasSectorTrendSnapshot();
+}
+
 function renderSectorTrendWorkspaceStatus() {
     const statusEl = document.getElementById('sectorTrendStatus');
     if (!statusEl) return;
@@ -2025,17 +2040,26 @@ function renderSectorTrendWorkspaceStatus() {
         error: { label: '暂不可用', tone: 'data-status-warn', tooltip: snapshotStatus.error || '板块行情暂不可用' }
     };
     const status = statusMap[snapshotStatus.key] || statusMap.idle;
-    if (statusEl.dataset.currentStatusKey === snapshotStatus.key) return;
     statusEl.dataset.currentStatusKey = snapshotStatus.key;
     statusEl.classList.remove('data-status-ok', 'data-status-info', 'data-status-warn');
     statusEl.classList.add(status.tone);
     statusEl.dataset.tooltip = status.tooltip;
+    statusEl.title = status.tooltip;
+    if (typeof statusEl.setAttribute === 'function') statusEl.setAttribute('aria-label', `${status.label}：${status.tooltip}`);
+    else statusEl.ariaLabel = `${status.label}：${status.tooltip}`;
     const label = statusEl.querySelector('.data-status-label');
     if (label) label.textContent = status.label;
 }
 
 function renderSectorTrendSnapshot() {
     loadSectorTrendCache();
+    const workspace = document.getElementById('externalWorkspace');
+    if (workspace) {
+        const uiState = isSectorTrendUnavailable()
+            ? 'error'
+            : (!hasSectorTrendSnapshot() && (sectorTrendState.status === 'idle' || sectorTrendState.status === 'loading') ? 'loading' : sectorTrendState.status || 'idle');
+        workspace.dataset.uiState = uiState;
+    }
     renderExternalLeadStrip();
     renderSectorTrendOverview();
     renderSectorConceptHighlights();
@@ -2049,7 +2073,9 @@ function renderSectorTrendSnapshot() {
         const timestamp = sectorTrendState.fetchedAt ? formatSectorTrendTime(sectorTrendState.fetchedAt, true) : '--';
         metaEl.textContent = sectorTrendState.boards.length
             ? `${prefix} ${timestamp} · ${sectorTrendState.source || '公开板块行情'} · 5/10/60日趋势`
-            : (sectorTrendState.status === 'loading' ? '正在扫描板块趋势' : '等待首次扫描');
+            : (sectorTrendState.status === 'loading'
+                ? '正在扫描板块趋势'
+                : (sectorTrendState.status === 'error' ? '扫描失败 · 暂无可用快照' : '等待首次扫描'));
         metaEl.title = sectorTrendState.error || metaEl.textContent;
     }
     updateExternalRefreshButton();
@@ -2057,13 +2083,22 @@ function renderSectorTrendSnapshot() {
 
 let externalReturnSelection = null;
 
+function syncPrimaryNavigationState(tab) {
+    document.querySelectorAll('#mainTabs .nav-btn').forEach(btn => {
+        const active = btn.dataset.tab === tab;
+        btn.classList.toggle('active', active);
+        if (active) btn.setAttribute('aria-current', 'page');
+        else btn.removeAttribute('aria-current');
+    });
+}
+
 function setPrimaryWorkspace(tab) {
     const marketWorkspace = document.getElementById('marketWorkspace');
     const externalWorkspace = document.getElementById('externalWorkspace');
     const isExternal = tab === 'external';
     if (marketWorkspace) marketWorkspace.hidden = isExternal;
     if (externalWorkspace) externalWorkspace.hidden = !isExternal;
-    document.querySelectorAll('#mainTabs .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
+    syncPrimaryNavigationState(tab);
     if (!isExternal) {
         requestAnimationFrame(() => {
             ['main', 'vol', 'macd', 'kdj'].forEach(key => state.charts[key]?.resize?.());
@@ -2201,8 +2236,11 @@ async function init() {
             const p = e.target.dataset.period; 
             if(p === state.period) return;
             
-            document.querySelectorAll('#periodTabs .seg-btn').forEach(b => b.classList.remove('active')); 
-            e.target.classList.add('active');
+            document.querySelectorAll('#periodTabs .seg-btn').forEach(b => {
+                const active = b === e.target;
+                b.classList.toggle('active', active);
+                b.setAttribute('aria-pressed', String(active));
+            });
             const prevPeriod = state.period;
             const prevData = getActiveData();
             const prevLock = getPeriodLock(prevPeriod);
@@ -2224,8 +2262,11 @@ async function init() {
             const r = parseInt(e.target.dataset.range); 
             if(r === state.range) return;
             
-            document.querySelectorAll('#rangeTabs .seg-btn').forEach(b => b.classList.remove('active')); 
-            e.target.classList.add('active');
+            document.querySelectorAll('#rangeTabs .seg-btn').forEach(b => {
+                const active = b === e.target;
+                b.classList.toggle('active', active);
+                b.setAttribute('aria-pressed', String(active));
+            });
             state.range = r; 
             redrawCurrentViewport();
         });
@@ -2237,7 +2278,9 @@ async function init() {
 
     // 同步 range 按钮 active 状态到当前 state.range
     document.querySelectorAll('#rangeTabs .seg-btn').forEach(btn => {
-        btn.classList.toggle('active', parseInt(btn.dataset.range) === state.range);
+        const active = parseInt(btn.dataset.range) === state.range;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', String(active));
     });
 
     startRefreshSchedulers();
