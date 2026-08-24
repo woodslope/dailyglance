@@ -3,9 +3,31 @@
 // [4] 渲染与 UI 层 (Render & UI)
 // ==========================================
 
+const CHART_CANVAS_IDS = ['mainChart', 'volumeChart', 'macdChart', 'kdjChart'];
+const SECONDARY_CHART_TARGETS = [
+    ['vol', 'volumeChart'],
+    ['macd', 'macdChart'],
+    ['kdj', 'kdjChart']
+];
+
+function shouldRenderCompactMainChartOnly() {
+    return typeof isCompactMobileLayout === 'function' && isCompactMobileLayout();
+}
+
+function clearSecondaryChartInstances() {
+    SECONDARY_CHART_TARGETS.forEach(([key, id]) => {
+        const chart = Chart.getChart(id);
+        if (chart) chart.destroy();
+        delete state.charts[key];
+    });
+}
+
 function clearCharts(reason = 'empty'){
-    ['mainChart','volumeChart','macdChart','kdjChart'].forEach(id => { const c = Chart.getChart(id); if(c) c.destroy(); }); state.charts = {};
-    ['mainChart','volumeChart','macdChart','kdjChart'].forEach(id => {
+    CHART_CANVAS_IDS.forEach(id => { const c = Chart.getChart(id); if(c) c.destroy(); });
+    state.charts = {};
+    document.querySelectorAll('.empty-hint').forEach(el => el.remove());
+    const placeholderIds = shouldRenderCompactMainChartOnly() ? ['mainChart'] : CHART_CANVAS_IDS;
+    placeholderIds.forEach(id => {
         const el = document.getElementById(id); if(!el) return; 
         const p = el.parentElement; p.classList.add('chart-placeholder-host');
         let ph = p.querySelector('.empty-hint'); 
@@ -603,6 +625,14 @@ function renderChartViewport(perfTrace) {
         mainOpts.scales.y.max = priceMax + pricePad;
     }
     uc('main', 'mainChart', { type: 'line', data: { labels, datasets: ds }, options: mainOpts, plugins: [localAlignPlugin, bsMarkerPlugin, freezePlugin] });
+
+    if (shouldRenderCompactMainChartOnly()) {
+        clearSecondaryChartInstances();
+        PERF.end(perfTrace, { points: slice.length, charts: 'main-only' });
+        updateFreezeBadge();
+        updateCrosshairOverlay();
+        return;
+    }
     
     const volOpts = getBaseOptions();
     volOpts.plugins = { legend: { display: false }, tooltip: { enabled: false } };

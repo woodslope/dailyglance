@@ -1774,7 +1774,8 @@ async function ensureMarketTemperatureData() {
             }
         } catch(e) {}
     }
-    if (state.mode === 'index' || state.mode === 'stock') {
+    const activeData = getActiveData();
+    if ((state.mode === 'index' || state.mode === 'stock') && activeData && activeData.length) {
         updateAllIndicators();
         safeUpdateSidebar();
     }
