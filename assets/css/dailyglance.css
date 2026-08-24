@@ -730,9 +730,9 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         top: 0;
         z-index: 90;
         height: auto;
-        min-height: 92px;
+        min-height: 100px;
         grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-rows: 48px 44px;
+        grid-template-rows: 56px 44px;
         align-items: center;
         padding: env(safe-area-inset-top) 0 0;
         background: rgba(21, 25, 36, 0.98);
@@ -782,7 +782,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         flex-direction: column;
         width: 100%;
         height: auto;
-        min-height: calc(100dvh - 92px - env(safe-area-inset-top));
+        min-height: calc(100dvh - 100px - env(safe-area-inset-top));
         overflow: visible;
         background: var(--dark-bg);
     }
@@ -959,7 +959,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .toolbar-left { flex: 1 1 auto; }
     .dailyglance-app .toolbar-right { margin-left: auto; }
     .dailyglance-app #updateDataBtn { width: 44px; height: 44px; }
-    .dailyglance-app #updateDataBtn .icon { width: 20px; height: 20px; }
+    .dailyglance-app #updateDataBtn .icon { width: 18px; height: 18px; }
     .dailyglance-app .integrated-container {
         width: 100%;
         height: clamp(300px, 52dvh, 420px);
