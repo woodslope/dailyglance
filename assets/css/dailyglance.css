@@ -816,6 +816,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         overflow-x: auto;
         overflow-y: hidden;
         scroll-snap-type: x proximity;
+        scroll-padding-inline: var(--space-3);
         scrollbar-width: none;
         -webkit-overflow-scrolling: touch;
     }
