@@ -393,26 +393,37 @@ function startChartDragPan(event) {
     cancelPendingChartHoverSelection();
     chartDragPan = {
         startX: event.clientX,
+        startY: event.clientY,
         currentX: event.clientX,
         lastAppliedX: event.clientX,
         barWidth,
         didMove: false,
         didPan: false,
-        target: event.currentTarget || null
+        target: event.currentTarget || null,
+        pointerId: event.pointerId,
+        pointerCaptured: false
     };
-    if (chartDragPan.target?.setPointerCapture && event.pointerId != null) {
-        chartDragPan.target.setPointerCapture(event.pointerId);
-    }
-    getChartDragMainBox(chartDragPan.target)?.classList?.add('drag-panning');
-    event?.preventDefault?.();
 }
 
 function moveChartDragPan(event) {
     if (!chartDragPan) return;
     chartDragPan.currentX = event.clientX;
-    if (Math.abs(chartDragPan.currentX - chartDragPan.startX) >= Math.max(3, chartDragPan.barWidth / 3)) {
-        chartDragPan.didMove = true;
+    const deltaX = chartDragPan.currentX - chartDragPan.startX;
+    const deltaY = event.clientY - chartDragPan.startY;
+    const threshold = Math.max(8, chartDragPan.barWidth / 3);
+    if (!chartDragPan.pointerCaptured && Math.abs(deltaY) >= 8 && Math.abs(deltaY) > Math.abs(deltaX)) {
+        chartDragPan = null;
+        return;
     }
+    if (!chartDragPan.pointerCaptured && Math.abs(deltaX) >= threshold) {
+        chartDragPan.didMove = true;
+        chartDragPan.pointerCaptured = true;
+        if (chartDragPan.target?.setPointerCapture && chartDragPan.pointerId != null) {
+            chartDragPan.target.setPointerCapture(chartDragPan.pointerId);
+        }
+        getChartDragMainBox(chartDragPan.target)?.classList?.add('drag-panning');
+    }
+    if (!chartDragPan.pointerCaptured) return;
     if (!chartDragPanRAF) chartDragPanRAF = requestAnimationFrame(() => applyChartDragPan(false));
     event?.preventDefault?.();
 }
@@ -421,7 +432,7 @@ function finishChartDragPan(event) {
     if (!chartDragPan) return;
     const target = chartDragPan.target || event?.currentTarget;
     applyChartDragPan(true);
-    if (target?.releasePointerCapture && event?.pointerId != null) {
+    if (chartDragPan.pointerCaptured && target?.releasePointerCapture && event?.pointerId != null) {
         try { target.releasePointerCapture(event.pointerId); } catch(e) {}
     }
     getChartDragMainBox(target)?.classList?.remove('drag-panning');
