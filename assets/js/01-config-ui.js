@@ -29,9 +29,16 @@ const SYS_CONFIG = {
 };
 
 const PAGE_SESSION_ID = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+const COMPACT_MOBILE_MEDIA_QUERY = '(max-width: 1023px)';
 let marketRefreshLeadershipStarted = false;
 let marketRefreshHeartbeatTimer = 0;
 let marketRefreshLeader = false;
+
+function isCompactMobileLayout() {
+    return typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function'
+        && window.matchMedia(COMPACT_MOBILE_MEDIA_QUERY).matches;
+}
 
 function readMarketRefreshLease() {
     try {

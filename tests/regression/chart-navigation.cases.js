@@ -1576,21 +1576,25 @@ runTest('chart area footer shows a subtle copyright and risk line with spacing',
     assert.ok(cssSource.includes('white-space: nowrap'), 'chart footer should remain one line');
 });
 
-runTest('mobile viewport shows desktop-use gate instead of the trading terminal', () => {
-    assert.ok(indexSource.includes('id="mobileGate"'), 'missing mobile gate markup');
-    assert.ok(indexSource.includes('请使用电脑端打开 DailyGlance'), 'missing desktop-use copy');
-    assert.ok(indexSource.includes('至少 1024px'), 'missing minimum desktop width instruction');
-    assert.ok(strategyInspectorSource.includes('id="mobileGate"') && strategyInspectorSource.includes('至少 1024px'), 'strategy inspector should share the desktop-use gate');
-    assert.ok(indexSource.includes('class="mobile-gate-icon"'), 'missing visible icon holder');
+runTest('mobile viewport initializes the compact main app while strategy inspection stays desktop-only', () => {
+    assert.ok(indexSource.includes('<body class="dailyglance-app">'), 'main app should expose a scoped responsive root');
+    assert.ok(!indexSource.includes('id="mobileGate"'), 'main app must not keep the old mobile startup gate');
+    assert.ok(indexSource.includes('class="mobile-chart-meta"'), 'mobile main-chart context label is missing');
+    assert.ok(strategyInspectorSource.includes('id="mobileGate"') && strategyInspectorSource.includes('至少 1024px'), 'strategy inspector should retain the desktop-use gate');
 
     const cssSource = read('assets/css/dailyglance.css');
-    assert.ok(cssSource.includes('#mobileGate'), 'missing mobile gate styles');
-    assert.ok(cssSource.includes('@media(max-width: 1023px)'), 'missing governed minimum-width breakpoint');
-    assert.ok(/@media\(max-width:\s*1023px\)\s*\{[\s\S]*\.header\s*\{[\s\S]*display:\s*none;[\s\S]*\.main-container\s*\{[\s\S]*display:\s*none;[\s\S]*#mobileGate\s*\{[\s\S]*display:\s*flex;/m.test(cssSource), 'unsupported viewport must hide terminal and show gate');
-    assert.ok(appSource.includes("getComputedStyle(gate).display === 'flex'"), 'mobile startup gate should reuse the rendered breakpoint state');
-    assert.ok(appSource.includes("window.addEventListener('resize', handleResize)"), 'mobile gate should watch for a supported desktop viewport');
-    assert.ok(appSource.includes("window.location.reload()"), 'desktop viewport recovery should restart the application from a clean lifecycle');
-    assert.ok(/async function init\(\)\s*\{\s*if \(shouldUseMobileGate\(\)\)\s*\{\s*reloadWhenDesktopViewportReturns\(\);\s*return;\s*\}\s*const startupPerf/.test(appSource), 'mobile gate must stop startup before loading, storage, timers, and market requests');
+    assert.ok(cssSource.includes('@media(max-width: 1023px)'), 'missing governed compact breakpoint');
+    assert.ok(cssSource.includes('.dailyglance-app .main-container') && cssSource.includes('flex-direction: column;'), 'compact main app should use a single-column workspace');
+    assert.ok(cssSource.includes('.dailyglance-app .header-center .nav-btn[data-tab="external"] { display: none; }'), 'compact navigation should hide sector trends');
+    assert.ok(cssSource.includes('.dailyglance-app .volume-chart-box') && cssSource.includes('display: none !important;'), 'compact layout should hide secondary charts');
+    assert.ok(cssSource.includes('.strategy-inspector-shell { display: none !important; }') && cssSource.includes('#mobileGate'), 'strategy inspector gate styles should remain available');
+
+    assert.ok(configSource.includes("const COMPACT_MOBILE_MEDIA_QUERY = '(max-width: 1023px)'"), 'compact layout should have one shared media query');
+    assert.ok(configSource.includes('function isCompactMobileLayout()'), 'compact layout helper is missing');
+    assert.ok(appSource.includes('applyCompactMobileDefaults()') && appSource.includes("applyPeriodState('daily')") && appSource.includes('state.range = 90'), 'mobile initialization should select the governed daily 90-day view');
+    assert.ok(appSource.includes('bindResponsiveLayoutReload()') && appSource.includes("media.addEventListener('change', handleChange)"), 'crossing the desktop breakpoint should restart the layout lifecycle');
+    assert.ok(!appSource.includes('shouldUseMobileGate'), 'main app initialization must not return through the old gate');
+    assert.ok(renderSource.includes('shouldRenderCompactMainChartOnly()') && renderSource.includes("charts: 'main-only'"), 'compact rendering should create only the main chart');
 });
 
 runTest('main chart B/S marks only first open and full close transitions', () => {

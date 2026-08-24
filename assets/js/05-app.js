@@ -1246,6 +1246,21 @@ function markLeftListRefreshForActiveTab(txn = null, patch = {}) {
     }
 }
 
+let mobileNavAutoScrollKey = '';
+
+function scrollActiveMobileNavItemIntoView(container) {
+    if (!isCompactMobileLayout() || !container || typeof requestAnimationFrame !== 'function') return;
+    const nextKey = `${state.mode || state.tab}:${state.id || state.stockId || ''}`;
+    if (!nextKey || nextKey === mobileNavAutoScrollKey) return;
+    mobileNavAutoScrollKey = nextKey;
+    requestAnimationFrame(() => {
+        const activeItem = container.querySelector('.nav-list-item.active');
+        if (activeItem && typeof activeItem.scrollIntoView === 'function') {
+            activeItem.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+        }
+    });
+}
+
 function renderActiveLeftListAfterDataApply(txn = null, patch = {}) {
     const refreshTxn = txn && typeof txn === 'object' ? txn : beginRefreshTransaction('leftList', { source: 'active-data' });
     if (state.mode === 'index') {
@@ -1301,6 +1316,7 @@ function renderIndexList() {
     } else {
         updateLeftMarketContext(getBJDate().toISOString().split('T')[0]);
     }
+    scrollActiveMobileNavItemIntoView(container);
 }
 
 function getLeftQuoteDisplay(id) {
@@ -1416,6 +1432,7 @@ function renderWatchlist() {
         renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`),
         `<div>${lHtml}</div>`
     );
+    scrollActiveMobileNavItemIntoView(container);
 }
 
 function refreshWatchlistQuotes() {
@@ -2107,6 +2124,7 @@ function setPrimaryWorkspace(tab) {
 }
 
 function openExternalWorkspace() {
+    if (isCompactMobileLayout()) return;
     if (state.tab === 'index' || state.tab === 'stock') {
         externalReturnSelection = { tab: state.tab, mode: state.mode, id: state.id, stockId: state.stockId };
     }
@@ -2125,6 +2143,7 @@ function openExternalWorkspace() {
 
 function openMarketWorkspace(tab) {
     const returnSelection = externalReturnSelection;
+    if (isCompactMobileLayout() && tab !== state.tab) mobileNavAutoScrollKey = '';
     state.tab = tab;
     setPrimaryWorkspace(tab);
     if (tab === 'index') {
@@ -2172,27 +2191,31 @@ async function handleExternalRefresh() {
     return result;
 }
 
-function shouldUseMobileGate() {
-    const gate = document.getElementById('mobileGate');
-    return !!gate && getComputedStyle(gate).display === 'flex';
+function applyCompactMobileDefaults() {
+    if (!isCompactMobileLayout()) return false;
+    applyPeriodState('daily');
+    state.range = 90;
+    state.activeMAs = [5, 20, 60];
+    return true;
 }
 
-function reloadWhenDesktopViewportReturns() {
-    const handleResize = () => {
-        if (shouldUseMobileGate()) return;
-        window.removeEventListener('resize', handleResize);
+function bindResponsiveLayoutReload() {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(COMPACT_MOBILE_MEDIA_QUERY);
+    const initialCompact = media.matches;
+    const handleChange = event => {
+        if (Boolean(event.matches) === initialCompact) return;
         window.location.reload();
     };
-    window.addEventListener('resize', handleResize);
+    if (typeof media.addEventListener === 'function') media.addEventListener('change', handleChange);
+    else if (typeof media.addListener === 'function') media.addListener(handleChange);
 }
 
 async function init() {
-    if (shouldUseMobileGate()) {
-        reloadWhenDesktopViewportReturns();
-        return;
-    }
-
-    const startupPerf = PERF.start('startup', { path: 'initial-load' });
+    bindResponsiveLayoutReload();
+    const compactMobile = applyCompactMobileDefaults();
+    const startupPath = compactMobile ? 'initial-mobile-load' : 'initial-load';
+    const startupPerf = PERF.start('startup', { path: startupPath });
     initMarketRefreshLeadership();
     showLoading(); 
     await openDB(); 
@@ -2287,7 +2310,7 @@ async function init() {
 
     await _selectIndexImpl('sh');  // init 直接调用 impl，跳过防抖
     PERF.mark(startupPerf, 'initial-selection');
-    PERF.end(startupPerf, { path: 'initial-index-ready' });
+    PERF.end(startupPerf, { path: compactMobile ? 'initial-mobile-index-ready' : 'initial-index-ready' });
 
     scheduleStartupBackgroundHydration();
 }

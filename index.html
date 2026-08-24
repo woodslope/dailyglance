@@ -15,22 +15,11 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20260824-01"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20260824-02"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260824-01">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20260824-02">
 </head>
-<body>
-
-<div id="mobileGate" aria-label="电脑端使用提示">
-    <div class="mobile-gate-card">
-        <div class="mobile-gate-icon">
-            <img src="assets/icons/logo.svg" alt="" aria-hidden="true">
-        </div>
-        <div class="mobile-gate-title">请使用电脑端打开 DailyGlance</div>
-        <div class="mobile-gate-text">完整终端需要至少 1024px 的可用宽度，以查看 K 线、信号依据和每日结论。</div>
-        <div class="mobile-gate-brand">DailyGlance · LINPO LAB · © 2026</div>
-    </div>
-</div>
+<body class="dailyglance-app">
 
 <div id="loading">系统同步中...</div>
 
@@ -143,6 +132,7 @@
     <section class="chart-section">
         <div class="chart-toolbar">
             <div class="toolbar-left">
+                <div class="mobile-chart-meta" aria-label="手机端图表范围：近90日日K线">近90日 · 日K</div>
                 <div class="segmented-control" id="periodTabs">
                     <button type="button" class="seg-btn active" data-period="daily" aria-pressed="true">日线</button>
                     <button type="button" class="seg-btn" data-period="weekly" aria-pressed="false">周线</button>
@@ -162,7 +152,7 @@
                     </svg>
                     <span>回测</span>
                 </button>
-                <button id="updateDataBtn" onclick="handleUpdateData()" title="强制更新数据" class="icon-btn">
+                <button id="updateDataBtn" onclick="handleUpdateData()" title="强制更新数据" aria-label="更新当前数据" class="icon-btn">
                     <svg class="icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M44 31C44 36.5228 39.5228 41 34 41C32.2091 41 30.5281 40.5292 29.0741 39.7046C26.5143 38.2529 24.6579 35.7046 24.1436 32.6983C24.0492 32.1463 24 31.5789 24 31C24 28.4323 24.9678 26.0906 26.5585 24.3198C28.3892 22.2818 31.0449 21 34 21C39.5228 21 44 25.4772 44 31Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
                         <path d="M34 12V20V21C31.0449 21 28.3892 22.2818 26.5585 24.3198C24.9678 26.0906 24 28.4323 24 31C24 31.5789 24.0492 32.1463 24.1436 32.6983C24.6579 35.7046 26.5143 38.2529 29.0741 39.7046C26.4116 40.5096 22.8776 41 19 41C10.7157 41 4 38.7614 4 36V28V20V12" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
@@ -294,14 +284,14 @@
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/00-strategy-config.js?v=20260824-01"></script>
-<script src="assets/js/01-config-ui.js?v=20260824-01"></script>
-<script src="assets/js/02-data.js?v=20260824-01"></script>
-<script src="assets/js/02-observation-data.js?v=20260824-01"></script>
-<script src="assets/js/03-calculations.js?v=20260824-01"></script>
-<script src="assets/js/04-render.js?v=20260824-01"></script>
-<script src="assets/js/05-app.js?v=20260824-01"></script>
-<script src="assets/js/06-settings.js?v=20260824-01"></script>
-<script src="assets/js/07-refresh-controller.js?v=20260824-01"></script>
+<script src="assets/js/00-strategy-config.js?v=20260824-02"></script>
+<script src="assets/js/01-config-ui.js?v=20260824-02"></script>
+<script src="assets/js/02-data.js?v=20260824-02"></script>
+<script src="assets/js/02-observation-data.js?v=20260824-02"></script>
+<script src="assets/js/03-calculations.js?v=20260824-02"></script>
+<script src="assets/js/04-render.js?v=20260824-02"></script>
+<script src="assets/js/05-app.js?v=20260824-02"></script>
+<script src="assets/js/06-settings.js?v=20260824-02"></script>
+<script src="assets/js/07-refresh-controller.js?v=20260824-02"></script>
 </body>
 </html>

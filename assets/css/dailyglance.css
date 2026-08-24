@@ -398,6 +398,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 .stock-empty { padding: var(--space-6) var(--space-4); text-align: center; color: var(--text-dim); font-size: var(--text-base); line-height: 1.6; background: var(--inner-bg); border-radius: var(--radius-sm); border: 1px dashed var(--border-color); margin-top: var(--space-2); }
 
 .chart-toolbar { --toolbar-control-height: 34px; display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: var(--space-3); flex-shrink: 0; gap: var(--space-3); flex-wrap: wrap; }
+.mobile-chart-meta { display: none; }
 .toolbar-left { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; flex: 1; }
 .toolbar-right { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; margin-left: auto; }
 .chart-toolbar .segmented-control,
@@ -673,17 +674,19 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .sector-concept-row > div:last-child { grid-column: auto; flex-direction: column !important; gap: 2px !important; align-items: stretch; }
 }
 @media(max-width: 1023px) {
-    html, body { min-height: 100%; overflow: hidden; }
-    .header { display: none; }
-    .main-container { display: none; }
-    .external-workspace { display: none; }
+    html { min-height: 100%; overflow-x: hidden; }
+    body.dailyglance-app {
+        min-height: 100%;
+        height: auto;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior-x: none;
+        overscroll-behavior-y: auto;
+        background: var(--dark-bg);
+    }
+
+    /* 独立策略页仍保持电脑端边界；首页不再渲染 mobileGate。 */
     .strategy-inspector-shell { display: none !important; }
-    #loading,
-    #settingsOverlay,
-    #helpOverlay,
-    #perfOverlay,
-    #customModal,
-    #toastContainer { display: none !important; }
     #mobileGate {
         min-height: 100vh;
         min-height: 100dvh;
@@ -715,6 +718,265 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .mobile-gate-title { font-size: var(--text-4xl); font-weight: 800; color: var(--text-main); line-height: 1.35; }
     .mobile-gate-text { font-size: var(--text-lg); line-height: 1.7; color: var(--text-dim); }
     .mobile-gate-brand { color: var(--text-dim); font-size: var(--text-sm); font-weight: 700; letter-spacing: 0.3px; }
+
+    /* 首页窄屏骨架：品牌 / 两个主入口 / 单栏内容。 */
+    .dailyglance-app .header {
+        position: sticky;
+        top: 0;
+        z-index: 90;
+        height: auto;
+        min-height: 92px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-rows: 48px 44px;
+        align-items: center;
+        padding: env(safe-area-inset-top) 0 0;
+        background: rgba(21, 25, 36, 0.98);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+    }
+    .dailyglance-app .header-left {
+        grid-column: 1;
+        grid-row: 1;
+        gap: var(--space-2);
+        padding-left: var(--space-3);
+    }
+    .dailyglance-app .logo-box { width: 32px; height: 32px; }
+    .dailyglance-app .header-title { font-size: var(--text-xl); }
+    .dailyglance-app .header-owner { font-size: var(--text-xs); }
+    .dailyglance-app .header-center {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        width: 100%;
+        height: 44px;
+        gap: 0;
+        padding: 0 var(--space-3);
+        border-top: 1px solid var(--border-light);
+    }
+    .dailyglance-app .header-center .nav-btn {
+        flex: 1 1 50%;
+        min-height: 44px;
+        justify-content: center;
+        font-size: var(--text-lg);
+    }
+    .dailyglance-app .header-center .nav-btn[data-tab="external"] { display: none; }
+    .dailyglance-app .header-right {
+        grid-column: 2;
+        grid-row: 1;
+        gap: 0;
+        padding-right: var(--space-3);
+    }
+    .dailyglance-app .live-clock,
+    .dailyglance-app .header-tool-divider,
+    .dailyglance-app #btnHelp,
+    .dailyglance-app #headerMoreWrap { display: none; }
+    .dailyglance-app #btnSettings { width: 44px; height: 44px; }
+    .dailyglance-app #btnSettings .icon { width: 20px; height: 20px; }
+
+    .dailyglance-app .main-container {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: auto;
+        min-height: calc(100dvh - 92px - env(safe-area-inset-top));
+        overflow: visible;
+        background: var(--dark-bg);
+    }
+    .dailyglance-app .main-container[hidden] { display: none; }
+    .dailyglance-app .external-workspace { display: none !important; }
+
+    /* 标的选择由左侧栏改为横向触摸轨道。 */
+    .dailyglance-app .nav-section {
+        order: 0;
+        width: 100%;
+        flex: 0 0 auto;
+        gap: var(--space-2);
+        padding: var(--space-3) var(--space-3) var(--space-2);
+        overflow: visible;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+        background: var(--sidebar-bg);
+    }
+    .dailyglance-app #indexNavList,
+    .dailyglance-app #stockNavList { flex: 0 0 auto; min-height: 0; overflow: visible; }
+    .dailyglance-app .index-list-sticky-head,
+    .dailyglance-app .watchlist-header-slot,
+    .dailyglance-app #leftMarketContext { display: none; }
+    .dailyglance-app .index-list-items,
+    .dailyglance-app .watchlist-items {
+        flex: 0 0 auto;
+        width: calc(100% + var(--space-3) * 2);
+        min-height: 0;
+        margin: 0 calc(0px - var(--space-3));
+        padding: 0 var(--space-3) var(--space-1);
+        overflow-x: auto;
+        overflow-y: hidden;
+        scroll-snap-type: x proximity;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+    .dailyglance-app .index-list-items > div:first-child,
+    .dailyglance-app .watchlist-items > div:not(.watchlist-items-empty) {
+        display: flex;
+        align-items: stretch;
+        gap: var(--space-2);
+        width: max-content;
+    }
+    .dailyglance-app .index-list-items .nav-list-item {
+        width: auto;
+        min-width: 158px;
+        min-height: 68px;
+        flex: 0 0 158px;
+        margin: 0;
+        padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5);
+        scroll-snap-align: start;
+    }
+    .dailyglance-app .watchlist-items .nav-list-item {
+        width: auto;
+        min-width: 210px;
+        min-height: 72px;
+        flex: 0 0 min(76vw, 260px);
+        margin: 0;
+        padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+        scroll-snap-align: start;
+    }
+    .dailyglance-app .stock-search { margin: 0 0 var(--space-2); }
+    .dailyglance-app .stock-search input {
+        min-height: 44px;
+        padding: 0 var(--space-3);
+        font-size: 16px;
+    }
+    .dailyglance-app .stock-suggest { max-height: min(44dvh, 320px); }
+    .dailyglance-app .stock-suggest-item { min-height: 44px; }
+    .dailyglance-app .nav-list-item .wl-drag-handle { display: none; }
+    .dailyglance-app .nav-list-item.watchlist-item .nav-list-sub { padding-left: 0; }
+    .dailyglance-app .nav-list-item .wl-close {
+        width: 44px;
+        height: 44px;
+        margin-left: 0;
+        opacity: 1;
+    }
+    .dailyglance-app .watchlist-items-empty { min-height: 0; }
+
+    /* 先给出价格与每日结论，再查看一张主 K 线。 */
+    .dailyglance-app .info-section {
+        order: 1;
+        width: 100%;
+        flex: 0 0 auto;
+        gap: var(--space-3);
+        padding: var(--space-3);
+        padding-bottom: var(--space-3);
+        overflow: visible;
+        border-left: none;
+        background: var(--dark-bg);
+    }
+    .dailyglance-app .info-section #lastRefreshBar { order: 0; }
+    .dailyglance-app .info-section #cardPrice { order: 1; }
+    .dailyglance-app .info-section #cardAnalysis { order: 2; }
+    .dailyglance-app .price-panel,
+    .dailyglance-app .terminal-block,
+    .dailyglance-app .action-panel { padding: var(--space-4); }
+    .dailyglance-app .header-meta-row { gap: var(--space-2); }
+    .dailyglance-app .price-main { font-size: 30px; }
+    .dailyglance-app .price-sub { font-size: var(--text-3xl); }
+    .dailyglance-app .nav-capsule .btn-sm {
+        min-width: 44px;
+        height: 44px;
+        padding: 0 var(--space-2);
+        font-size: var(--text-base);
+    }
+    .dailyglance-app .action-panel .action-name { font-size: 24px; line-height: 1.25; }
+    .dailyglance-app .action-panel .action-cap strong { font-size: var(--text-4xl); }
+    .dailyglance-app .decision-reason-row {
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: var(--space-1);
+        padding: var(--space-3) 0;
+        font-size: var(--text-md);
+        line-height: 1.65;
+    }
+    .dailyglance-app .decision-reason-row > span { white-space: normal; }
+    .dailyglance-app .decision-evidence-row { padding: var(--space-4) 0; }
+    .dailyglance-app .decision-evidence-head span { font-size: var(--text-base); }
+    .dailyglance-app .decision-evidence-head strong { font-size: var(--text-lg); }
+    .dailyglance-app .decision-evidence-copy { font-size: var(--text-base); line-height: 1.65; }
+    .dailyglance-app .risk-note { font-size: var(--text-base); line-height: 1.7; }
+    .dailyglance-app #cardAnalysis > .risk-note { display: none; }
+    .dailyglance-app .data-box-row .lbl { font-size: var(--text-sm); }
+    .dailyglance-app .data-box-row .val { font-size: var(--text-md); }
+
+    .dailyglance-app .chart-section {
+        order: 2;
+        width: 100%;
+        flex: 0 0 auto;
+        min-height: 0;
+        padding: 0 var(--space-3) max(var(--space-4), env(safe-area-inset-bottom));
+        background: var(--dark-bg);
+    }
+    .dailyglance-app .chart-toolbar {
+        min-height: 44px;
+        align-items: center;
+        margin-bottom: var(--space-2);
+        gap: var(--space-2);
+    }
+    .dailyglance-app .chart-toolbar #periodTabs,
+    .dailyglance-app .chart-toolbar #rangeTabs,
+    .dailyglance-app .chart-toolbar .ma-selector,
+    .dailyglance-app .chart-toolbar #btnBacktest { display: none !important; }
+    .dailyglance-app .mobile-chart-meta {
+        display: flex;
+        align-items: center;
+        min-height: 44px;
+        color: var(--text-main);
+        font-size: var(--text-lg);
+        font-weight: 800;
+    }
+    .dailyglance-app .toolbar-left { flex: 1 1 auto; }
+    .dailyglance-app .toolbar-right { margin-left: auto; }
+    .dailyglance-app #updateDataBtn { width: 44px; height: 44px; }
+    .dailyglance-app #updateDataBtn .icon { width: 20px; height: 20px; }
+    .dailyglance-app .integrated-container {
+        width: 100%;
+        height: clamp(300px, 52dvh, 420px);
+        min-height: 300px;
+        flex: 0 0 auto;
+        touch-action: pan-y;
+    }
+    .dailyglance-app .main-chart-box { flex: 1 1 auto; min-height: 0; }
+    .dailyglance-app .volume-chart-box,
+    .dailyglance-app .macd-chart-box,
+    .dailyglance-app .kdj-chart-box { display: none !important; }
+    .dailyglance-app .chart-copyright-line { margin-bottom: 0; }
+    .dailyglance-app .workspace-empty { padding: var(--space-6); }
+    .dailyglance-app .workspace-empty-action,
+    .dailyglance-app .state-retry-action { min-height: 44px; }
+
+    /* 手机上只保留策略切换，研究入口和诊断面板仍属于电脑端。 */
+    .dailyglance-app #helpOverlay,
+    .dailyglance-app #perfOverlay { display: none !important; }
+    .dailyglance-app #settingsOverlay {
+        align-items: flex-end;
+        padding: max(var(--space-3), env(safe-area-inset-top)) 0 0;
+    }
+    .dailyglance-app #settingsPanel {
+        width: 100%;
+        max-width: none;
+        max-height: min(88dvh, 720px);
+        border-right: none;
+        border-bottom: none;
+        border-left: none;
+        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    }
+    .dailyglance-app #settingsPanel .strategy-page-launch { display: none; }
+    .dailyglance-app #settingsPanel .sg-header { padding: var(--space-4); }
+    .dailyglance-app #settingsPanel .sg-body { padding: var(--space-4); }
+    .dailyglance-app #settingsPanel .sg-close { width: 44px; height: 44px; flex: 0 0 44px; }
+    .dailyglance-app #settingsPanel .sg-strategy { grid-template-columns: minmax(0, 1fr); }
+    .dailyglance-app #settingsPanel .settings-strategy-option { min-height: 72px; }
+    .dailyglance-app .custom-modal-btn { min-height: 44px; font-size: var(--text-lg); }
+    .dailyglance-app #toastContainer {
+        bottom: max(var(--space-4), env(safe-area-inset-bottom));
+        width: calc(100% - var(--space-6));
+    }
+    .dailyglance-app .toast { width: 100%; max-width: 420px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

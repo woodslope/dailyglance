@@ -162,7 +162,7 @@ async function main() {
                 currentResourceCount: resources.filter(url => url.includes(expectedVersion)).length,
                 oldResourceCount: resources.filter(url => /20260630-(09|10|11)/.test(url)).length,
                 viewport: { width: innerWidth, height: innerHeight },
-                mobileGateDisplay: getComputedStyle(document.getElementById('mobileGate')).display,
+                mobileGatePresent: !!document.getElementById('mobileGate'),
                 mainContainerDisplay: getComputedStyle(document.querySelector('.main-container')).display,
                 emptyHintCount: document.querySelectorAll('.empty-hint').length,
                 noDataText: document.body.innerText.includes('暂无数据'),
@@ -176,7 +176,7 @@ async function main() {
 
         assert(result.versions.length === 1 && result.versions[0] === EXPECTED_VERSION, 'resource versions are not current', result);
         assert(result.currentResourceCount >= 7 && result.oldResourceCount === 0, 'resource cache-busting check failed', result);
-        assert(result.viewport.width >= 1024 && result.mobileGateDisplay === 'none' && result.mainContainerDisplay === 'flex', 'desktop viewport did not render the terminal', result);
+        assert(result.viewport.width >= 1024 && !result.mobileGatePresent && result.mainContainerDisplay === 'flex', 'desktop viewport did not render the terminal', result);
         assert(result.emptyHintCount === 0 && result.noDataText === false, 'empty chart hint remains visible', result);
         assert(result.cardAnalysisDisplay === 'flex' && result.cardAnalysisHasConclusion, 'right analysis panel is not ready', result);
         for (const canvas of result.canvases) {

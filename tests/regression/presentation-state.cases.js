@@ -413,7 +413,7 @@ runTest('startup performance trace separates the main initialization phases', ()
     ['open-db', 'load-watchlist', 'load-stock-cache', 'prepare-ui', 'initial-selection'].forEach(step => {
         assert.ok(appSource.includes(`PERF.mark(startupPerf, '${step}')`), `startup trace should include ${step}`);
     });
-    assert.ok(appSource.includes("PERF.end(startupPerf, { path: 'initial-index-ready' })"), 'startup trace should finish after the initial index is ready');
+    assert.ok(appSource.includes("compactMobile ? 'initial-mobile-index-ready' : 'initial-index-ready'"), 'startup trace should distinguish mobile and desktop readiness after the initial index is ready');
 });
 
 runTest('cached fetch trace separates active data indicators and first-paint scheduling', () => {
