@@ -889,7 +889,23 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .info-section > #lastRefreshBar {
         order: 1;
         width: calc(100% - var(--space-3) * 2);
+        min-width: 0;
         margin: var(--space-3) var(--space-3) 0;
+        align-items: center;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+        column-gap: var(--space-3);
+        row-gap: var(--space-1);
+        min-height: 44px;
+    }
+    .dailyglance-app .info-section > #lastRefreshBar .refresh-time-text {
+        min-width: 0;
+        flex: 0 1 auto;
+        line-height: 1.4;
+    }
+    .dailyglance-app .info-section > #lastRefreshBar .data-status-pill {
+        flex: 0 0 auto;
+        max-width: none;
     }
     .dailyglance-app .info-section > #cardPrice,
     .dailyglance-app .info-section > #cardAnalysis {
@@ -934,13 +950,17 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .data-box-row .val { font-size: var(--text-md); }
 
     .dailyglance-app .chart-section {
+        display: contents;
+    }
+    .dailyglance-app .chart-toolbar {
         order: 2;
-        width: 100%;
-        flex: 0 0 auto;
-        min-height: 0;
-        margin-top: var(--space-3);
-        padding: 0 var(--space-3) max(var(--space-4), env(safe-area-inset-bottom));
-        background: var(--dark-bg);
+        width: calc(100% - var(--space-3) * 2);
+        margin: var(--space-3) var(--space-3) var(--space-2);
+    }
+    .dailyglance-app .integrated-container {
+        order: 3;
+        width: calc(100% - var(--space-3) * 2);
+        margin: 0 var(--space-3);
     }
     .dailyglance-app .chart-toolbar {
         min-height: 44px;
@@ -965,7 +985,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app #updateDataBtn { width: 44px; height: 44px; }
     .dailyglance-app #updateDataBtn .icon { width: 18px; height: 18px; }
     .dailyglance-app .integrated-container {
-        width: 100%;
+        width: calc(100% - var(--space-3) * 2);
         height: clamp(300px, 52dvh, 420px);
         min-height: 300px;
         flex: 0 0 auto;
@@ -976,7 +996,18 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .volume-chart-box,
     .dailyglance-app .macd-chart-box,
     .dailyglance-app .kdj-chart-box { display: none !important; }
-    .dailyglance-app .chart-copyright-line { margin-bottom: 0; }
+    .dailyglance-app .chart-copyright-line {
+        order: 5;
+        flex: 0 0 auto;
+        width: calc(100% - var(--space-3) * 2);
+        min-height: 28px;
+        margin: var(--space-3) var(--space-3) max(var(--space-4), env(safe-area-inset-bottom));
+        padding: 0 var(--space-2);
+        font-size: var(--text-xs);
+        line-height: 1.4;
+        white-space: normal;
+        text-align: center;
+    }
     .dailyglance-app .workspace-empty { padding: var(--space-6); }
     .dailyglance-app .workspace-empty-action,
     .dailyglance-app .state-retry-action { min-height: 44px; }
