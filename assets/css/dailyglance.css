@@ -638,6 +638,11 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
 .loading-wrap { display: flex; align-items: center; gap: var(--space-3); background: var(--sidebar-bg); padding: var(--space-4) var(--space-6); border-radius: var(--radius-lg); border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.5); color: var(--text-main); }
+#loading.is-error { background: rgba(11,14,20,0.94); }
+.loading-error { width: min(420px, calc(100vw - var(--space-8))); align-items: flex-start; flex-direction: column; border-color: rgba(245, 166, 35, .42); background: var(--sidebar-bg); letter-spacing: 0; }
+.loading-error-kicker { color: var(--yellow); font-size: var(--text-sm); font-weight: 700; }
+.loading-error strong { color: var(--text-main); font-size: var(--text-lg); }
+.loading-error-detail { color: var(--text-dim); font-size: var(--text-base); font-weight: 400; line-height: 1.6; }
 
 @media (min-width: 1024px) and (max-width: 1180px) {
     :root {

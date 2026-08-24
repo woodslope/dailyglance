@@ -1317,34 +1317,132 @@ function isUsablePersistentCacheRecord(id, record) {
     return !record || !isKlineCacheKey(id) || record.klineCacheVersion === KLINE_CACHE_VERSION;
 }
 
-let DB = null; const DB_NAME = 'QuantProDB_v515', DB_VER = 1, STORE = 'kline';
-function openDB() { 
-    return new Promise(resolve => { 
-        const req = indexedDB.open(DB_NAME, DB_VER); 
-        req.onupgradeneeded = e => { if (!e.target.result.objectStoreNames.contains(STORE)) e.target.result.createObjectStore(STORE, { keyPath: 'id' }); }; 
-        req.onsuccess = e => { DB = e.target.result; resolve(); }; 
-        req.onerror = () => resolve(); 
-    }); 
+let DB = null;
+const DB_NAME = 'QuantProDB_v515', DB_VER = 1, STORE = 'kline';
+const DB_OPEN_TIMEOUT_MS = 3000;
+const storageCapability = {
+    status: 'pending',
+    persistent: false,
+    reason: '',
+    checkedAt: 0
+};
+if (typeof window !== 'undefined') window.__DG_STORAGE__ = storageCapability;
+
+function setStorageCapability(status, reason = '') {
+    storageCapability.status = status;
+    storageCapability.persistent = status === 'available';
+    storageCapability.reason = String(reason || '');
+    storageCapability.checkedAt = Date.now();
+    if (typeof document !== 'undefined' && document.documentElement?.dataset) {
+        document.documentElement.dataset.storageMode = storageCapability.persistent ? 'persistent' : 'memory';
+        document.documentElement.dataset.storageStatus = status;
+    }
+    return storageCapability;
 }
-function dbGet(id) { 
-    return new Promise(resolve => { 
-        if(!DB) return resolve(null); 
-        const req = DB.transaction(STORE, 'readonly').objectStore(STORE).get(id); 
-        req.onsuccess = e => {
-            const record = e.target.result;
-            resolve(isUsablePersistentCacheRecord(id, record) ? record : null);
+
+function disablePersistentStorage(reason, status = 'failed') {
+    const current = DB;
+    DB = null;
+    try { current?.close?.(); } catch (error) {}
+    return setStorageCapability(status, reason);
+}
+
+function openDB(options = {}) {
+    const configuredTimeout = Number(options.timeoutMs);
+    const timeoutMs = Number.isFinite(configuredTimeout) ? Math.max(1, configuredTimeout) : DB_OPEN_TIMEOUT_MS;
+    return new Promise(resolve => {
+        if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') {
+            resolve(disablePersistentStorage('当前浏览器不支持本地数据库', 'unavailable'));
+            return;
+        }
+
+        let request = null;
+        let settled = false;
+        let blocked = false;
+        let timer = 0;
+        const finish = (status, reason = '', database = null) => {
+            if (settled) {
+                if (database && database !== DB) {
+                    try { database.close?.(); } catch (error) {}
+                }
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            if (status === 'available' && database) {
+                DB = database;
+                DB.onversionchange = () => disablePersistentStorage('本地数据库版本已变化，请重新加载', 'blocked');
+                resolve(setStorageCapability('available'));
+                return;
+            }
+            resolve(disablePersistentStorage(reason, status));
         };
-        req.onerror = () => resolve(null);
-    }); 
+
+        try {
+            request = indexedDB.open(DB_NAME, DB_VER);
+        } catch (error) {
+            finish('failed', error?.message || '本地数据库打开失败');
+            return;
+        }
+
+        timer = setTimeout(() => {
+            finish(blocked ? 'blocked' : 'failed', blocked ? '本地数据库正被其他页面占用' : '本地数据库打开超时');
+        }, timeoutMs);
+        request.onupgradeneeded = event => {
+            try {
+                const database = event.target.result;
+                if (!database.objectStoreNames.contains(STORE)) database.createObjectStore(STORE, { keyPath: 'id' });
+            } catch (error) {
+                finish('failed', error?.message || '本地数据库升级失败');
+            }
+        };
+        request.onsuccess = event => finish('available', '', event.target.result);
+        request.onerror = () => finish('failed', request.error?.message || '本地数据库打开失败');
+        request.onblocked = () => {
+            blocked = true;
+            finish('blocked', '本地数据库正被其他页面占用');
+        };
+    });
 }
-function dbSet(id, data) { 
-    return new Promise(resolve => { 
-        if(!DB) return resolve(); 
+
+function dbGet(id) {
+    return new Promise(resolve => {
+        if (!DB) return resolve(null);
+        try {
+            const req = DB.transaction(STORE, 'readonly').objectStore(STORE).get(id);
+            req.onsuccess = event => {
+                const record = event.target.result;
+                resolve(isUsablePersistentCacheRecord(id, record) ? record : null);
+            };
+            req.onerror = () => resolve(null);
+        } catch (error) {
+            disablePersistentStorage(error?.message || '本地缓存读取失败');
+            resolve(null);
+        }
+    });
+}
+
+function dbSet(id, data) {
+    return new Promise(resolve => {
+        if (!DB) return resolve();
         data = id === 'stock_cache' || id === 'watchlist_list' ? data : normalizeConfirmedHistoryData(data, id);
-        const tx = DB.transaction(STORE, 'readwrite'); 
-        tx.objectStore(STORE).put(buildPersistentCacheRecord(id, data));
-        tx.oncomplete = () => resolve(); tx.onerror = () => resolve(); 
-    }); 
+        try {
+            const tx = DB.transaction(STORE, 'readwrite');
+            tx.objectStore(STORE).put(buildPersistentCacheRecord(id, data));
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => {
+                disablePersistentStorage(tx.error?.message || '本地缓存写入失败');
+                resolve();
+            };
+            tx.onabort = () => {
+                disablePersistentStorage(tx.error?.message || '本地缓存写入已中止');
+                resolve();
+            };
+        } catch (error) {
+            disablePersistentStorage(error?.message || '本地缓存写入失败');
+            resolve();
+        }
+    });
 }
 async function getCachedData(id) { const c = await dbGet(id); return (c && c.data) ? normalizeConfirmedHistoryData(c.data, id) : null; }
 

@@ -39,8 +39,44 @@ const externalLeadStripState = {
     stale: false,
     error: '',
     inFlight: null,
-    cacheLoaded: false
+    cacheLoaded: false,
+    lastStableStatus: 'idle'
 };
+
+let externalLeadStripGeneration = 0;
+let externalLeadStripController = null;
+let externalLeadStripPreviousState = null;
+
+function createObservationAbortError(message = '观察任务已取消') {
+    if (typeof DOMException === 'function') return new DOMException(message, 'AbortError');
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
+}
+
+function throwIfObservationAborted(signal) {
+    if (signal?.aborted) throw createObservationAbortError();
+}
+
+function createObservationRequestScope(parentSignal, timeoutMs) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let parentAbortHandler = null;
+    if (controller && parentSignal) {
+        parentAbortHandler = () => controller.abort();
+        if (parentSignal.aborted) parentAbortHandler();
+        else if (typeof parentSignal.addEventListener === 'function') parentSignal.addEventListener('abort', parentAbortHandler, { once: true });
+    }
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : 0;
+    return {
+        signal: controller?.signal || parentSignal,
+        cleanup() {
+            if (timer) clearTimeout(timer);
+            if (parentSignal && parentAbortHandler && typeof parentSignal.removeEventListener === 'function') {
+                parentSignal.removeEventListener('abort', parentAbortHandler);
+            }
+        }
+    };
+}
 
 function sanitizeExternalLeadStripItem(key, item, options = {}) {
     const config = EXTERNAL_LEAD_STRIP_CONFIG.ITEMS[key];
@@ -139,6 +175,7 @@ function loadExternalLeadStripCache() {
         externalLeadStripState.fetchedAt = Number(cached?.fetchedAt) || 0;
         externalLeadStripState.lastAttemptAt = Number(cached?.lastAttemptAt) || 0;
         externalLeadStripState.status = Object.keys(items).length ? 'cached' : 'idle';
+        externalLeadStripState.lastStableStatus = externalLeadStripState.status;
         externalLeadStripState.stale = Object.keys(items).length > 0;
     } catch (error) {}
     return externalLeadStripState;
@@ -165,11 +202,11 @@ function notifyExternalLeadStripState() {
     if (typeof renderExternalLeadStrip === 'function') renderExternalLeadStrip();
 }
 
-async function fetchExternalLeadStripItems() {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), EXTERNAL_LEAD_STRIP_CONFIG.REQUEST_TIMEOUT_MS);
+async function fetchExternalLeadStripItems(options = {}) {
+    throwIfObservationAborted(options.signal);
+    const requestScope = createObservationRequestScope(options.signal, EXTERNAL_LEAD_STRIP_CONFIG.REQUEST_TIMEOUT_MS);
     try {
-        const response = await fetch(EXTERNAL_LEAD_STRIP_CONFIG.PRIMARY_URL, { method: 'GET', cache: 'no-store', signal: controller.signal });
+        const response = await fetch(EXTERNAL_LEAD_STRIP_CONFIG.PRIMARY_URL, { method: 'GET', cache: 'no-store', ...(requestScope.signal ? { signal: requestScope.signal } : {}) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
         if (payload?.rc !== 0 || !Array.isArray(payload?.data?.diff)) throw new Error('外部主题行情返回无效');
@@ -182,7 +219,7 @@ async function fetchExternalLeadStripItems() {
         if (!Object.keys(items).length) throw new Error('外部主题行情为空');
         return items;
     } finally {
-        clearTimeout(timer);
+        requestScope.cleanup();
     }
 }
 
@@ -195,6 +232,18 @@ async function refreshExternalLeadStripSnapshot(options = {}) {
         notifyExternalLeadStripState();
         return externalLeadStripState;
     }
+    const generation = ++externalLeadStripGeneration;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    externalLeadStripController = controller;
+    externalLeadStripState.lastStableStatus = externalLeadStripState.status === 'loading'
+        ? externalLeadStripState.lastStableStatus
+        : externalLeadStripState.status;
+    externalLeadStripPreviousState = {
+        status: externalLeadStripState.lastStableStatus || externalLeadStripState.status,
+        error: externalLeadStripState.error,
+        lastAttemptAt: externalLeadStripState.lastAttemptAt
+    };
+    const isCurrent = () => generation === externalLeadStripGeneration && !controller?.signal?.aborted;
     const task = (async () => {
         const cachedItems = { ...externalLeadStripState.items };
         externalLeadStripState.lastAttemptAt = Date.now();
@@ -204,10 +253,12 @@ async function refreshExternalLeadStripSnapshot(options = {}) {
         notifyExternalLeadStripState();
         let freshItems = {};
         try {
-            freshItems = await fetchExternalLeadStripItems();
+            freshItems = await fetchExternalLeadStripItems({ signal: controller?.signal });
         } catch (error) {
+            if (!isCurrent()) return externalLeadStripState;
             externalLeadStripState.error = error?.name === 'AbortError' ? '外部主题行情请求超时' : (error?.message || '外部主题行情请求失败');
         }
+        if (!isCurrent()) return externalLeadStripState;
         const nextItems = { ...freshItems };
         Object.keys(EXTERNAL_LEAD_STRIP_CONFIG.ITEMS).forEach(key => {
             if (nextItems[key]) return;
@@ -222,6 +273,7 @@ async function refreshExternalLeadStripSnapshot(options = {}) {
         externalLeadStripState.status = freshCount
             ? (externalLeadStripState.stale ? 'partial' : 'ready')
             : (availableCount ? 'cached' : 'error');
+        externalLeadStripState.lastStableStatus = externalLeadStripState.status;
         if (freshCount) {
             externalLeadStripState.source = '东方财富';
             externalLeadStripState.fetchedAt = Date.now();
@@ -230,8 +282,12 @@ async function refreshExternalLeadStripSnapshot(options = {}) {
         notifyExternalLeadStripState();
         return externalLeadStripState;
     })();
-    externalLeadStripState.inFlight = task.finally(() => { externalLeadStripState.inFlight = null; });
-    return externalLeadStripState.inFlight;
+    const trackedTask = task.finally(() => {
+        if (externalLeadStripState.inFlight === trackedTask) externalLeadStripState.inFlight = null;
+        if (externalLeadStripController === controller) externalLeadStripController = null;
+    });
+    externalLeadStripState.inFlight = trackedTask;
+    return trackedTask;
 }
 
 // 板块趋势快照：只用于发现正在走强的 A 股行业/概念，不进入历史 K 线、策略、仓位或 B/S
@@ -279,8 +335,13 @@ const sectorTrendState = {
     stale: false,
     error: '',
     inFlight: null,
-    cacheLoaded: false
+    cacheLoaded: false,
+    lastStableStatus: 'idle'
 };
+
+let sectorTrendGeneration = 0;
+let sectorTrendController = null;
+let sectorTrendPreviousState = null;
 
 function normalizeSectorQuoteAt(value) {
     const quoteAt = Number(value);
@@ -523,6 +584,7 @@ function loadSectorTrendCache() {
         sectorTrendState.fetchedAt = Number(cached.fetchedAt) || 0;
         sectorTrendState.lastAttemptAt = Number(cached.lastAttemptAt) || 0;
         sectorTrendState.status = 'cached';
+        sectorTrendState.lastStableStatus = 'cached';
         sectorTrendState.stale = true;
     } catch (error) {}
     return sectorTrendState;
@@ -557,11 +619,11 @@ function buildSectorTrendListUrl(type, page = 1) {
     return `https://push2delay.eastmoney.com/api/qt/clist/get?pn=${Math.max(1, page)}&pz=${SECTOR_TREND_CONFIG.LIST_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(config.fs)}&fields=${SECTOR_TREND_CONFIG.LIST_FIELDS}`;
 }
 
-async function fetchSectorTrendJson(url) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SECTOR_TREND_CONFIG.REQUEST_TIMEOUT_MS);
+async function fetchSectorTrendJson(url, options = {}) {
+    throwIfObservationAborted(options.signal);
+    const requestScope = createObservationRequestScope(options.signal, SECTOR_TREND_CONFIG.REQUEST_TIMEOUT_MS);
     try {
-        const response = await fetch(url, { method: 'GET', cache: 'no-store', signal: controller.signal });
+        const response = await fetch(url, { method: 'GET', cache: 'no-store', ...(requestScope.signal ? { signal: requestScope.signal } : {}) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
         if (payload?.rc !== 0 || !Array.isArray(payload?.data?.diff)) throw new Error('板块行情返回无效');
@@ -570,24 +632,32 @@ async function fetchSectorTrendJson(url) {
             total: Number.isFinite(Number(payload.data.total)) ? Number(payload.data.total) : 0
         };
     } finally {
-        clearTimeout(timer);
+        requestScope.cleanup();
     }
 }
 
-async function fetchSectorTrendPage(type, page) {
+async function fetchSectorTrendPage(type, page, options = {}) {
     const url = buildSectorTrendListUrl(type, page);
     if (!url) return { rows: [], total: 0 };
-    const payload = await fetchSectorTrendJson(url);
+    const payload = await fetchSectorTrendJson(url, options);
     return {
         rows: payload.rows.map(row => ({ ...row, type })).map(item => sanitizeSectorTrendBoard(item)).filter(Boolean),
         total: payload.total
     };
 }
 
-function createSectorTrendRequestLimiter(concurrency) {
+function createSectorTrendRequestLimiter(concurrency, signal) {
     const queue = [];
     let active = 0;
+    const rejectQueued = () => {
+        while (queue.length) queue.shift().reject(createObservationAbortError());
+    };
+    if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', rejectQueued, { once: true });
     const pump = () => {
+        if (signal?.aborted) {
+            rejectQueued();
+            return;
+        }
         while (active < concurrency && queue.length) {
             const entry = queue.shift();
             active++;
@@ -601,13 +671,18 @@ function createSectorTrendRequestLimiter(concurrency) {
         }
     };
     return task => new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(createObservationAbortError());
+            return;
+        }
         queue.push({ task, resolve, reject });
         pump();
     });
 }
 
-async function fetchSectorTrendList(type, request = task => task()) {
-    const firstPage = await request(() => fetchSectorTrendPage(type, 1));
+async function fetchSectorTrendList(type, request = task => task(), options = {}) {
+    throwIfObservationAborted(options.signal);
+    const firstPage = await request(() => fetchSectorTrendPage(type, 1, options));
     const total = firstPage.total;
     const expectedPages = total > 0
         ? Math.ceil(total / SECTOR_TREND_CONFIG.LIST_PAGE_SIZE)
@@ -616,7 +691,7 @@ async function fetchSectorTrendList(type, request = task => task()) {
     const maxPages = Number(typeConfig.maxPages) || SECTOR_TREND_CONFIG.MAX_LIST_PAGES;
     const pageCount = Math.min(expectedPages, maxPages);
     const remainingPages = Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) => index + 2);
-    const pageResults = await Promise.all(remainingPages.map(page => request(() => fetchSectorTrendPage(type, page))
+    const pageResults = await Promise.all(remainingPages.map(page => request(() => fetchSectorTrendPage(type, page, options))
         .then(result => ({ page, result }))
         .catch(error => ({ page, error }))));
     const failedPages = pageResults.filter(item => item?.error);
@@ -635,10 +710,11 @@ async function fetchSectorTrendList(type, request = task => task()) {
     };
 }
 
-async function fetchSectorBoardCandidates(board) {
+async function fetchSectorBoardCandidates(board, options = {}) {
+    throwIfObservationAborted(options.signal);
     const fs = encodeURIComponent(`b:${board.code}`);
     const url = `https://push2delay.eastmoney.com/api/qt/clist/get?pn=1&pz=8&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${fs}&fields=${SECTOR_TREND_CONFIG.COMPONENT_FIELDS}`;
-    const payload = await fetchSectorTrendJson(url);
+    const payload = await fetchSectorTrendJson(url, options);
     return payload.rows.map(row => sanitizeSectorCandidate(row)).filter(Boolean).slice(0, SECTOR_TREND_CONFIG.COMPONENT_LIMIT);
 }
 
@@ -652,14 +728,27 @@ async function refreshSectorTrendSnapshot(options = {}) {
         return sectorTrendState;
     }
 
+    const generation = ++sectorTrendGeneration;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    sectorTrendController = controller;
+    sectorTrendState.lastStableStatus = sectorTrendState.status === 'loading'
+        ? sectorTrendState.lastStableStatus
+        : sectorTrendState.status;
+    sectorTrendPreviousState = {
+        status: sectorTrendState.lastStableStatus || sectorTrendState.status,
+        error: sectorTrendState.error,
+        lastAttemptAt: sectorTrendState.lastAttemptAt
+    };
+    const isCurrent = () => generation === sectorTrendGeneration && !controller?.signal?.aborted;
     const task = (async () => {
         sectorTrendState.lastAttemptAt = Date.now();
         sectorTrendState.status = 'loading';
         sectorTrendState.error = '';
         notifySectorTrendState();
 
-        const listRequest = createSectorTrendRequestLimiter(SECTOR_TREND_CONFIG.LIST_CONCURRENCY);
-        const listResults = await Promise.allSettled(Object.keys(SECTOR_TREND_CONFIG.TYPES).map(type => fetchSectorTrendList(type, listRequest)));
+        const listRequest = createSectorTrendRequestLimiter(SECTOR_TREND_CONFIG.LIST_CONCURRENCY, controller?.signal);
+        const listResults = await Promise.allSettled(Object.keys(SECTOR_TREND_CONFIG.TYPES).map(type => fetchSectorTrendList(type, listRequest, { signal: controller?.signal })));
+        if (!isCurrent()) return sectorTrendState;
         const freshRows = listResults.flatMap(result => result.status === 'fulfilled' ? result.value.rows : []);
         const freshIndustryBoards = freshRows.filter(item => item.type === 'industry');
         const freshConceptBoards = freshRows.filter(item => item.type === 'concept');
@@ -671,6 +760,7 @@ async function refreshSectorTrendSnapshot(options = {}) {
         if (!freshIndustryBoards.length) {
             sectorTrendState.error = Array.from(new Set(listErrors)).join('；') || '板块行情暂不可用';
             sectorTrendState.status = sectorTrendState.boards.length ? 'cached' : 'error';
+            sectorTrendState.lastStableStatus = sectorTrendState.status;
             sectorTrendState.stale = sectorTrendState.boards.length > 0;
             saveSectorTrendCache();
             notifySectorTrendState();
@@ -680,7 +770,8 @@ async function refreshSectorTrendSnapshot(options = {}) {
         const snapshot = buildSectorTrendSnapshot(freshIndustryBoards, { industryOnly: true });
         const conceptSnapshot = buildSectorConceptSnapshot(freshConceptBoards);
         const candidateTargets = snapshot.boards.slice(0, SECTOR_TREND_CONFIG.COMPONENT_BOARD_LIMIT);
-        const candidateResults = await pLimit(candidateTargets, SECTOR_TREND_CONFIG.COMPONENT_CONCURRENCY, fetchSectorBoardCandidates);
+        const candidateResults = await pLimit(candidateTargets, SECTOR_TREND_CONFIG.COMPONENT_CONCURRENCY, board => fetchSectorBoardCandidates(board, { signal: controller?.signal }));
+        if (!isCurrent()) return sectorTrendState;
         let componentFailures = 0;
         candidateTargets.forEach((board, index) => {
             const candidates = candidateResults[index];
@@ -705,13 +796,57 @@ async function refreshSectorTrendSnapshot(options = {}) {
             componentFailures ? `${componentFailures} 个前排板块暂未补齐活跃个股` : ''
         ].filter(Boolean).join('；');
         sectorTrendState.status = sectorTrendState.stale ? 'partial' : 'ready';
+        sectorTrendState.lastStableStatus = sectorTrendState.status;
         saveSectorTrendCache();
         notifySectorTrendState();
         return sectorTrendState;
     })();
 
-    sectorTrendState.inFlight = task.finally(() => {
-        sectorTrendState.inFlight = null;
+    const trackedTask = task.finally(() => {
+        if (sectorTrendState.inFlight === trackedTask) sectorTrendState.inFlight = null;
+        if (sectorTrendController === controller) sectorTrendController = null;
     });
-    return sectorTrendState.inFlight;
+    sectorTrendState.inFlight = trackedTask;
+    return trackedTask;
+}
+
+function restoreCancelledObservationState(snapshotState, hasSnapshot, previousState) {
+    if (snapshotState.status === 'loading') {
+        snapshotState.status = previousState?.status || (hasSnapshot ? 'cached' : 'idle');
+    }
+    snapshotState.lastAttemptAt = Number(previousState?.lastAttemptAt) || 0;
+    snapshotState.error = previousState?.error || '';
+}
+
+function cancelExternalObservationTasks(reason = 'lifecycle') {
+    const cancelLeadStrip = !!externalLeadStripController || !!externalLeadStripState.inFlight;
+    const cancelSectorTrend = !!sectorTrendController || !!sectorTrendState.inFlight;
+    externalLeadStripGeneration++;
+    sectorTrendGeneration++;
+    try { externalLeadStripController?.abort?.(reason); } catch (error) {}
+    try { sectorTrendController?.abort?.(reason); } catch (error) {}
+    externalLeadStripController = null;
+    sectorTrendController = null;
+    externalLeadStripState.inFlight = null;
+    sectorTrendState.inFlight = null;
+    if (cancelLeadStrip) {
+        restoreCancelledObservationState(externalLeadStripState, Object.keys(externalLeadStripState.items || {}).length > 0, externalLeadStripPreviousState);
+        saveExternalLeadStripCache();
+    }
+    if (cancelSectorTrend) {
+        restoreCancelledObservationState(sectorTrendState, (sectorTrendState.boards || []).length > 0, sectorTrendPreviousState);
+        saveSectorTrendCache();
+    }
+    return getExternalObservationRuntime();
+}
+
+function getExternalObservationRuntime() {
+    return {
+        externalLeadGeneration: externalLeadStripGeneration,
+        sectorTrendGeneration,
+        externalLeadInFlight: !!externalLeadStripState.inFlight,
+        sectorTrendInFlight: !!sectorTrendState.inFlight,
+        externalLeadController: !!externalLeadStripController,
+        sectorTrendController: !!sectorTrendController
+    };
 }

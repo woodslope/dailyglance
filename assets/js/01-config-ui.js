@@ -33,6 +33,13 @@ const COMPACT_MOBILE_MEDIA_QUERY = '(max-width: 1023px)';
 let marketRefreshLeadershipStarted = false;
 let marketRefreshHeartbeatTimer = 0;
 let marketRefreshLeader = false;
+const marketRefreshLeadershipRuntime = {
+    started: false,
+    heartbeatActive: false,
+    startCount: 0,
+    stopCount: 0
+};
+if (typeof window !== 'undefined') window.__DG_MARKET_REFRESH_RUNTIME__ = marketRefreshLeadershipRuntime;
 
 function isCompactMobileLayout() {
     return typeof window !== 'undefined'
@@ -80,6 +87,24 @@ function releaseMarketRefreshLeadership() {
     marketRefreshLeader = false;
 }
 
+function handleMarketRefreshFocus() {
+    claimMarketRefreshLeadership({ force: true });
+}
+
+function handleMarketRefreshPageHide() {
+    releaseMarketRefreshLeadership();
+}
+
+function handleMarketRefreshStorage(event) {
+    if (event.key !== SYS_CONFIG.MARKET_REFRESH_LEASE_KEY) return;
+    marketRefreshLeader = readMarketRefreshLease()?.owner === PAGE_SESSION_ID;
+}
+
+function handleMarketRefreshVisibilityChange() {
+    if (document.hidden) releaseMarketRefreshLeadership();
+    else claimMarketRefreshLeadership({ force: true });
+}
+
 function canRequestMarketData() {
     if (!marketRefreshLeadershipStarted) return true;
     const now = Date.now();
@@ -97,6 +122,8 @@ function canRequestMarketData() {
 function initMarketRefreshLeadership() {
     if (marketRefreshLeadershipStarted) return;
     marketRefreshLeadershipStarted = true;
+    marketRefreshLeadershipRuntime.started = true;
+    marketRefreshLeadershipRuntime.startCount++;
     if (!document.hidden) {
         const hasFocus = typeof document.hasFocus !== 'function' || document.hasFocus();
         claimMarketRefreshLeadership({ force: hasFocus });
@@ -110,19 +137,33 @@ function initMarketRefreshLeadership() {
         if (current?.owner === PAGE_SESSION_ID) claimMarketRefreshLeadership({ force: true });
         else if (!current || current.expiresAt <= Date.now()) claimMarketRefreshLeadership();
     }, SYS_CONFIG.MARKET_REFRESH_HEARTBEAT_MS);
+    marketRefreshLeadershipRuntime.heartbeatActive = true;
 
     if (typeof window.addEventListener === 'function') {
-        window.addEventListener('focus', () => claimMarketRefreshLeadership({ force: true }));
-        window.addEventListener('pagehide', releaseMarketRefreshLeadership);
-        window.addEventListener('storage', event => {
-            if (event.key !== SYS_CONFIG.MARKET_REFRESH_LEASE_KEY) return;
-            marketRefreshLeader = readMarketRefreshLease()?.owner === PAGE_SESSION_ID;
-        });
+        window.addEventListener('focus', handleMarketRefreshFocus);
+        window.addEventListener('pagehide', handleMarketRefreshPageHide);
+        window.addEventListener('storage', handleMarketRefreshStorage);
     }
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) releaseMarketRefreshLeadership();
-        else claimMarketRefreshLeadership({ force: true });
-    });
+    document.addEventListener('visibilitychange', handleMarketRefreshVisibilityChange);
+}
+
+function stopMarketRefreshLeadership() {
+    if (!marketRefreshLeadershipStarted && !marketRefreshHeartbeatTimer) return;
+    if (marketRefreshHeartbeatTimer) window.clearInterval(marketRefreshHeartbeatTimer);
+    marketRefreshHeartbeatTimer = 0;
+    if (typeof window.removeEventListener === 'function') {
+        window.removeEventListener('focus', handleMarketRefreshFocus);
+        window.removeEventListener('pagehide', handleMarketRefreshPageHide);
+        window.removeEventListener('storage', handleMarketRefreshStorage);
+    }
+    if (typeof document.removeEventListener === 'function') {
+        document.removeEventListener('visibilitychange', handleMarketRefreshVisibilityChange);
+    }
+    releaseMarketRefreshLeadership();
+    if (marketRefreshLeadershipStarted) marketRefreshLeadershipRuntime.stopCount++;
+    marketRefreshLeadershipStarted = false;
+    marketRefreshLeadershipRuntime.started = false;
+    marketRefreshLeadershipRuntime.heartbeatActive = false;
 }
 
 const MA_OPTIONS = [5, 10, 20, 30, 60, 120, 250];
@@ -428,10 +469,30 @@ const SVG_ICONS = {
 
 const showLoading = (msg = 'DailyGlance 同步中...') => { 
     const l = document.getElementById('loading'); 
+    l.classList.remove('is-error');
     l.innerHTML = `<div class="loading-wrap"><svg class="icon spin" viewBox="0 0 24 24" fill="none" style="width:20px;height:20px;color:var(--blue);"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="16 46" stroke-linecap="round"/></svg><span>${msg}</span></div>`; 
     l.classList.add('show'); 
 };
 const hideLoading = () => document.getElementById('loading').classList.remove('show');
+
+function showStartupError(error) {
+    const loading = document.getElementById('loading');
+    if (!loading) return;
+    const detail = String(error?.message || error || '未知启动异常');
+    loading.classList.add('show', 'is-error');
+    loading.innerHTML = `
+        <div class="loading-wrap loading-error" role="alert" aria-live="assertive">
+            <div class="loading-error-kicker">启动未完成</div>
+            <strong>DailyGlance 暂时无法打开</strong>
+            <span class="loading-error-detail">${escapeHTML(detail)}</span>
+            <button type="button" class="state-retry-action" data-startup-retry>重新加载</button>
+        </div>`;
+    const retry = loading.querySelector('[data-startup-retry]');
+    if (retry) {
+        retry.onclick = () => window.location.reload();
+        retry.focus();
+    }
+}
 
 const customAlert = (msg, isHtml = false) => new Promise(resolve => {
     const m = document.getElementById('customModal');
