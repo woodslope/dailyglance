@@ -2261,20 +2261,27 @@ function applyCompactMobileDefaults() {
     return true;
 }
 
-function bindResponsiveLayoutReload() {
+function bindResponsiveLayoutChange() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
     const media = window.matchMedia(COMPACT_MOBILE_MEDIA_QUERY);
-    const initialCompact = media.matches;
+    let compact = media.matches;
     const handleChange = event => {
-        if (Boolean(event.matches) === initialCompact) return;
-        window.location.reload();
+        const nextCompact = Boolean(event.matches);
+        if (nextCompact === compact) return;
+        compact = nextCompact;
+        requestAnimationFrame(() => {
+            if (typeof drawViewport === 'function' && getActiveData()?.length) drawViewport();
+            ['main', 'vol', 'macd', 'kdj'].forEach(key => state.charts[key]?.resize?.());
+            updateCrosshairOverlay();
+            updateFreezeBadge();
+        });
     };
     if (typeof media.addEventListener === 'function') media.addEventListener('change', handleChange);
     else if (typeof media.addListener === 'function') media.addListener(handleChange);
 }
 
 async function init() {
-    bindResponsiveLayoutReload();
+    bindResponsiveLayoutChange();
     const compactMobile = applyCompactMobileDefaults();
     const startupPath = compactMobile ? 'initial-mobile-load' : 'initial-load';
     const startupPerf = PERF.start('startup', { path: startupPath });
