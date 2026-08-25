@@ -774,7 +774,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .header-tool-divider,
     .dailyglance-app #btnHelp,
     .dailyglance-app #headerMoreWrap { display: none; }
-    .dailyglance-app #btnSettings { width: 44px; height: 44px; }
+    .dailyglance-app #btnSettings { width: 36px; height: 36px; }
     .dailyglance-app #btnSettings .icon { width: 18px; height: 18px; }
 
     .dailyglance-app .main-container {
@@ -922,14 +922,14 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .price-main { font-size: 30px; }
     .dailyglance-app .price-sub { font-size: var(--text-3xl); }
     .dailyglance-app .nav-capsule .btn-sm {
-        min-width: 44px;
-        height: 44px;
-        padding: 0;
+        min-width: 0;
+        height: 26px;
+        padding: 0 var(--space-2);
         font-size: var(--text-base);
     }
     .dailyglance-app .nav-capsule {
-        height: 44px;
-        padding: 0;
+        height: 36px;
+        padding: var(--space-1);
         align-items: center;
     }
     .dailyglance-app .action-panel .action-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
@@ -967,7 +967,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         margin: 0 var(--space-3);
     }
     .dailyglance-app .chart-toolbar {
-        min-height: 44px;
+        min-height: 36px;
         align-items: center;
         margin-bottom: var(--space-2);
         gap: var(--space-2);
@@ -979,14 +979,14 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .mobile-chart-meta {
         display: flex;
         align-items: center;
-        min-height: 44px;
+        min-height: 36px;
         color: var(--text-main);
         font-size: var(--text-lg);
         font-weight: 800;
     }
     .dailyglance-app .toolbar-left { flex: 1 1 auto; }
     .dailyglance-app .toolbar-right { margin-left: auto; }
-    .dailyglance-app #updateDataBtn { width: 44px; height: 44px; }
+    .dailyglance-app #updateDataBtn { width: 36px; height: 36px; }
     .dailyglance-app #updateDataBtn .icon { width: 18px; height: 18px; }
     .dailyglance-app .integrated-container {
         width: calc(100% - var(--space-3) * 2);
