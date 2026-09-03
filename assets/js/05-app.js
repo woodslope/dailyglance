@@ -723,7 +723,12 @@ function primeWatchlistStatusSnapshot(code, date) {
 }
 
 function hasCurrentWatchlistDecision(row) {
-    return !!(row?._decision && row._strategy === state.strategy && row._signalVersion === SIGNAL_VERSION);
+    const waveStockDaily = state.strategy === '波段抄底型';
+    return !!(row?._decision
+        && row._strategy === state.strategy
+        && row._signalVersion === SIGNAL_VERSION
+        && (typeof isCurrentDecisionGovernanceVersion !== 'function'
+            || isCurrentDecisionGovernanceVersion(row._decision, { waveStockDaily })));
 }
 
 function getLatestDecisionFromData(full) {
@@ -739,6 +744,26 @@ function computeWatchlistDecisionSnapshot(full, code) {
 
     const cachedDecision = getLatestDecisionFromData(full);
     if (cachedDecision && hasWatchlistPositionChangeContext(full)) return cachedDecision;
+
+    const matched = code ? (state.watchlist || []).find(stock => stock.code === code) : null;
+    const cacheId = matched ? normalizeSecurityTarget(matched).secid : (code ? codeToSecid(code) : '');
+    if (cacheId && typeof buildIndicatorKeyForData === 'function' && typeof derivedIndicatorCache !== 'undefined') {
+        const cacheKey = buildIndicatorKeyForData(cacheId, 'daily', state.strategy, full);
+        const cached = cacheKey ? derivedIndicatorCache.get(cacheKey) : null;
+        const waveStockDaily = state.strategy === '波段抄底型';
+        if (cached?.rows?.length === full.length
+            && (typeof isCurrentDerivedDecisionCache !== 'function'
+                || isCurrentDerivedDecisionCache(cached, { waveStockDaily }))) {
+            for (let i = 0; i < full.length; i++) {
+                if (!full[i] || !cached.rows[i]) continue;
+                full[i]._signals = cached.rows[i]._signals;
+                full[i]._signalVersion = cached.rows[i]._signalVersion;
+                full[i]._strategy = cached.rows[i]._strategy;
+                full[i]._decision = cached.rows[i]._decision;
+            }
+            return full[full.length - 1]?._decision || null;
+        }
+    }
 
     const localIndicators = { ma: {}, macd: null, rsi: null, kdj: null };
     MA_OPTIONS.forEach(n => localIndicators.ma[n] = Calcs.ma(full, n));
@@ -758,7 +783,11 @@ function computeWatchlistDecisionSnapshot(full, code) {
 
         const tailStartIdx = Math.max(0, full.length - 80);
         const priorDecision = tailStartIdx > 0 ? full[tailStartIdx - 1]?._decision : null;
-        const canUseTailRebuild = priorDecision && full[tailStartIdx - 1]?._strategy === state.strategy && full[tailStartIdx - 1]?._signalVersion === SIGNAL_VERSION;
+        const canUseTailRebuild = priorDecision
+            && full[tailStartIdx - 1]?._strategy === state.strategy
+            && full[tailStartIdx - 1]?._signalVersion === SIGNAL_VERSION
+            && (typeof isCurrentDecisionGovernanceVersion !== 'function'
+                || isCurrentDecisionGovernanceVersion(priorDecision, { waveStockDaily: state.strategy === '波段抄底型' }));
         const startIdx = canUseTailRebuild ? tailStartIdx : 0;
         const weeklySignalContexts = buildWeeklySignalContexts(full);
         prevPos = canUseTailRebuild ? (priorDecision.position || 0) : 0;
@@ -770,9 +799,7 @@ function computeWatchlistDecisionSnapshot(full, code) {
             full[i]._decision = computeDecisionForIndex(i, full, prevPos);
             prevPos = full[i]._decision.position;
         }
-        if (code && typeof storeDerivedIndicatorCache === 'function') {
-            const matched = (state.watchlist || []).find(stock => stock.code === code);
-            const cacheId = matched ? normalizeSecurityTarget(matched).secid : codeToSecid(code);
+        if (cacheId && typeof storeDerivedIndicatorCache === 'function') {
             storeDerivedIndicatorCache(cacheId, 'daily', state.strategy, full, localIndicators);
         }
         return full[full.length - 1]?._decision || null;
@@ -966,6 +993,16 @@ async function removeStock(code) {
 
 let watchlistUpdateTimer = null;
 let sidebarFullSyncTimer = 0;
+let sidebarFullSyncInFlight = null;
+const sidebarFullSyncRuntime = {
+    inFlight: false,
+    startedAt: 0,
+    completedAt: 0,
+    runCount: 0,
+    skippedCount: 0,
+    lastError: ''
+};
+if (typeof window !== 'undefined') window.__DG_SIDEBAR_FULL_SYNC__ = sidebarFullSyncRuntime;
 
 function debounceWatchlistUpdate() {
     if (watchlistUpdateTimer) clearTimeout(watchlistUpdateTimer);
@@ -1068,12 +1105,20 @@ async function refreshSidebarRealtime() {
     }
 }
 
-function startSidebarFullSync() {
-    if (sidebarFullSyncTimer) return;
-    sidebarFullSyncTimer = setInterval(async () => {
-        if (document.hidden) return;
-        if (!isMarketOpen()) return;
-        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
+async function runSidebarFullSync() {
+    if (sidebarFullSyncInFlight) {
+        sidebarFullSyncRuntime.skippedCount++;
+        return sidebarFullSyncInFlight;
+    }
+    if (document.hidden) return null;
+    if (!isMarketOpen()) return null;
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return null;
+
+    sidebarFullSyncRuntime.inFlight = true;
+    sidebarFullSyncRuntime.startedAt = Date.now();
+    sidebarFullSyncRuntime.runCount++;
+    sidebarFullSyncRuntime.lastError = '';
+    const task = (async () => {
         if (state.tab === 'index' || state.mode === 'index') {
             const ids = INDEX_IDS.filter(id => id !== state.id);
             let failCnt = 0;
@@ -1093,7 +1138,33 @@ function startSidebarFullSync() {
             const failCount = results ? results.filter(r => !r.success).length : 0;
             if (failCount >= 2) showToast('\u90e8\u5206\u81ea\u9009\u80a1\u6570\u636e\u540c\u6b65\u5931\u8d25', 'warn', 4000);
         }
+        return true;
+    })();
+    sidebarFullSyncInFlight = task;
+    try {
+        return await task;
+    } catch (error) {
+        sidebarFullSyncRuntime.lastError = error?.message || String(error || '后台全量同步失败');
+        throw error;
+    } finally {
+        if (sidebarFullSyncInFlight === task) sidebarFullSyncInFlight = null;
+        sidebarFullSyncRuntime.inFlight = false;
+        sidebarFullSyncRuntime.completedAt = Date.now();
+    }
+}
+
+function startSidebarFullSync() {
+    if (sidebarFullSyncTimer) return;
+    sidebarFullSyncTimer = setInterval(() => {
+        runSidebarFullSync().catch(error => {
+            console.error('[DailyGlance] sidebar full sync failed', error);
+        });
     }, 90000);
+}
+
+function stopSidebarFullSync() {
+    if (sidebarFullSyncTimer) clearInterval(sidebarFullSyncTimer);
+    sidebarFullSyncTimer = 0;
 }
 
 // P0-3: 切换标的防抖 — 快速连点只执行最后一次，避免浪费网络请求
@@ -2143,6 +2214,9 @@ function openExternalWorkspace() {
 
 function openMarketWorkspace(tab) {
     const returnSelection = externalReturnSelection;
+    if (state.tab === 'external' && typeof cancelExternalObservationTasks === 'function') {
+        cancelExternalObservationTasks('workspace-leave');
+    }
     if (isCompactMobileLayout() && tab !== state.tab) mobileNavAutoScrollKey = '';
     state.tab = tab;
     setPrimaryWorkspace(tab);
@@ -2199,26 +2273,33 @@ function applyCompactMobileDefaults() {
     return true;
 }
 
-function bindResponsiveLayoutReload() {
+function bindResponsiveLayoutChange() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
     const media = window.matchMedia(COMPACT_MOBILE_MEDIA_QUERY);
-    const initialCompact = media.matches;
+    let compact = media.matches;
     const handleChange = event => {
-        if (Boolean(event.matches) === initialCompact) return;
-        window.location.reload();
+        const nextCompact = Boolean(event.matches);
+        if (nextCompact === compact) return;
+        compact = nextCompact;
+        requestAnimationFrame(() => {
+            if (typeof drawViewport === 'function' && getActiveData()?.length) drawViewport();
+            ['main', 'vol', 'macd', 'kdj'].forEach(key => state.charts[key]?.resize?.());
+            updateCrosshairOverlay();
+            updateFreezeBadge();
+        });
     };
     if (typeof media.addEventListener === 'function') media.addEventListener('change', handleChange);
     else if (typeof media.addListener === 'function') media.addListener(handleChange);
 }
 
 async function init() {
-    bindResponsiveLayoutReload();
+    bindResponsiveLayoutChange();
     const compactMobile = applyCompactMobileDefaults();
     const startupPath = compactMobile ? 'initial-mobile-load' : 'initial-load';
     const startupPerf = PERF.start('startup', { path: startupPath });
     initMarketRefreshLeadership();
     showLoading(); 
-    await openDB(); 
+    const startupStorage = await openDB();
     PERF.mark(startupPerf, 'open-db');
     await loadWatchlist();
     initWatchlistCrossPageSync();
@@ -2311,6 +2392,10 @@ async function init() {
     await _selectIndexImpl('sh');  // init 直接调用 impl，跳过防抖
     PERF.mark(startupPerf, 'initial-selection');
     PERF.end(startupPerf, { path: compactMobile ? 'initial-mobile-index-ready' : 'initial-index-ready' });
+
+    if (startupStorage?.status && startupStorage.status !== 'available') {
+        showToast('本地缓存不可用，本次仅在当前页面保留数据。', 'warn', 6000);
+    }
 
     scheduleStartupBackgroundHydration();
 }

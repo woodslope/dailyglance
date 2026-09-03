@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '..');
 const VERSION = require(path.join(root, 'version.json'));
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 
-const stripInit = (source) => source.replace(/\n\/\/ 启动应用[^\n]*\ninit\(\);\s*$/, '');
+const stripInit = (source) => source.replace(/\n\/\/ 启动应用[^\n]*\nstartDailyGlanceApplication\(\);\s*$/, '');
 const appLifecycleSource = read('assets/js/05-app.js');
 const settingsSource = read('assets/js/06-settings.js');
 const refreshControllerSource = read('assets/js/07-refresh-controller.js');

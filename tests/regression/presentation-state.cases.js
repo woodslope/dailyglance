@@ -345,7 +345,7 @@ runTest('right panel data status bar becomes visible when a status badge is avai
     assert.ok(result.barHtml.includes('收盘确认'), result.barHtml);
     assert.ok(result.barHtml.includes('data-tooltip="按确认历史计算。"'), result.barHtml);
     assert.ok(!indexSource.includes('class="refresh-dot"'), 'refresh bar should not show a second status dot before the timestamp');
-    assert.ok(indexSource.includes('图表及右侧刷新于 <span id="lastRefreshTime">'), 'refresh timestamp should clearly scope the updated area');
+    assert.ok(indexSource.includes('数据刷新于 <span id="lastRefreshTime">'), 'refresh timestamp should use concise shared copy');
     assert.ok(indexSource.includes('class="text-dim mono refresh-time-text"'), 'refresh timestamp should remain visible as lightweight meta text');
     assert.ok(cssSource.includes('.refresh-bar { display: flex; align-items: center; gap: var(--space-2); padding: 0; background: transparent; border: none;'), 'refresh bar should not render an outer card frame');
 });
@@ -357,6 +357,7 @@ runTest('performance budget script covers fixed interaction scenarios', () => {
     assert.ok(scriptSource.includes('PROFILE_SCENARIOS'), 'performance budget should separate warm and cold profiles');
     assert.ok(scriptSource.includes('--profile'), 'performance budget should expose a profile selector');
     assert.ok(scriptSource.includes('waitForExternalScriptsToSettle'), 'performance budget should drain warm-up JSONP before interaction measurement');
+    assert.ok(scriptSource.includes("stopRefreshSchedulers('performance-isolation')"), 'fixed interaction samples should exclude recurring scheduler overlap');
     assert.ok(scriptSource.includes("route.abort('blockedbyclient')"), 'performance budget should isolate interaction measurement from external network callbacks');
     assert.ok(scriptSource.includes('select-stock'), 'performance budget should cover stock selection');
     assert.ok(scriptSource.includes('select-index'), 'performance budget should cover index selection');
@@ -370,11 +371,51 @@ runTest('performance budget script covers fixed interaction scenarios', () => {
     assert.ok(scriptSource.includes('scenarioStart') && scriptSource.includes('scenarioEnd'), 'performance budget should filter delayed long-task entries by the active scenario window');
     assert.ok(scriptSource.includes('actionDuration') && scriptSource.includes('observationDuration'), 'performance budget should separate action latency from the observation window');
     assert.ok(scriptSource.includes('observationLongTasks'), 'performance budget should retain post-action long tasks as separate diagnostic evidence');
+    assert.ok(scriptSource.includes('observationLongTaskMax'), 'post-action long tasks should participate in pass/fail budgets');
+    assert.ok(scriptSource.includes('MIN_P95_SAMPLES = 20'), 'p95 should require a statistically meaningful sample count');
+    assert.ok(scriptSource.includes("gateStatistic: enoughForP95 ? 'p95' : 'max'"), 'small samples should be gated and labelled as max rather than p95');
+    assert.ok(scriptSource.includes('RESOURCE_BUDGETS'), 'performance governance should protect request and resource growth');
+    assert.ok(scriptSource.includes('collectResourceFootprint'), 'performance reports should capture same-origin resource footprint');
+    assert.ok(scriptSource.includes('MEASUREMENT_ENVIRONMENT_LIMITS'), 'performance reports should reject host-load-contaminated measurements');
+    assert.ok(scriptSource.includes('measurementEnvironment.valid'), 'host-load validity should remain separate from product budget results');
+    assert.ok(scriptSource.includes('deliberateBlockedRequests'), 'test-isolated blocked requests should stay separate from real external failures');
+    assert.ok(scriptSource.includes("args.has('--summary')"), 'performance reporting should expose a compact machine-readable mode');
+    assert.ok(scriptSource.includes('buildCompactReport'), 'compact reporting should preserve summaries without printing every trace');
     assert.ok(scriptSource.includes("traceLabel: 'startup'"), 'cold performance reporting should expose the startup trace');
     assert.ok(scriptSource.includes('startupTraces'), 'cold performance reporting should expose nested startup traces');
     assert.ok(scriptSource.includes('longTaskTraceMatches'), 'cold performance reporting should correlate long tasks with overlapping traces');
+    assert.ok(scriptSource.includes('observationLongTaskTraceMatches'), 'interaction reporting should correlate delayed long tasks with collected traces');
     assert.ok(!scriptSource.includes('fonts.googleapis') && !scriptSource.includes('fonts.gstatic'), 'performance budget should not depend on external font loading');
     assert.ok(scriptSource.includes('JSON.stringify'), 'performance budget should print machine-readable JSON');
+});
+
+runTest('stability governance covers startup degradation lifecycle and bounded long runs', () => {
+    const scriptSource = read('scripts/stability-governance.js');
+    assert.ok(scriptSource.includes("['normal', 'missing', 'throw', 'blocked', 'timeout', 'fatal']"), 'startup stability should cover recoverable storage modes, an open timeout, and a terminal failure');
+    assert.ok(scriptSource.includes('Page.backForwardCacheNotUsed'), 'lifecycle evidence should record why browser back-forward cache was not exercised');
+    assert.ok(scriptSource.includes('persistedPageshow'), 'lifecycle evidence should inspect persisted page returns');
+    assert.ok(scriptSource.includes('leadershipHeartbeats'), 'lifecycle and soak checks should protect the market-refresh heartbeat singleton');
+    assert.ok(scriptSource.includes('HeapProfiler.collectGarbage'), 'soak comparisons should use forced-GC heap checkpoints');
+    assert.ok(scriptSource.includes('Memory.getDOMCounters'), 'soak comparisons should include DOM and listener counts');
+    assert.ok(scriptSource.includes('RUNTIME_BUFFER_BUDGETS'), 'soak checks should gate application caches and diagnostic buffers explicitly');
+    assert.ok(scriptSource.includes('heapGrowth <= 0.15'), 'soak heap growth should have an explicit gate');
+    assert.ok(scriptSource.includes("args.has('--summary')") && scriptSource.includes('compactStabilityResult'), 'stability reporting should expose a compact evidence mode');
+    assert.ok(scriptSource.includes("desktop: { width: 1440, height: 900, chartCount: 4, defaultMinutes: 60 }"), 'desktop soak should default to 60 minutes');
+    assert.ok(scriptSource.includes("mobile: { width: 390, height: 844, chartCount: 1, defaultMinutes: 30 }"), 'mobile soak should default to 30 minutes');
+});
+
+runTest('performance governance exposes supported viewports storage failures and strategy inspector coverage', () => {
+    const scriptSource = read('scripts/performance-budget.js');
+    ['mobile', 'compact-boundary', 'desktop-boundary', 'desktop'].forEach(viewport => {
+        assert.ok(scriptSource.includes(`${viewport}:`) || scriptSource.includes(`'${viewport}':`), `missing ${viewport} performance viewport`);
+    });
+    assert.ok(scriptSource.includes('--viewport'), 'performance budget should expose a viewport selector');
+    assert.ok(scriptSource.includes('--storage'), 'performance budget should expose storage failure profiles');
+    ['missing', 'throw', 'blocked', 'timeout'].forEach(mode => assert.ok(scriptSource.includes(`'${mode}'`), `missing ${mode} storage profile`));
+    assert.ok(scriptSource.includes('--network'), 'performance budget should expose a slow-network profile');
+    assert.ok(scriptSource.includes("inspector: ['strategy-inspector-load']"), 'strategy inspector should have an explicit profile');
+    assert.ok(scriptSource.includes('runInspectorProfile'), 'strategy inspector performance should run in fresh contexts');
+    assert.ok(scriptSource.includes("const compactMobile = matchMedia('(max-width: 1023px)').matches"), 'stock readiness should validate the compact one-chart mobile path');
 });
 
 runTest('stock cold performance profile waits for a complete first stock experience in fresh contexts', () => {
@@ -1008,6 +1049,50 @@ runTest('stock and index conclusions share decisions but use different product l
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
 });
 
+runTest('wave conclusion keeps only the useful environment row and hides empty-position defense', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(renderSource, context);
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        state.mode = 'stock';
+        state.period = 'daily';
+        state.indicators = { ma: {}, macd: null, rsi: null, kdj: null };
+        var full = Array.from({ length: 70 }, (_, i) => ({ date: 'D' + i, open: 100, high: 102, low: 98, close: 100, vol: 1000, _signals: [] }));
+        var decision = {
+            basePosition: 30, position: 0, prevAdv: 0, bsMark: null, simpleAction: '持币观望', simpleColorClass: 'text-dim',
+            market: { label: '核心宽基分化', cls: 'neutral', trends: [] }, marketGate: { type: 'open' },
+            risk: { level: '低波动/偏离', score: 88, coef: 1, flags: [], stop: 96, pressure: 108 },
+            exit: { level: '无明确离场', detail: '暂无明确离场依据' }, positionCap: null,
+            waveContext: { inScope: true, regime: 'transition', regimeLabel: '过渡', stage: 'flat', positionLayer: 0, frozenHardDefense: null }
+        };
+        full[64]._decision = decision;
+        var meta = { windowScore: 3, windowScoreSignals: [], windowSignals: [], buySignals: [], exitSignals: [], warningSignals: [], inCooldown: false, allSignals: {} };
+        var emptyHtml = generateAnalysisHTML(64, full, meta);
+        var emptyText = emptyHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        var blockedMeta = { ...meta, windowScore: 7 };
+        full[64]._decision = { ...decision, signalReady: true, waveContext: { ...decision.waveContext, mainEvent: '过渡环境未满足首次建仓资格', nextCondition: '等待环境完成确认' } };
+        var blockedSummary = getStockDecisionSummary(blockedMeta, full[64]._decision);
+        full[64]._decision = { ...decision, position: 30, simpleAction: '轻仓持有', simpleColorClass: 'text-info', waveContext: { ...decision.waveContext, stage: 'entry', positionLayer: 30, frozenHardDefense: 95 } };
+        var holdingHtml = generateAnalysisHTML(64, full, meta);
+    `, context);
+    const emptyHtml = vm.runInContext('emptyHtml', context);
+    const emptyText = vm.runInContext('emptyText', context);
+    const blockedSummary = JSON.parse(vm.runInContext('JSON.stringify(blockedSummary)', context));
+    const holdingHtml = vm.runInContext('holdingHtml', context);
+    assert.ok(!emptyText.includes('当前环境：'), emptyText);
+    assert.ok(!emptyText.includes('当前阶段：') && !emptyText.includes('仓位构成：') && !emptyText.includes('下一动作条件：') && !emptyText.includes('flat'), emptyText);
+    assert.ok(!emptyHtml.includes('<span>硬防守位</span>') && !emptyHtml.includes('<span>防守位</span>'), emptyHtml);
+    assert.ok(holdingHtml.includes('<span>硬防守位</span>'), holdingHtml);
+    assert.ok(blockedSummary.why.includes('买入积分已达到 7/4') && blockedSummary.why.includes('过渡环境未满足首次建仓资格'), blockedSummary.why);
+    assert.ok(!blockedSummary.why.includes('积分只有'), blockedSummary.why);
+    assert.ok(blockedSummary.nextFocus.includes('等待环境完成确认'), JSON.stringify(blockedSummary));
+    assert.strictEqual(blockedSummary.positionWhyCode, 'wave-entry-blocked', JSON.stringify(blockedSummary));
+});
+
 runTest('right panel explains a KDJ dead cross as a one-point soft invalidation without changing the decision', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -1234,6 +1319,40 @@ runTest('right panel explains a price-break hard invalidation with score delta a
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
 });
 
+runTest('right panel keeps a trial position when signal defense breaks above bottom support', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        Object.assign(STRATEGY, STRATEGIES['波段抄底型']);
+        state.mode = 'stock';
+        state.period = 'daily';
+        var meta = {
+            currentDay: 64, currentDate: '2026-07-07', currentClose: 12.54,
+            windowScore: 7, previousWindowScore: 7,
+            windowScoreSignals: [], windowSignals: [],
+            invalidatedWindowSignals: [{ signal: 'B8', day: 63, signalDate: '2026-07-01', score: 1, reason: 'price-break', invalidationDay: 64, invalidationLevel: 12.80 }],
+            buySignals: [], exitSignals: [], warningSignals: [], allSignals: {}, inCooldown: false
+        };
+        var decision = {
+            basePosition: 30, position: 30, prevAdv: 30, bsMark: null, signalReady: true,
+            simpleAction: '轻仓持有', simpleColorClass: 'text-info', windowScore: 7,
+            market: { label: '核心宽基分化', cls: 'neutral' }, marketGate: { type: 'open', detail: '' },
+            risk: { level: '低波动/偏离', score: 86, coef: 1, flags: [], stop: 12.48, pressure: 16.23 },
+            exit: { level: '无明确离场', detail: '暂无明确离场依据' },
+            waveContext: {
+                inScope: true, frozenHardDefense: 12.48, supportSource: 'confirmed-pivot',
+                lifecycle: { active: true, entryDay: 63, entryDate: '2026-07-01', hardDefense: 12.48, localDefense: 12.80 }
+            }
+        };
+        var summary = getStockDecisionSummary(meta, decision);
+    `, context);
+    const summary = JSON.parse(vm.runInContext('JSON.stringify(summary)', context));
+    assert.strictEqual(summary.positionText, '30%');
+    assert.ok(summary.why.includes('跌破信号防守位12.80') && summary.why.includes('底部结构支撑12.48未破'), summary.why);
+    assert.ok(summary.why.includes('不生成S'), summary.why);
+});
+
 runTest('right panel keeps a B11 trial on a local break and shows its structure defense', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -1425,7 +1544,8 @@ runTest('novice copy explains the one-day soft-invalidation grace and its expiry
 runTest('product guide fixes the right panel copy standard', () => {
     assert.ok(productGuideSource.includes('右侧决策面板话术规范'), 'missing right-panel copy standard');
     assert.ok(productGuideSource.includes('结论 -> 关键推导依据') && productGuideSource.includes('独立策略页'), 'copy standard must define the two-level daily panel and standalone detail page');
-    assert.ok(productGuideSource.includes('只限制增加风险') && productGuideSource.includes('普通机会新增风险上限为30%') && productGuideSource.includes('标的自身独立走强') && productGuideSource.includes('上限为50%'), 'copy standard must explain the tiered market gate');
+    assert.ok(productGuideSource.includes('一般策略与指数路径仍按核心宽基状态限制新增风险') && productGuideSource.includes('30%') && productGuideSource.includes('50%'), 'copy standard must preserve the ordinary strategy and index market gate');
+    assert.ok(productGuideSource.includes('波段抄底型个股日线') && productGuideSource.includes('30%') && productGuideSource.includes('50%') && productGuideSource.includes('80%') && productGuideSource.includes('趋势仓') && productGuideSource.includes('封顶'), 'copy standard must explain the wave-stage market gate');
     assert.ok(productGuideSource.includes('买入依据') && productGuideSource.includes('持仓依据') && productGuideSource.includes('未买入原因'), 'copy standard must cover novice evidence language');
     assert.ok(productGuideSource.includes('信号发生日') && productGuideSource.includes('失效原因'), 'copy standard must expose historical signal timing and invalidation reason');
     assert.ok(productGuideSource.includes('实际压力类型与价格') && productGuideSource.includes('上影占全天振幅的比例'), 'pressure-failure copy must expose verifiable price evidence');

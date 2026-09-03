@@ -1592,7 +1592,8 @@ runTest('mobile viewport initializes the compact main app while strategy inspect
     assert.ok(configSource.includes("const COMPACT_MOBILE_MEDIA_QUERY = '(max-width: 1023px)'"), 'compact layout should have one shared media query');
     assert.ok(configSource.includes('function isCompactMobileLayout()'), 'compact layout helper is missing');
     assert.ok(appSource.includes('applyCompactMobileDefaults()') && appSource.includes("applyPeriodState('daily')") && appSource.includes('state.range = 90'), 'mobile initialization should select the governed daily 90-day view');
-    assert.ok(appSource.includes('bindResponsiveLayoutReload()') && appSource.includes("media.addEventListener('change', handleChange)"), 'crossing the desktop breakpoint should restart the layout lifecycle');
+    assert.ok(appSource.includes('bindResponsiveLayoutChange()') && appSource.includes("media.addEventListener('change', handleChange)"), 'crossing the desktop breakpoint should preserve the current layout lifecycle');
+    assert.ok(appSource.includes('drawViewport()') && !appSource.includes('window.location.reload();'), 'responsive breakpoint changes should redraw the current view instead of reloading the page');
     assert.ok(!appSource.includes('shouldUseMobileGate'), 'main app initialization must not return through the old gate');
     assert.ok(renderSource.includes('shouldRenderCompactMainChartOnly()') && renderSource.includes("charts: 'main-only'"), 'compact rendering should create only the main chart');
 });

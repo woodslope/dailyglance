@@ -1849,3 +1849,132 @@ runTest('data contract explains realtime terminology and UI scope', () => {
     assert.ok(dataContractSource.includes('先提交 `leftList` 快照') && dataContractSource.includes('再提交 `rightPanel` 快照'), 'UI scope should document left-list snapshot before right-panel snapshot');
     assert.ok(dataContractSource.includes('状态徽章或提示文字单独渲染时不得推进刷新时间'), 'UI scope should bind refresh time to applied snapshots');
 });
+
+runTest('persistent storage failures degrade to memory mode without rejecting startup', async () => {
+    assert.strictEqual(vm.runInContext('DB_OPEN_TIMEOUT_MS', (() => {
+        const context = makeBrowserContext();
+        vm.runInContext(configSource, context);
+        vm.runInContext(dataSource, context);
+        return context;
+    })()), 3000);
+    async function readStorageResult(indexedDBValue, expression = 'openDB({ timeoutMs: 5 })') {
+        const context = makeBrowserContext({ indexedDB: indexedDBValue });
+        vm.runInContext(configSource, context);
+        vm.runInContext(dataSource, context);
+        await vm.runInContext(`(async function() { storageResult = await ${expression}; })()`, context);
+        return JSON.parse(vm.runInContext('JSON.stringify({ result: storageResult, runtime: window.__DG_STORAGE__, hasDB: !!DB })', context));
+    }
+
+    const missing = await readStorageResult(undefined);
+    assert.strictEqual(missing.result.status, 'unavailable');
+    assert.strictEqual(missing.runtime.persistent, false);
+    assert.strictEqual(missing.hasDB, false);
+
+    const thrown = await readStorageResult({ open() { throw new Error('denied'); } });
+    assert.strictEqual(thrown.result.status, 'failed');
+    assert.match(thrown.result.reason, /denied/);
+    assert.strictEqual(thrown.hasDB, false);
+
+    const blocked = await readStorageResult({
+        open() {
+            const request = {};
+            setTimeout(() => request.onblocked(), 0);
+            return request;
+        }
+    });
+    assert.strictEqual(blocked.result.status, 'blocked');
+    assert.match(blocked.result.reason, /占用/);
+
+    const timedOut = await readStorageResult({ open() { return {}; } });
+    assert.strictEqual(timedOut.result.status, 'failed');
+    assert.match(timedOut.result.reason, /超时/);
+});
+
+runTest('database transaction failures disable persistence and keep reads and writes non-fatal', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    await vm.runInContext(`
+        (async function() {
+            DB = { transaction: function() { throw new Error('transaction denied'); }, close: function() {} };
+            setStorageCapability('available');
+            failedRead = await dbGet('sh');
+            DB = { transaction: function() { throw new Error('write denied'); }, close: function() {} };
+            setStorageCapability('available');
+            await dbSet('sh', []);
+            transactionFailureResult = { failedRead, storage: { ...window.__DG_STORAGE__ }, hasDB: !!DB };
+        })()
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(transactionFailureResult)', context));
+    assert.strictEqual(result.failedRead, null);
+    assert.strictEqual(result.storage.status, 'failed');
+    assert.strictEqual(result.storage.persistent, false);
+    assert.strictEqual(result.hasDB, false);
+});
+
+runTest('leaving the external workspace cancels observation generations and rejects stale commits', async () => {
+    const context = makeBrowserContext({ AbortController, DOMException });
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(`
+        var pendingObservationResponses = [];
+        fetch = function(url) {
+            return new Promise(function(resolve) {
+                pendingObservationResponses.push({ url: String(url), resolve: resolve });
+            });
+        };
+        function resolveObservationRequests() {
+            pendingObservationResponses.splice(0).forEach(function(entry) {
+                var isLead = entry.url.includes('ulist.np');
+                entry.resolve({
+                    ok: true,
+                    status: 200,
+                    json: async function() {
+                        return isLead
+                            ? { rc: 0, data: { diff: [{ f12: 'SOXX', f2: 100, f3: 2.2, f4: 2, f124: 1780000000 }] } }
+                            : { rc: 0, data: { total: 1, diff: [{ f12: 'BK1001', f14: '迟到板块', f3: 3.2, f24: 20, f109: 8, f160: 12, f104: 8, f105: 1, f106: 1, f124: 1780000000 }] } };
+                    }
+                });
+            });
+        }
+        state.tab = 'external';
+        state.mode = 'external';
+        canRequestMarketData = function() { return true; };
+        externalLeadStripState.cacheLoaded = true;
+        sectorTrendState.cacheLoaded = true;
+        externalLeadStripState.lastAttemptAt = 123;
+        sectorTrendState.lastAttemptAt = 456;
+        leadPromise = refreshExternalLeadStripSnapshot({ reason: 'test' });
+        sectorPromise = refreshSectorTrendSnapshot({ reason: 'test' });
+    `, context);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.ok(vm.runInContext('pendingObservationResponses.length >= 3', context));
+    vm.runInContext(`
+        cancelRuntime = cancelExternalObservationTasks('workspace-leave');
+        resolveObservationRequests();
+    `, context);
+    await vm.runInContext('Promise.all([leadPromise, sectorPromise])', context);
+    const result = JSON.parse(vm.runInContext(`JSON.stringify({
+        leadStatus: externalLeadStripState.status,
+        sectorStatus: sectorTrendState.status,
+        leadItems: Object.keys(externalLeadStripState.items),
+        sectorBoards: sectorTrendState.boards.map(function(item) { return item.name; }),
+        leadAttempt: externalLeadStripState.lastAttemptAt,
+        sectorAttempt: sectorTrendState.lastAttemptAt,
+        runtime: getExternalObservationRuntime()
+    })`, context));
+    assert.strictEqual(result.leadStatus, 'idle');
+    assert.strictEqual(result.sectorStatus, 'idle');
+    assert.deepStrictEqual(result.leadItems, []);
+    assert.deepStrictEqual(result.sectorBoards, []);
+    assert.strictEqual(result.leadAttempt, 123);
+    assert.strictEqual(result.sectorAttempt, 456);
+    assert.deepStrictEqual(result.runtime, {
+        externalLeadGeneration: 2,
+        sectorTrendGeneration: 2,
+        externalLeadInFlight: false,
+        sectorTrendInFlight: false,
+        externalLeadController: false,
+        sectorTrendController: false
+    });
+});

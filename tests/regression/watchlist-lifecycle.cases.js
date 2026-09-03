@@ -386,6 +386,111 @@ runTest('watchlist snapshot rebuilds when the latest decision is cached but the 
     assert.ok(captured.includes(98), '缺少上一个交易日决策时应重建相邻上下文');
 });
 
+runTest('watchlist snapshot restores an exact data-and-strategy derived cache before recomputing history', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var full = Array.from({ length: 100 }, function(_, i) {
+            var close = 100 + i * 0.2 + Math.sin(i / 4);
+            return {
+                date: '2026-01-' + String(i + 1).padStart(2, '0'),
+                open: close - 0.5,
+                high: close + 1,
+                low: close - 1,
+                close: close,
+                vol: 10000 + i * 10,
+                amt: (10000 + i * 10) * close
+            };
+        });
+        state.strategy = '稳健趋势型';
+        state.watchlist = [{ code: '600519', name: '贵州茅台', secid: '1.600519' }];
+        firstWatchlistDecision = computeWatchlistDecisionSnapshot(full, '600519');
+        full.forEach(function(row) {
+            row._strategy = '综合全能型';
+            row._decision = { position: 99 };
+        });
+        var recomputeCount = 0;
+        var originalComputeDecisionForIndex = computeDecisionForIndex;
+        computeDecisionForIndex = function() {
+            recomputeCount++;
+            return originalComputeDecisionForIndex.apply(this, arguments);
+        };
+        restoredWatchlistDecision = computeWatchlistDecisionSnapshot(full, '600519');
+    `, context);
+    assert.strictEqual(vm.runInContext('recomputeCount', context), 0);
+    assert.strictEqual(vm.runInContext("full[full.length - 1]._strategy", context), '稳健趋势型');
+    assert.deepStrictEqual(
+        JSON.parse(vm.runInContext('JSON.stringify(restoredWatchlistDecision)', context)),
+        JSON.parse(vm.runInContext('JSON.stringify(firstWatchlistDecision)', context))
+    );
+});
+
+runTest('wave watchlist snapshot rejects stale governance decisions and reuses current governance cache', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var full = Array.from({ length: 100 }, function(_, i) {
+            var close = 100 + i * 0.05 + Math.sin(i / 5);
+            return {
+                date: '2026-02-' + String(i + 1).padStart(2, '0'),
+                open: close - 0.3, high: close + 1, low: close - 1, close,
+                vol: 10000 + i, amt: (10000 + i) * close
+            };
+        });
+        setActiveStrategy('波段抄底型');
+        state.mode = 'index';
+        state.period = 'daily';
+        state.watchlist = [{ code: '600519', name: '贵州茅台', secid: '1.600519' }];
+        var cacheKey = buildIndicatorKeyForData('1.600519', 'daily', state.strategy, full);
+        var staleRows = full.map(function(row) {
+            return {
+                _signals: [], _signalVersion: SIGNAL_VERSION, _strategy: state.strategy,
+                _decision: { position: 80, simpleAction: '积极持有' }
+            };
+        });
+        derivedIndicatorCache.set(cacheKey, {
+            indicators: { ma: {}, macd: {}, rsi: {}, kdj: {} },
+            rows: staleRows
+        });
+        var originalComputeDecisionForIndex = computeDecisionForIndex;
+        var staleRecomputeCount = 0;
+        computeDecisionForIndex = function() {
+            staleRecomputeCount++;
+            return originalComputeDecisionForIndex.apply(this, arguments);
+        };
+        var rebuiltDecision = computeWatchlistDecisionSnapshot(full, '600519');
+        var rebuiltVersion = rebuiltDecision.waveGovernanceVersion;
+        full.forEach(function(row) {
+            row._strategy = '综合全能型';
+            row._decision = { position: 99 };
+        });
+        var currentRecomputeCount = 0;
+        computeDecisionForIndex = function() {
+            currentRecomputeCount++;
+            return originalComputeDecisionForIndex.apply(this, arguments);
+        };
+        var restoredDecision = computeWatchlistDecisionSnapshot(full, '600519');
+        var cacheVersionResult = {
+            staleRecomputeCount, currentRecomputeCount, rebuiltVersion,
+            restoredVersion: restoredDecision.waveGovernanceVersion,
+            restoredStrategy: full[full.length - 1]._strategy,
+            expectedVersion: WAVE_GOVERNANCE_VERSION
+        };
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(cacheVersionResult)', context));
+    assert.ok(result.staleRecomputeCount > 0);
+    assert.strictEqual(result.currentRecomputeCount, 0);
+    assert.strictEqual(result.rebuiltVersion, result.expectedVersion);
+    assert.strictEqual(result.restoredVersion, result.expectedVersion);
+    assert.strictEqual(result.restoredStrategy, '波段抄底型');
+});
+
 runTest('stale cache rejects realtime chart overlay but keeps sidebar quote available', async () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -918,6 +1023,163 @@ runTest('refresh schedulers start only once', () => {
         JSON.stringify(schedulerCalls);
     `, context));
     assert.deepStrictEqual(result, { intervals: 2, timeouts: 1, visibility: 1, fullSync: 1 });
+});
+
+runTest('sidebar full history sync never overlaps a still-running cycle', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var releaseSidebarSync;
+        var sidebarSyncGate = new Promise(function(resolve) { releaseSidebarSync = resolve; });
+        var sidebarSyncCalls = 0;
+        var sidebarRows = Array.from({ length: 40 }, function(_, index) {
+            return { date: '2026-07-' + String((index % 28) + 1).padStart(2, '0'), open: 100, high: 102, low: 99, close: 101, vol: 10, amt: 1000 };
+        });
+        state.tab = 'index';
+        state.mode = 'index';
+        state.id = 'sh';
+        isMarketOpen = function() { return true; };
+        canRequestMarketData = function() { return true; };
+        syncData = async function() { sidebarSyncCalls++; await sidebarSyncGate; return sidebarRows; };
+        dbSet = async function() {};
+        renderIndexList = function() {};
+        markLeftListRefreshForActiveTab = function() {};
+        firstSidebarSync = runSidebarFullSync();
+        secondSidebarSync = runSidebarFullSync();
+    `, context);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const during = JSON.parse(vm.runInContext('JSON.stringify({ calls: sidebarSyncCalls, runtime: window.__DG_SIDEBAR_FULL_SYNC__ })', context));
+    assert.strictEqual(during.calls, 3);
+    assert.strictEqual(during.runtime.inFlight, true);
+    assert.strictEqual(during.runtime.runCount, 1);
+    assert.strictEqual(during.runtime.skippedCount, 1);
+    vm.runInContext('releaseSidebarSync()', context);
+    await vm.runInContext('Promise.all([firstSidebarSync, secondSidebarSync])', context);
+    const after = JSON.parse(vm.runInContext('JSON.stringify({ calls: sidebarSyncCalls, runtime: window.__DG_SIDEBAR_FULL_SYNC__ })', context));
+    assert.strictEqual(after.calls, 7, 'the one accepted cycle should still cover the seven non-active indices');
+    assert.strictEqual(after.runtime.inFlight, false);
+    assert.strictEqual(after.runtime.runCount, 1);
+    assert.strictEqual(after.runtime.skippedCount, 1);
+    assert.ok(after.runtime.completedAt >= after.runtime.startedAt);
+});
+
+runTest('startup failures end the blocking loader in a retryable terminal state', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    const result = JSON.parse(await vm.runInContext(`
+        (async function() {
+            var stoppedReason = '';
+            var shownError = '';
+            console.error = function() {};
+            init = async function() { throw new Error('startup denied'); };
+            stopRefreshSchedulers = function(reason) { stoppedReason = reason; };
+            showStartupError = function(error) { shownError = error.message; };
+            var ok = await startDailyGlanceApplication();
+            return JSON.stringify({ ok: ok, stoppedReason: stoppedReason, shownError: shownError });
+        })()
+    `, context));
+    assert.deepStrictEqual(result, { ok: false, stoppedReason: 'startup-error', shownError: 'startup denied' });
+});
+
+runTest('leaving the external workspace cancels observation tasks before selecting market data', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    const events = JSON.parse(vm.runInContext(`
+        var workspaceEvents = [];
+        state.tab = 'external';
+        state.mode = 'external';
+        cancelExternalObservationTasks = function(reason) { workspaceEvents.push('cancel:' + reason); };
+        setPrimaryWorkspace = function(tab) { workspaceEvents.push('workspace:' + tab); };
+        selectIndex = function(id) { workspaceEvents.push('select:' + id); };
+        openMarketWorkspace('index');
+        JSON.stringify(workspaceEvents);
+    `, context));
+    assert.deepStrictEqual(events, ['cancel:workspace-leave', 'workspace:index', 'select:sh']);
+});
+
+runTest('bfcache pagehide stops refresh handles and persisted pageshow starts one fresh scheduler set', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    const result = JSON.parse(vm.runInContext(`
+        var nextHandle = 0;
+        var clearedIntervals = [];
+        var clearedTimeouts = [];
+        var lifecycleEvents = [];
+        setInterval = function() { return ++nextHandle; };
+        setTimeout = function() { return ++nextHandle; };
+        clearInterval = function(handle) { clearedIntervals.push(handle); };
+        clearTimeout = function(handle) { clearedTimeouts.push(handle); };
+        document.addEventListener = function(type) { lifecycleEvents.push('add:' + type); };
+        document.removeEventListener = function(type) { lifecycleEvents.push('remove:' + type); };
+        window.addEventListener = function(type) { lifecycleEvents.push('window-add:' + type); };
+        window.removeEventListener = function(type) { lifecycleEvents.push('window-remove:' + type); };
+        startSidebarFullSync = function() { lifecycleEvents.push('full:start'); };
+        stopSidebarFullSync = function() { lifecycleEvents.push('full:stop'); };
+        cancelExternalObservationTasks = function(reason) { lifecycleEvents.push('cancel:' + reason); };
+        refreshSidebarRealtime = function() { lifecycleEvents.push('realtime'); };
+        cachedFetch = function() { lifecycleEvents.push('active'); };
+        isMarketOpen = function() { return false; };
+        initMarketRefreshLeadership();
+        startRefreshSchedulers();
+        handleRefreshPageHide({ persisted: true });
+        handleRefreshPageShow({ persisted: true });
+        JSON.stringify({
+            started: window.__DG_REFRESH_SCHEDULERS_STARTED__,
+            intervalCount: refreshSchedulerRuntime.intervals.size,
+            timeoutCount: refreshSchedulerRuntime.timeouts.size,
+            restartCount: refreshSchedulerRuntime.restartCount,
+            leadershipStarted: marketRefreshLeadershipRuntime.started,
+            leadershipHeartbeatActive: marketRefreshLeadershipRuntime.heartbeatActive,
+            clearedIntervals: clearedIntervals,
+            clearedTimeouts: clearedTimeouts,
+            events: lifecycleEvents
+        });
+    `, context));
+    assert.strictEqual(result.started, true);
+    assert.strictEqual(result.intervalCount, 2);
+    assert.strictEqual(result.timeoutCount, 1);
+    assert.strictEqual(result.restartCount, 1);
+    assert.strictEqual(result.leadershipStarted, true);
+    assert.strictEqual(result.leadershipHeartbeatActive, true);
+    assert.strictEqual(result.clearedIntervals.length, 3);
+    assert.strictEqual(result.clearedTimeouts.length, 1);
+    assert.deepStrictEqual(result.events, [
+        'window-add:focus', 'window-add:pagehide', 'window-add:storage', 'add:visibilitychange',
+        'full:start', 'add:visibilitychange', 'remove:visibilitychange',
+        'window-remove:focus', 'window-remove:pagehide', 'window-remove:storage', 'remove:visibilitychange',
+        'full:stop', 'cancel:bfcache',
+        'window-add:focus', 'window-add:pagehide', 'window-add:storage', 'add:visibilitychange',
+        'full:start', 'add:visibilitychange'
+    ]);
+});
+
+runTest('hidden lifecycle cancels external observation work without refreshing data', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    const result = JSON.parse(vm.runInContext(`
+        var hiddenEvents = [];
+        cancelExternalObservationTasks = function(reason) { hiddenEvents.push('cancel:' + reason); };
+        refreshSectorTrendSnapshot = function() { hiddenEvents.push('sector'); return Promise.resolve(); };
+        refreshExternalLeadStripSnapshot = function() { hiddenEvents.push('lead'); return Promise.resolve(); };
+        refreshSidebarRealtime = function() { hiddenEvents.push('sidebar'); };
+        cachedFetch = function() { hiddenEvents.push('active'); };
+        state.tab = 'external';
+        state.mode = 'external';
+        document.hidden = true;
+        handleRefreshVisibilityChange();
+        JSON.stringify(hiddenEvents);
+    `, context));
+    assert.deepStrictEqual(result, ['cancel:hidden']);
 });
 
 runTest('startup market hydration refreshes stale index caches even when row count is enough', async () => {

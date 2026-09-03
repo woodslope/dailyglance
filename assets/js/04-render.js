@@ -393,26 +393,37 @@ function startChartDragPan(event) {
     cancelPendingChartHoverSelection();
     chartDragPan = {
         startX: event.clientX,
+        startY: event.clientY,
         currentX: event.clientX,
         lastAppliedX: event.clientX,
         barWidth,
         didMove: false,
         didPan: false,
-        target: event.currentTarget || null
+        target: event.currentTarget || null,
+        pointerId: event.pointerId,
+        pointerCaptured: false
     };
-    if (chartDragPan.target?.setPointerCapture && event.pointerId != null) {
-        chartDragPan.target.setPointerCapture(event.pointerId);
-    }
-    getChartDragMainBox(chartDragPan.target)?.classList?.add('drag-panning');
-    event?.preventDefault?.();
 }
 
 function moveChartDragPan(event) {
     if (!chartDragPan) return;
     chartDragPan.currentX = event.clientX;
-    if (Math.abs(chartDragPan.currentX - chartDragPan.startX) >= Math.max(3, chartDragPan.barWidth / 3)) {
-        chartDragPan.didMove = true;
+    const deltaX = chartDragPan.currentX - chartDragPan.startX;
+    const deltaY = event.clientY - chartDragPan.startY;
+    const threshold = Math.max(8, chartDragPan.barWidth / 3);
+    if (!chartDragPan.pointerCaptured && Math.abs(deltaY) >= 8 && Math.abs(deltaY) > Math.abs(deltaX)) {
+        chartDragPan = null;
+        return;
     }
+    if (!chartDragPan.pointerCaptured && Math.abs(deltaX) >= threshold) {
+        chartDragPan.didMove = true;
+        chartDragPan.pointerCaptured = true;
+        if (chartDragPan.target?.setPointerCapture && chartDragPan.pointerId != null) {
+            chartDragPan.target.setPointerCapture(chartDragPan.pointerId);
+        }
+        getChartDragMainBox(chartDragPan.target)?.classList?.add('drag-panning');
+    }
+    if (!chartDragPan.pointerCaptured) return;
     if (!chartDragPanRAF) chartDragPanRAF = requestAnimationFrame(() => applyChartDragPan(false));
     event?.preventDefault?.();
 }
@@ -421,7 +432,7 @@ function finishChartDragPan(event) {
     if (!chartDragPan) return;
     const target = chartDragPan.target || event?.currentTarget;
     applyChartDragPan(true);
-    if (target?.releasePointerCapture && event?.pointerId != null) {
+    if (chartDragPan.pointerCaptured && target?.releasePointerCapture && event?.pointerId != null) {
         try { target.releasePointerCapture(event.pointerId); } catch(e) {}
     }
     getChartDragMainBox(target)?.classList?.remove('drag-panning');
@@ -695,11 +706,16 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const causeText = signalCause.text || '近窗有效信号';
 
     let marketHint = '核心建仓门禁开放；是否开仓、持有、减仓或离场仍由标的自身信号决定。';
-    if (marketGate.type === 'increase-capped') {
+    if (marketGate.type === 'wave-trend-capped') {
+        marketHint = '核心宽基当前偏弱或数据尚未确认，只限制80%趋势仓，本次封顶50%；30%试探仓和50%确认仓仍由个股事件决定。';
+    }
+    else if (marketGate.type === 'wave-market-guidance') {
+        marketHint = '核心宽基仅作为波段仓的市场背景；30%试探仓和50%确认仓由个股事件决定，只有80%趋势仓受核心市场硬门禁。';
+    }
+    else if (marketGate.type === 'increase-capped') {
         const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
         marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap}%，当前仓位不会因宽基状态被动降低。`;
     }
-    else if (marketGate.type === 'wave-expiry-b11-exception') marketHint = '核心宽基偏弱，但本次属于到期防守观察成功后的新B11接管，只允许已有30%增加20%波段仓；普通机会30%上限仍对其他事件生效。';
     else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次开仓被暂停。';
     else if (decision?.market?.label === '核心宽基偏弱') {
         const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
@@ -912,9 +928,14 @@ function generateAnalysisHTML(idx, full, meta) {
         const text = String(value ?? '').trim();
         return text && /[。！？；]$/.test(text) ? text : `${text}。`;
     };
+    const waveGoverned = decision?.waveContext?.inScope;
+    const hasWaveDefense = Number.isFinite(Number(decision?.waveContext?.frozenHardDefense));
     const hasB11StructureDefense = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel));
-    const visibleDefenseLabel = hasB11StructureDefense ? '结构防守位' : '防守位';
-    const visibleDefenseLevel = hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop;
+    const visibleDefenseLabel = hasWaveDefense ? '硬防守位' : (hasB11StructureDefense ? '结构防守位' : '防守位');
+    const visibleDefenseLevel = hasWaveDefense
+        ? decision.waveContext.frozenHardDefense
+        : (hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop);
+    const showDefensePill = !waveGoverned || (Number(decision.position) > 0 && hasWaveDefense);
 
     const actionPanelHtml = `
         <div class="action-panel ${panelClass}">
@@ -947,9 +968,9 @@ function generateAnalysisHTML(idx, full, meta) {
                 </div>
             </div>
             <div class="level-line">
-                <div class="level-pill">
+                ${showDefensePill ? `<div class="level-pill">
                     <span>${visibleDefenseLabel}</span><strong class="mono">${fmt(visibleDefenseLevel)}</strong>
-                </div>
+                </div>` : ''}
                 <div class="level-pill">
                     <span>压力区</span><strong class="mono">${fmt(decision.risk.pressure)}</strong>
                 </div>

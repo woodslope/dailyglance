@@ -129,7 +129,7 @@ function groupsForFile(file) {
     if (file.startsWith('assets/js/05-')) return ['chart-navigation', 'watchlist-lifecycle'];
     if (file.startsWith('assets/js/07-')) return ['chart-navigation', 'watchlist-lifecycle'];
     if (file === 'index.html' || file === 'strategy-inspector.html' || file.startsWith('assets/js/strategy-inspector.js') || file.startsWith('assets/js/06-') || file.startsWith('assets/css/')) return ['presentation-state'];
-    if (file === 'scripts/status-smoke.js' || file === 'scripts/live-dataflow-smoke.js' || file === 'scripts/performance-budget.js' || file === 'scripts/ui-governance-smoke.js') return ['chart-navigation', 'presentation-state'];
+    if (file === 'scripts/status-smoke.js' || file === 'scripts/live-dataflow-smoke.js' || file === 'scripts/performance-budget.js' || file === 'scripts/stability-governance.js' || file === 'scripts/ui-governance-smoke.js') return ['chart-navigation', 'presentation-state'];
     return [];
 }
 

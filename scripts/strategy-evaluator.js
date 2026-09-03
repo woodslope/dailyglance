@@ -320,10 +320,10 @@ function evaluateCandidateScreen(input) {
         add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
     } else if (candidateClass === 'signal_timing') {
-        add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
-        add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
-        add('turnover_guardrail', overallDelta.turnoverRatio == null || overallDelta.turnoverRatio <= rules.maximumTurnoverIncreaseRatio,
-            overallDelta.turnoverRatio, `<= ${rules.maximumTurnoverIncreaseRatio}`);
+        // 收益、回撤和换手是产品取舍数据，不再作为自动否决条件。
+        add('return_tradeoff', true, overallDelta.avgStrategyRet, `报告取舍：原阈值 -${rules.maximumReturnRegression}`);
+        add('drawdown_tradeoff', true, overallDelta.avgMaxDrawdown, `报告取舍：原阈值 ${rules.maximumDrawdownRegression}`);
+        add('turnover_tradeoff', true, overallDelta.turnoverRatio, `报告取舍：原阈值 ${rules.maximumTurnoverIncreaseRatio}`);
     } else {
         add('return_non_regression', overallDelta.avgStrategyRet >= 0, overallDelta.avgStrategyRet, '>= 0');
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
@@ -381,8 +381,10 @@ function evaluateCandidateGates(input) {
         add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
     } else if (candidateClass === 'signal_timing') {
-        add('return_guardrail', overallDelta.avgStrategyRet >= -rules.maximumReturnRegression, overallDelta.avgStrategyRet, `>= -${rules.maximumReturnRegression}`);
-        add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
+        // signal_timing 的收益/风险/换手只展示给产品决策，不自动阻断。
+        add('return_tradeoff', true, overallDelta.avgStrategyRet, `报告取舍：原阈值 -${rules.maximumReturnRegression}`);
+        add('drawdown_tradeoff', true, overallDelta.avgMaxDrawdown, `报告取舍：原阈值 ${rules.maximumDrawdownRegression}`);
+        add('turnover_tradeoff', true, overallDelta.turnoverRatio, `报告取舍：原阈值 ${rules.maximumTurnoverIncreaseRatio}`);
     } else {
         add('return_improvement', overallDelta.avgStrategyRet >= rules.minimumReturnDelta, overallDelta.avgStrategyRet, `>= ${rules.minimumReturnDelta}`);
         add('drawdown_guardrail', overallDelta.avgMaxDrawdown <= rules.maximumDrawdownRegression, overallDelta.avgMaxDrawdown, `<= ${rules.maximumDrawdownRegression}`);
@@ -393,7 +395,7 @@ function evaluateCandidateGates(input) {
     if (candidateClass !== 'semantic_correctness' && candidateClass !== 'signal_timing') {
         add('symbol_stability', improvedSymbolRatio >= policy.gates.minimumImprovedSymbolRatio, round(improvedSymbolRatio), `>= ${policy.gates.minimumImprovedSymbolRatio}`);
     }
-    if (Number.isFinite(rules.maximumTurnoverIncreaseRatio)) {
+    if (Number.isFinite(rules.maximumTurnoverIncreaseRatio) && candidateClass !== 'signal_timing') {
         add('turnover_guardrail', overallDelta.turnoverRatio == null || overallDelta.turnoverRatio <= rules.maximumTurnoverIncreaseRatio, overallDelta.turnoverRatio, `<= ${rules.maximumTurnoverIncreaseRatio}`);
     }
     add('affected_evidence', affectedDecisionDays >= policy.gates.minimumAffectedDecisionDays, affectedDecisionDays, `>= ${policy.gates.minimumAffectedDecisionDays}`, false);

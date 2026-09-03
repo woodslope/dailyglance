@@ -2,7 +2,7 @@ const path = require('path');
 
 const GROUP_FILTERS = {
     'data-cache': 'cache|cached|realtime|quote|history|refresh|data contract|trading calendar|ETF',
-    'strategy-decision': 'strategy|signal|position|B/S|MACD|B8|B13|B17|B18|L5|L7|L8|L12|W2|W3|W4|backtest|baseline',
+    'strategy-decision': 'strategy|signal|position|B/S|MACD|B8|B13|B17|B18|B19|double bottom|L5|L7|L8|L12|W2|W3|W4|backtest|baseline',
     'presentation-state': 'right panel|decision evidence|novice|display|badge|copyright|ownership|mobile|build version|status copy',
     'chart-navigation': 'chart|canvas|hover|drag|panning|viewport|range preset|period switch|next day|latest button|mouse|wheel|crosshair',
     'watchlist-lifecycle': 'watchlist|sidebar|startup|search|stock display|left list|strategy switch|active memory'

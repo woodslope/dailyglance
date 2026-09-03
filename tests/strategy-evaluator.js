@@ -125,12 +125,16 @@ assert.strictEqual(rejectedScreen.status, 'reject');
 const signalTimingScreen = evaluateCandidateScreen({
     candidateClass: 'signal_timing',
     policy,
-    overallDelta: { avgStrategyRet: -0.003808, avgMaxDrawdown: 0.000512, turnoverRatio: 0.000809 },
-    affectedDecisionDays: 160
+    overallDelta: { avgStrategyRet: 0.019346, avgMaxDrawdown: 0.009474, turnoverRatio: 0.100303 },
+    affectedDecisionDays: 1001
 });
 assert.strictEqual(signalTimingScreen.status, 'ready_for_product_review');
 assert.strictEqual(signalTimingScreen.formalAdmissionRequired, false);
 assert.ok(signalTimingScreen.checks.every(check => check.pass));
+assert.deepStrictEqual(
+    signalTimingScreen.checks.filter(check => check.id.endsWith('_tradeoff')).map(check => check.id),
+    ['return_tradeoff', 'drawdown_tradeoff', 'turnover_tradeoff']
+);
 assert.throws(() => evaluateCandidateScreen({
     candidateClass: 'signal_timimg',
     policy,
@@ -165,7 +169,7 @@ assert.strictEqual(semanticLifecycle.status, 'recommend_shadow', '语义修正�
 const signalTimingFull = evaluateCandidateGates({
     candidateClass: 'signal_timing',
     policy,
-    overallDelta: { avgStrategyRet: -0.003808, avgMaxDrawdown: 0.000512, turnoverRatio: 0.000809 },
+    overallDelta: { avgStrategyRet: 0.019346, avgMaxDrawdown: 0.009474, turnoverRatio: 0.100303 },
     temporalDeltas: [{ avgStrategyRet: -0.02, avgMaxDrawdown: 0.02 }],
     symbolDeltas: [{ delta: { avgStrategyRet: -0.02 } }],
     cohorts: {
@@ -180,6 +184,8 @@ const signalTimingFull = evaluateCandidateGates({
     completedTrades: 26
 });
 assert.strictEqual(signalTimingFull.status, 'ready_for_product_review');
+assert.ok(signalTimingFull.checks.filter(check => check.id.endsWith('_tradeoff')).every(check => check.pass));
+assert.strictEqual(signalTimingFull.checks.some(check => check.id === 'turnover_guardrail'), false);
 assert.ok(signalTimingFull.checks.some(check => check.id === 'temporal_stability' && check.blocking === false));
 assert.ok(signalTimingFull.checks.some(check => check.id === 'cohort_stress' && check.blocking === false));
 const controlGate = evaluateCandidateGates({

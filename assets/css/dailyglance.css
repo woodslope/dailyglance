@@ -638,6 +638,11 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
 .loading-wrap { display: flex; align-items: center; gap: var(--space-3); background: var(--sidebar-bg); padding: var(--space-4) var(--space-6); border-radius: var(--radius-lg); border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.5); color: var(--text-main); }
+#loading.is-error { background: rgba(11,14,20,0.94); }
+.loading-error { width: min(420px, calc(100vw - var(--space-8))); align-items: flex-start; flex-direction: column; border-color: rgba(245, 166, 35, .42); background: var(--sidebar-bg); letter-spacing: 0; }
+.loading-error-kicker { color: var(--yellow); font-size: var(--text-sm); font-weight: 700; }
+.loading-error strong { color: var(--text-main); font-size: var(--text-lg); }
+.loading-error-detail { color: var(--text-dim); font-size: var(--text-base); font-weight: 400; line-height: 1.6; }
 
 @media (min-width: 1024px) and (max-width: 1180px) {
     :root {
@@ -725,9 +730,9 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         top: 0;
         z-index: 90;
         height: auto;
-        min-height: 92px;
+        min-height: 100px;
         grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-rows: 48px 44px;
+        grid-template-rows: 56px 44px;
         align-items: center;
         padding: env(safe-area-inset-top) 0 0;
         background: rgba(21, 25, 36, 0.98);
@@ -740,7 +745,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         gap: var(--space-2);
         padding-left: var(--space-3);
     }
-    .dailyglance-app .logo-box { width: 32px; height: 32px; }
+    .dailyglance-app .logo-box { width: 36px; height: 36px; }
     .dailyglance-app .header-title { font-size: var(--text-xl); }
     .dailyglance-app .header-owner { font-size: var(--text-xs); }
     .dailyglance-app .header-center {
@@ -769,15 +774,15 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .header-tool-divider,
     .dailyglance-app #btnHelp,
     .dailyglance-app #headerMoreWrap { display: none; }
-    .dailyglance-app #btnSettings { width: 44px; height: 44px; }
-    .dailyglance-app #btnSettings .icon { width: 20px; height: 20px; }
+    .dailyglance-app #btnSettings { width: 36px; height: 36px; }
+    .dailyglance-app #btnSettings .icon { width: 18px; height: 18px; }
 
     .dailyglance-app .main-container {
         display: flex;
         flex-direction: column;
         width: 100%;
         height: auto;
-        min-height: calc(100dvh - 92px - env(safe-area-inset-top));
+        min-height: calc(100dvh - 100px - env(safe-area-inset-top));
         overflow: visible;
         background: var(--dark-bg);
     }
@@ -811,6 +816,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         overflow-x: auto;
         overflow-y: hidden;
         scroll-snap-type: x proximity;
+        scroll-padding-inline: var(--space-3);
         scrollbar-width: none;
         -webkit-overflow-scrolling: touch;
     }
@@ -822,13 +828,31 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         width: max-content;
     }
     .dailyglance-app .index-list-items .nav-list-item {
-        width: auto;
+        width: 158px;
         min-width: 158px;
         min-height: 68px;
         flex: 0 0 158px;
         margin: 0;
         padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5);
         scroll-snap-align: start;
+    }
+    .dailyglance-app .index-list-items .nav-list-item .nav-list-sub {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: start;
+        row-gap: var(--space-1);
+    }
+    .dailyglance-app .index-list-items .nav-list-item .lquote {
+        display: grid;
+        grid-template-columns: 48px 54px;
+        justify-content: space-between;
+        gap: var(--space-2);
+        width: 100%;
+    }
+    .dailyglance-app .index-list-items .nav-list-item .lprice,
+    .dailyglance-app .index-list-items .nav-list-item .lchange {
+        min-width: 0;
+        white-space: nowrap;
     }
     .dailyglance-app .watchlist-items .nav-list-item {
         width: auto;
@@ -857,44 +881,70 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     }
     .dailyglance-app .watchlist-items-empty { min-height: 0; }
 
-    /* 先给出价格与每日结论，再查看一张主 K 线。 */
+    /* 手机端先看数据新鲜度与主 K 线，再看价格、结论和风险依据。 */
     .dailyglance-app .info-section {
         order: 1;
-        width: 100%;
-        flex: 0 0 auto;
-        gap: var(--space-3);
-        padding: var(--space-3);
-        padding-bottom: var(--space-3);
-        overflow: visible;
-        border-left: none;
-        background: var(--dark-bg);
+        display: contents;
     }
-    .dailyglance-app .info-section #lastRefreshBar { order: 0; }
-    .dailyglance-app .info-section #cardPrice { order: 1; }
-    .dailyglance-app .info-section #cardAnalysis { order: 2; }
+    .dailyglance-app .info-section > #lastRefreshBar {
+        order: 1;
+        width: calc(100% - var(--space-3) * 2);
+        min-width: 0;
+        margin: var(--space-3) var(--space-3) 0;
+        align-items: center;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+        column-gap: var(--space-3);
+        row-gap: var(--space-1);
+        min-height: 44px;
+    }
+    .dailyglance-app .info-section > #lastRefreshBar .refresh-time-text {
+        min-width: 0;
+        flex: 0 1 auto;
+        line-height: 1.4;
+    }
+    .dailyglance-app .info-section > #lastRefreshBar .data-status-pill {
+        flex: 0 0 auto;
+        max-width: none;
+    }
+    .dailyglance-app .info-section > #cardPrice,
+    .dailyglance-app .info-section > #cardAnalysis {
+        width: calc(100% - var(--space-3) * 2);
+        margin-right: var(--space-3);
+        margin-left: var(--space-3);
+    }
+    .dailyglance-app .info-section > #cardPrice { order: 3; margin-top: var(--space-3); }
+    .dailyglance-app .info-section > #cardAnalysis { order: 4; margin-top: var(--space-3); margin-bottom: var(--space-3); }
     .dailyglance-app .price-panel,
     .dailyglance-app .terminal-block,
-    .dailyglance-app .action-panel { padding: var(--space-4); }
+    .dailyglance-app .action-panel { padding: var(--space-3) var(--space-4); }
     .dailyglance-app .header-meta-row { gap: var(--space-2); }
     .dailyglance-app .price-main { font-size: 30px; }
     .dailyglance-app .price-sub { font-size: var(--text-3xl); }
     .dailyglance-app .nav-capsule .btn-sm {
-        min-width: 44px;
-        height: 44px;
+        min-width: 0;
+        height: 26px;
         padding: 0 var(--space-2);
         font-size: var(--text-base);
     }
-    .dailyglance-app .action-panel .action-name { font-size: 24px; line-height: 1.25; }
+    .dailyglance-app .nav-capsule {
+        height: 36px;
+        padding: var(--space-1);
+        align-items: center;
+    }
+    .dailyglance-app .action-panel .action-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+    .dailyglance-app .action-panel .action-name { min-width: 0; font-size: 24px; line-height: 1.25; overflow-wrap: anywhere; }
+    .dailyglance-app .action-panel .action-cap { min-width: 92px; max-width: 112px; }
     .dailyglance-app .action-panel .action-cap strong { font-size: var(--text-4xl); }
     .dailyglance-app .decision-reason-row {
         grid-template-columns: minmax(0, 1fr);
         row-gap: var(--space-1);
-        padding: var(--space-3) 0;
+        padding: var(--space-2) 0;
         font-size: var(--text-md);
-        line-height: 1.65;
+        line-height: 1.55;
     }
     .dailyglance-app .decision-reason-row > span { white-space: normal; }
-    .dailyglance-app .decision-evidence-row { padding: var(--space-4) 0; }
+    .dailyglance-app .decision-evidence-row { padding: var(--space-3) 0; }
     .dailyglance-app .decision-evidence-head span { font-size: var(--text-base); }
     .dailyglance-app .decision-evidence-head strong { font-size: var(--text-lg); }
     .dailyglance-app .decision-evidence-copy { font-size: var(--text-base); line-height: 1.65; }
@@ -904,15 +954,20 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .data-box-row .val { font-size: var(--text-md); }
 
     .dailyglance-app .chart-section {
-        order: 2;
-        width: 100%;
-        flex: 0 0 auto;
-        min-height: 0;
-        padding: 0 var(--space-3) max(var(--space-4), env(safe-area-inset-bottom));
-        background: var(--dark-bg);
+        display: contents;
     }
     .dailyglance-app .chart-toolbar {
-        min-height: 44px;
+        order: 2;
+        width: calc(100% - var(--space-3) * 2);
+        margin: var(--space-3) var(--space-3) var(--space-2);
+    }
+    .dailyglance-app .integrated-container {
+        order: 3;
+        width: calc(100% - var(--space-3) * 2);
+        margin: 0 var(--space-3);
+    }
+    .dailyglance-app .chart-toolbar {
+        min-height: 36px;
         align-items: center;
         margin-bottom: var(--space-2);
         gap: var(--space-2);
@@ -924,27 +979,39 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .mobile-chart-meta {
         display: flex;
         align-items: center;
-        min-height: 44px;
+        min-height: 36px;
         color: var(--text-main);
         font-size: var(--text-lg);
         font-weight: 800;
     }
     .dailyglance-app .toolbar-left { flex: 1 1 auto; }
     .dailyglance-app .toolbar-right { margin-left: auto; }
-    .dailyglance-app #updateDataBtn { width: 44px; height: 44px; }
-    .dailyglance-app #updateDataBtn .icon { width: 20px; height: 20px; }
+    .dailyglance-app #updateDataBtn { width: 36px; height: 36px; }
+    .dailyglance-app #updateDataBtn .icon { width: 18px; height: 18px; }
     .dailyglance-app .integrated-container {
-        width: 100%;
+        width: calc(100% - var(--space-3) * 2);
         height: clamp(300px, 52dvh, 420px);
         min-height: 300px;
         flex: 0 0 auto;
         touch-action: pan-y;
+        overscroll-behavior-y: auto;
     }
     .dailyglance-app .main-chart-box { flex: 1 1 auto; min-height: 0; }
     .dailyglance-app .volume-chart-box,
     .dailyglance-app .macd-chart-box,
     .dailyglance-app .kdj-chart-box { display: none !important; }
-    .dailyglance-app .chart-copyright-line { margin-bottom: 0; }
+    .dailyglance-app .chart-copyright-line {
+        order: 5;
+        flex: 0 0 auto;
+        width: calc(100% - var(--space-3) * 2);
+        min-height: 28px;
+        margin: var(--space-3) var(--space-3) max(var(--space-4), env(safe-area-inset-bottom));
+        padding: 0 var(--space-2);
+        font-size: var(--text-xs);
+        line-height: 1.4;
+        white-space: normal;
+        text-align: center;
+    }
     .dailyglance-app .workspace-empty { padding: var(--space-6); }
     .dailyglance-app .workspace-empty-action,
     .dailyglance-app .state-retry-action { min-height: 44px; }
@@ -953,17 +1020,15 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app #helpOverlay,
     .dailyglance-app #perfOverlay { display: none !important; }
     .dailyglance-app #settingsOverlay {
-        align-items: flex-end;
-        padding: max(var(--space-3), env(safe-area-inset-top)) 0 0;
+        align-items: center;
+        justify-content: center;
+        padding: max(var(--space-3), env(safe-area-inset-top)) var(--space-3) max(var(--space-3), env(safe-area-inset-bottom));
     }
     .dailyglance-app #settingsPanel {
         width: 100%;
         max-width: none;
         max-height: min(88dvh, 720px);
-        border-right: none;
-        border-bottom: none;
-        border-left: none;
-        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+        border-radius: var(--radius-lg);
     }
     .dailyglance-app #settingsPanel .strategy-page-launch { display: none; }
     .dailyglance-app #settingsPanel .sg-header { padding: var(--space-4); }

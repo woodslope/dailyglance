@@ -126,14 +126,62 @@ async function checkMainMobile(browser, width, height = 844) {
             renderIndexList();
             clearCharts('error');
             renderActiveSelectionStatus('unavailable');
+
+            // Use production-sized values so the compact index rail is checked for
+            // internal overlap, not only page-level horizontal overflow.
+            document.querySelectorAll('#indexNavList .nav-list-item').forEach(item => {
+                const price = item.querySelector('.lprice');
+                const change = item.querySelector('.lchange');
+                if (price) price.textContent = '3882.01';
+                if (change) change.textContent = '-0.59%';
+            });
+
+            const fixture = document.createElement('div');
+            fixture.className = 'action-panel panel-neutral';
+            fixture.style.cssText = 'position:fixed;left:12px;top:0;width:calc(100vw - 24px);visibility:hidden;pointer-events:none;';
+            fixture.innerHTML = `
+                <div class="action-line">
+                    <div class="action-name">保持低风险暴露并等待市场重新确认</div>
+                    <div class="action-cap"><span>当前风险仓位</span><strong class="mono">0%</strong></div>
+                </div>
+            `;
+            fixture.dataset.mobileGovernanceFixture = 'action-line';
+            document.body.appendChild(fixture);
         });
 
         const result = await page.evaluate(() => {
             const visible = selector => getComputedStyle(document.querySelector(selector)).display !== 'none';
             const rect = selector => document.querySelector(selector).getBoundingClientRect();
+            const toRect = element => {
+                const box = element.getBoundingClientRect();
+                return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height };
+            };
+            const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
             const activeItem = document.querySelector('#indexNavList .nav-list-item.active');
-            const infoRect = rect('.info-section');
+            const refreshRect = rect('#lastRefreshBar');
+            const priceRect = rect('#cardPrice');
+            const analysisRect = rect('#cardAnalysis');
             const chartRect = rect('.chart-section');
+            const refreshVisible = getComputedStyle(document.querySelector('#lastRefreshBar')).display !== 'none';
+            const indexRailElement = document.querySelector('#indexNavList .index-list-items');
+            const indexRail = Array.from(document.querySelectorAll('#indexNavList .nav-list-item')).map(item => {
+                const card = toRect(item);
+                const code = toRect(item.querySelector('.lcode'));
+                const price = toRect(item.querySelector('.lprice'));
+                const change = toRect(item.querySelector('.lchange'));
+                const fields = { code, price, change };
+                const pairs = [['code', 'price'], ['code', 'change'], ['price', 'change']];
+                const badOverlaps = pairs.filter(([left, right]) => overlaps(fields[left], fields[right])).map(([left, right]) => `${left}:${right}`);
+                const outOfCard = Object.entries(fields).filter(([, field]) => field.left < card.left || field.right > card.right || field.top < card.top || field.bottom > card.bottom).map(([name]) => name);
+                return { width: card.width, badOverlaps, outOfCard };
+            });
+            const actionFixture = document.querySelector('[data-mobile-governance-fixture="action-line"]');
+            const actionLine = actionFixture?.querySelector('.action-line');
+            const actionName = actionFixture?.querySelector('.action-name');
+            const actionCap = actionFixture?.querySelector('.action-cap');
+            const actionLineRect = actionLine ? toRect(actionLine) : null;
+            const actionNameRect = actionName ? toRect(actionName) : null;
+            const actionCapRect = actionCap ? toRect(actionCap) : null;
             return {
                 width: innerWidth,
                 main: getComputedStyle(document.getElementById('marketWorkspace')).display,
@@ -143,29 +191,55 @@ async function checkMainMobile(browser, width, height = 844) {
                 currentTab: document.querySelector('#mainTabs .nav-btn[aria-current="page"]')?.dataset.tab,
                 bodyOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
                 bodyOverflowY: getComputedStyle(document.body).overflowY,
-                navBeforeInfo: rect('.nav-section').top < infoRect.top,
-                infoBeforeChart: infoRect.top < chartRect.top,
+                navBeforeRefresh: !refreshVisible || rect('.nav-section').bottom <= refreshRect.top,
+                refreshBeforeChart: !refreshVisible || refreshRect.bottom <= chartRect.top,
+                chartBeforePrice: chartRect.bottom <= priceRect.top,
+                priceBeforeAnalysis: priceRect.bottom <= analysisRect.top,
                 mobileMeta: visible('.mobile-chart-meta'),
                 mainChart: visible('.main-chart-box'),
                 secondaryCharts: ['.volume-chart-box', '.macd-chart-box', '.kdj-chart-box'].map(visible),
                 visibleHints: Array.from(document.querySelectorAll('.empty-hint')).filter(el => getComputedStyle(el).display !== 'none').map(el => el.innerText),
                 activeItemVisible: !!activeItem && activeItem.getBoundingClientRect().left >= 0 && activeItem.getBoundingClientRect().right <= innerWidth,
                 settingsTarget: rect('#btnSettings').height,
+                headerHeight: rect('.header').height,
+                settingsTop: rect('#btnSettings').top,
+                headerTabsTop: rect('.header-center').top,
                 refreshTarget: rect('#updateDataBtn').height,
                 errorText: document.getElementById('cardAnalysis').innerText,
                 retryCount: document.querySelectorAll('#cardAnalysis .state-retry-action').length,
-                chartTouchAction: getComputedStyle(document.getElementById('mainChart')).touchAction
+                chartTouchAction: getComputedStyle(document.getElementById('mainChart')).touchAction,
+                indexRail: {
+                    minCardWidth: Math.min(...indexRail.map(item => item.width)),
+                    badOverlaps: indexRail.flatMap((item, index) => item.badOverlaps.map(pair => `${index}:${pair}`)),
+                    outOfCard: indexRail.flatMap((item, index) => item.outOfCard.map(field => `${index}:${field}`)),
+                    scrollPaddingInline: getComputedStyle(indexRailElement).scrollPaddingInline
+                },
+                mobileActionLayout: {
+                    valid: !!actionLineRect && !!actionNameRect && !!actionCapRect
+                        && actionNameRect.left >= actionLineRect.left
+                        && actionNameRect.right <= actionCapRect.left
+                        && actionCapRect.right <= actionLineRect.right
+                        && actionNameRect.bottom <= actionLineRect.bottom
+                        && actionCapRect.bottom <= actionLineRect.bottom,
+                    lineHeight: actionLineRect?.height || 0,
+                    nameHeight: actionNameRect?.height || 0,
+                    capHeight: actionCapRect?.height || 0
+                }
             };
         });
         assert(result.main === 'flex' && !result.gatePresent, `${width}px 首页未进入手机精简版`, result);
         assert(result.headerPosition === 'sticky' && result.externalTab === 'none' && result.currentTab === 'index', `${width}px 手机导航不符合精简边界`, result);
         assert(result.bodyOverflow <= 0 && result.bodyOverflowY === 'auto', `${width}px 页面滚动或横向溢出异常`, result);
-        assert(result.navBeforeInfo && result.infoBeforeChart, `${width}px 内容顺序不是标的→结论→主图`, result);
+        assert(result.navBeforeRefresh && result.refreshBeforeChart && result.chartBeforePrice && result.priceBeforeAnalysis, `${width}px 内容顺序不是标的→刷新→主图→价格→结论`, result);
         assert(result.mobileMeta && result.mainChart && result.secondaryCharts.every(value => !value), `${width}px 没有保持单 K 图布局`, result);
         assert(result.visibleHints.length === 1 && result.visibleHints[0].includes('K 线图'), `${width}px 错误态仍为隐藏副图生成可见占位`, result);
         assert(result.activeItemVisible && result.settingsTarget >= 44 && result.refreshTarget >= 44, `${width}px 标的选中态或触控目标不合格`, result);
+        assert(result.headerHeight >= 100 && result.settingsTop >= 4 && result.headerTabsTop >= 56, `${width}px 顶栏首行缺少控件呼吸空间`, result);
         assert(result.errorText.includes('数据暂不可用') && result.retryCount === 1, `${width}px 手机错误态不完整`, result);
         assert(result.chartTouchAction === 'pan-y', `${width}px 主图会阻断纵向页面滚动`, result);
+        assert(result.indexRail.minCardWidth >= 158 && result.indexRail.badOverlaps.length === 0 && result.indexRail.outOfCard.length === 0, `${width}px 指数轨道内部字段发生重叠或越界`, result.indexRail);
+        assert(result.indexRail.scrollPaddingInline === '12px', `${width}px 横向卡片轨道首尾安全区未保留`, result.indexRail);
+        assert(result.mobileActionLayout.valid && result.mobileActionLayout.lineHeight >= result.mobileActionLayout.nameHeight && result.mobileActionLayout.lineHeight >= result.mobileActionLayout.capHeight, `${width}px 长动作文案挤压右侧仓位或超出动作行`, result.mobileActionLayout);
 
         await page.evaluate(() => {
             state.watchlist = [];
@@ -199,10 +273,22 @@ async function checkMainMobile(browser, width, height = 844) {
             strategyCount: document.querySelectorAll('.settings-strategy-option').length,
             gridColumns: getComputedStyle(document.querySelector('.settings-strategy-grid')).gridTemplateColumns.split(' ').length,
             researchEntry: getComputedStyle(document.querySelector('.strategy-page-launch')).display,
-            closeHeight: parseFloat(getComputedStyle(document.querySelector('#settingsPanel .sg-close')).height)
+            closeHeight: parseFloat(getComputedStyle(document.querySelector('#settingsPanel .sg-close')).height),
+            overlay: (() => {
+                const r = document.querySelector('#settingsOverlay').getBoundingClientRect();
+                return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+            })(),
+            panel: (() => {
+                const r = document.querySelector('#settingsPanel').getBoundingClientRect();
+                return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+            })()
         }));
         assert(settings.strategyCount === 4 && settings.gridColumns === 1, `${width}px 手机策略切换面板不完整`, settings);
         assert(settings.researchEntry === 'none' && settings.closeHeight >= 44, `${width}px 手机设置仍暴露电脑研究入口或触控过小`, settings);
+        assert(settings.panel.left >= 12 && settings.panel.right <= settings.overlay.right - 12
+            && Math.abs((settings.panel.left + settings.panel.right) / 2 - settings.overlay.width / 2) <= 1
+            && settings.panel.top > 0 && settings.panel.bottom < settings.overlay.bottom,
+        `${width}px 手机设置面板没有居中或缺少外边距`, settings);
 
         if (width === 390) {
             await page.locator('.settings-strategy-option').filter({ hasText: '波段抄底型' }).click();

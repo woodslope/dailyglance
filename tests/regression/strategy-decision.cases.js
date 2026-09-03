@@ -665,6 +665,7 @@ runTest('wave B11 keeps a 30% trial after a local break and exits only below its
     vm.runInContext(configSource, context);
     vm.runInContext('function convertDailyToWeekly() { return []; }', context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
         state.mode = 'stock';
@@ -730,6 +731,7 @@ runTest('wave rejection V2 sells on the risk day and only guards event-local rec
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
         state.mode = 'stock';
@@ -810,6 +812,7 @@ runTest('wave rejection V2 sells on the risk day and only guards event-local rec
     assert.strictEqual(vm.runInContext('riskDayDecision.waveRejectionProtection.status', context), 'triggered');
     assert.ok(vm.runInContext('riskDaySummary.why.includes("风险日实时分档止盈")', context));
     assert.ok(vm.runInContext('riskDaySummary.positionWhy.includes("从30%降至0%")', context));
+    assert.strictEqual(vm.runInContext('riskDaySummary.positionWhyCode', context), 'rejection-triggered');
     assert.strictEqual(vm.runInContext('lockedDecision.position', context), 0);
     assert.strictEqual(vm.runInContext('lockedDecision.bsMark', context), null);
     assert.strictEqual(vm.runInContext('lockedDecision.waveRejectionProtection.status', context), 'locked');
@@ -826,7 +829,7 @@ runTest('wave rejection V2 sells on the risk day and only guards event-local rec
     assert.strictEqual(vm.runInContext('fiftyRiskDecision.position', context), 30);
     assert.strictEqual(vm.runInContext('fiftyRiskDecision.bsMark', context), null);
     assert.strictEqual(vm.runInContext('fiftyRiskDecision.waveRejectionProtection.status', context), 'triggered');
-    assert.strictEqual(vm.runInContext('ordinaryIncreaseDecision.position', context), 80);
+    assert.strictEqual(vm.runInContext('ordinaryIncreaseDecision.position', context), 30);
     assert.strictEqual(vm.runInContext('ordinaryIncreaseDecision.waveRejectionProtection.status', context), 'none');
     assert.strictEqual(vm.runInContext('dojiRiskDecision.position', context), 80);
     assert.strictEqual(vm.runInContext('dojiRiskDecision.waveRejectionProtection.status', context), 'none');
@@ -838,6 +841,7 @@ runTest('wave mature-profit rejection can restore one reduced tier on a confirme
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'up' });", context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
         state.mode = 'stock';
@@ -1129,7 +1133,7 @@ runTest('wave established uptrend keeps a second expiry-washout day and hands ba
     assert.strictEqual(vm.runInContext('secondWashoutDay.waveExpiryHandoff.observationAge', context), 1);
     assert.strictEqual(vm.runInContext('secondWashoutSummary.state', context), '趋势洗盘观察');
     assert.ok(vm.runInContext('secondWashoutSummary.why.includes("积分仅因窗口到期")', context));
-    assert.ok(vm.runInContext('secondWashoutSummary.positionWhy.includes("积分到期不等于上涨结构失效")', context));
+    assert.strictEqual(vm.runInContext('secondWashoutSummary.positionWhyCode', context), 'expiry-handoff-trend-washout');
     assert.strictEqual(vm.runInContext('recoveredTrendDay.position', context), 30);
     assert.strictEqual(vm.runInContext('recoveredTrendDay.bsMark', context), null);
     assert.strictEqual(vm.runInContext('recoveredTrendDay.waveExpiryHandoff.status', context), 'taken_over');
@@ -1223,10 +1227,73 @@ runTest('wave signal hard-invalidation recovery still requires price recovery', 
     assert.strictEqual(vm.runInContext('freshStrongSignalReleased.postEventScoreSignals.length', context), 2);
 });
 
+runTest('wave hard invalidation allows MA20 support recovery in an uptrend', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        state.mode = 'stock';
+        state.period = 'daily';
+        state.indicators = {
+            ma: { 20: Array(73).fill(109), 60: Array(73).fill(100) },
+            macd: {}, rsi: {}, kdj: {}
+        };
+        var full = Array.from({ length: 73 }, (_, index) => ({
+            date: '2026-06-' + String(index + 1).padStart(2, '0'),
+            open: 110, high: 112, low: 108, close: 110, vol: 1000, _signals: []
+        }));
+        full[70]._decision = {
+            position: 0,
+            prevAdv: 30,
+            bsMark: 'S',
+            waveRejectionProtection: {
+                active: true,
+                status: 'triggered',
+                eventType: 'signal_hard_invalidation',
+                triggerDay: 70,
+                triggerDate: full[70].date,
+                triggerHigh: 116,
+                triggerLow: 106,
+                triggerClose: 108,
+                recoveryCloseLevel: 112,
+                sourcePosition: 30,
+                targetPosition: 0
+            }
+        };
+        full[71]._signals = [];
+        full[71]._decision = {
+            position: 0,
+            prevAdv: 0,
+            bsMark: null,
+            waveRejectionProtection: full[70]._decision.waveRejectionProtection
+        };
+        full[72] = { ...full[72], open: 109.5, high: 111.5, low: 108.5, close: 110.5, _signals: ['B11'] };
+        var supportMeta = {
+            currentDay: 72, currentClose: 110.5, type: '✅ 明确转强', windowScore: 2,
+            buySignals: ['B11'], exitSignals: [], warningSignals: [], windowSignals: [{ day: 72, signal: 'B11' }],
+            windowScoreSignals: [{ day: 72, signal: 'B11', score: 2 }], invalidatedWindowSignals: [],
+            localBreakWindowSignals: [], allSignals: { B11: { status: true } }, inCooldown: false
+        };
+        var recovered = getWaveRejectionProtectionContext(72, full, supportMeta, 0, 0, STRATEGY, {
+            riskPositionCap: 30,
+            market: { increaseCaps: null },
+            targetStrength: { tier: 'ordinary' },
+            exit: { level: '无明确离场' },
+            positionCap: { limit: 30 },
+            trendRegime: { key: 'up' }
+        });
+    `, context);
+    assert.strictEqual(vm.runInContext('recovered.status', context), 'released');
+    assert.strictEqual(vm.runInContext('recovered.pullbackRecovery', context), true);
+    assert.strictEqual(vm.runInContext('recovered.targetPosition', context), 30);
+});
+
 runTest('wave entry-day pressure veto blocks a downtrend long-upper-shadow B and locks next-day re-entry', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
         state.mode = 'stock';
@@ -1393,6 +1460,7 @@ runTest('real Tianfu Wenlv fixture keeps 30 percent when the rejection still clo
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     context.__tianfuRows = readJsonFixture('.local/strategy-cache/stock_000558_0_000558_101_fqt1_lmt1000.json');
     context.__coreRows = {
         hs300: readJsonFixture('.local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json'),
@@ -1439,6 +1507,7 @@ runTest('real Changshan Beiming fixture exits MA20 rejection trials and ignores 
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     context.__changshanRows = readJsonFixture('.local/strategy-cache/stock_000158_0_000158_101_fqt1_lmt1000.json');
     context.__coreRows = {
         hs300: readJsonFixture('.local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json'),
@@ -1517,11 +1586,84 @@ runTest('real Changshan Beiming fixture exits MA20 rejection trials and ignores 
     assert.strictEqual(result.repeat.waveRejectionProtection.status, 'none');
 });
 
+runTest('real Changshan Beiming pressure veto restores a 30 percent trial after the observation day', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(calcSource, context);
+    context.__changshanRows = readJsonFixture('.local/strategy-cache/stock_000158_0_000158_101_fqt1_lmt1000.json');
+    context.__coreRows = {
+        hs300: readJsonFixture('.local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json'),
+        zz500: readJsonFixture('.local/strategy-cache/index_zz500_1_000905_101_fqt1_lmt1000.json'),
+        zz1000: readJsonFixture('.local/strategy-cache/index_zz1000_1_000852_101_fqt1_lmt1000.json')
+    };
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        state.mode = 'stock';
+        state.period = 'daily';
+        state.id = '000158';
+        state.stockId = '000158';
+        state.rawData = {
+            '000158': __changshanRows.map(row => ({ ...row })),
+            hs300: __coreRows.hs300.map(row => ({ ...row })),
+            zz500: __coreRows.zz500.map(row => ({ ...row })),
+            zz1000: __coreRows.zz1000.map(row => ({ ...row }))
+        };
+        state.weeklyData = {};
+        resetIndicatorState();
+        derivedIndicatorCache.clear();
+        dateIndexCache.clear();
+        updateAllIndicators();
+        var changshanFull = state.rawData['000158'];
+        var observationIdx = findDateIndex(changshanFull, '2026-07-27', '000158');
+        var recoveryIdx = findDateIndex(changshanFull, '2026-07-28', '000158');
+        var holdIdx = findDateIndex(changshanFull, '2026-07-29', '000158');
+        var observation = changshanFull[observationIdx]._decision;
+        var recovery = changshanFull[recoveryIdx]._decision;
+        var hold = changshanFull[holdIdx]._decision;
+        var observationMeta = getSignalMeta(observationIdx, changshanFull, state.indicators);
+        var observationSummary = getStockDecisionSummary(observationMeta, observation);
+    `, context);
+    const result = JSON.parse(vm.runInContext(`JSON.stringify({
+        observation: {
+            position: observation.position,
+            bsMark: observation.bsMark,
+            status: observation.waveRejectionProtection.status,
+            lockRemaining: observation.waveRejectionProtection.lockRemaining,
+            nextFocus: observationSummary.nextFocus
+        },
+        recovery: {
+            position: recovery.position,
+            bsMark: recovery.bsMark,
+            status: recovery.waveRejectionProtection.status,
+            allowRecoveryIncrease: recovery.waveRejectionProtection.allowRecoveryIncrease,
+            regime: recovery.waveContext.regime
+        },
+        hold: {
+            position: hold.position,
+            bsMark: hold.bsMark
+        }
+    })`, context));
+    assert.strictEqual(result.observation.position, 0);
+    assert.strictEqual(result.observation.bsMark, null);
+    assert.strictEqual(result.observation.status, 'locked');
+    assert.strictEqual(result.observation.lockRemaining, 1);
+    assert.ok(result.observation.nextFocus.includes('第1个观察交易日') && result.observation.nextFocus.includes('下一个交易日重新评估30%试探仓'));
+    assert.strictEqual(result.recovery.position, 30, JSON.stringify(result));
+    assert.strictEqual(result.recovery.bsMark, 'B');
+    assert.strictEqual(result.recovery.status, 'released');
+    assert.strictEqual(result.recovery.allowRecoveryIncrease, true);
+    assert.strictEqual(result.recovery.regime, 'down');
+    assert.strictEqual(result.hold.position, 30);
+    assert.strictEqual(result.hold.bsMark, null);
+});
+
 runTest('real Haima fixture blocks hard-invalidation churn and post-rejection retries until price recovery', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     context.__haimaRows = readJsonFixture('.local/strategy-cache/stock_000572_0_000572_101_fqt1_lmt1000.json');
     context.__coreRows = {
         hs300: readJsonFixture('.local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json'),
@@ -1629,15 +1771,9 @@ runTest('real Haima fixture blocks hard-invalidation churn and post-rejection re
     assert.strictEqual(result.recovery.waveRejectionProtection.stableRecovery, false);
     assert.strictEqual(result.julyEntry.position, 30);
     assert.strictEqual(result.julyEntry.bsMark, 'B');
-    assert.strictEqual(result.julyFailure.position, 0);
-    assert.strictEqual(result.julyFailure.bsMark, 'S');
-    assert.strictEqual(result.julyFailure.waveRejectionProtection.eventType, 'fresh_entry_failure');
-    assert.strictEqual(result.julyFailureSummary.state, '新仓失败离场');
-    assert.ok(result.julyFailureSummary.why.includes('2026-07-24高点3.57'));
-    assert.ok(result.julyFailureSummary.why.includes('MA20 3.58'));
-    assert.ok(result.julyFailureSummary.why.includes('2026-07-23买入收盘3.53下跌3.7%'));
-    assert.ok(result.julyFailureSummary.why.includes('回落至3.40并收在全天最低'));
-    assert.ok(result.julyFailureSummary.why.includes('上影占全天振幅52.9%'));
+    assert.strictEqual(result.julyFailure.position, 30);
+    assert.strictEqual(result.julyFailure.bsMark, null);
+    assert.notStrictEqual(result.julyFailureSummary.state, '新仓失败离场');
     const [dec04, dec05, dec09, dec10, dec22, dec25, dec26, dec29] = result.december.map(item => item.decision);
     assert.strictEqual(dec04.position, 0, JSON.stringify(result.december, null, 2));
     assert.strictEqual(dec04.bsMark, 'S');
@@ -1735,7 +1871,7 @@ runTest('wave fresh entry downside failure uses separate stock and index thresho
     assert.strictEqual(vm.runInContext('hardBreakDecision.bsMark', context), 'S');
     assert.strictEqual(vm.runInContext('hardBreakDecision.waveRejectionProtection.eventType', context), 'fresh_entry_hard_break');
     assert.ok(vm.runInContext('hardBreakSummary.why.includes("收盘跌破") && hardBreakSummary.why.includes("买入日最低价") && hardBreakSummary.why.includes("收盘0.98")', context));
-    assert.ok(vm.runInContext('hardBreakSummary.positionWhy.includes("直接归零")', context));
+    assert.strictEqual(vm.runInContext('hardBreakSummary.positionWhyCode', context), 'rejection-fresh-entry-hard-break');
     assert.strictEqual(vm.runInContext('indexDecision.position', context), 0);
     assert.strictEqual(vm.runInContext('indexDecision.bsMark', context), 'S');
     assert.strictEqual(vm.runInContext('indexDecision.waveRejectionProtection.eventType', context), 'fresh_entry_downside_failure');
@@ -1809,7 +1945,7 @@ runTest('wave index fresh-entry rejection requires a near-defense bearish long u
     assert.ok(vm.runInContext('decision.waveRejectionProtection.pressureSources.some(item => item.type === "ma" && item.period === 20)', context));
     assert.strictEqual(vm.runInContext('summary.state', context), '指数新仓失败离场');
     assert.ok(vm.runInContext('summary.why.includes("长上影") && summary.why.includes("压力")', context));
-    assert.ok(vm.runInContext('summary.positionWhy.includes("指数新仓冲高失败")', context));
+    assert.strictEqual(vm.runInContext('summary.positionWhyCode', context), 'index-fresh-entry-failure');
     assert.strictEqual(vm.runInContext('ordinaryWickDecision.position', context), 30);
     assert.strictEqual(vm.runInContext('farFromDefenseDecision.position', context), 30);
     assert.strictEqual(vm.runInContext('bullishWickDecision.position', context), 30);
@@ -2009,7 +2145,7 @@ runTest('wave MA20 pullback observation keeps one 30 percent stock day without t
     assert.strictEqual(result.observation.waveMA20PullbackObservation.applied, true);
     assert.strictEqual(result.observationSummary.state, 'MA20回踩观察');
     assert.ok(result.observationSummary.why.includes('不加仓也不清仓'));
-    assert.ok(result.observationSummary.positionWhy.includes('未满足B6加仓条件'));
+    assert.strictEqual(result.observationSummary.positionWhyCode, 'ma20-pullback-observation');
     assert.ok(result.observationSummary.nextFocus.includes('重新站回MA20'));
     assert.strictEqual(result.recovered.position, 30);
     assert.strictEqual(result.recovered.bsMark, null);
@@ -2033,6 +2169,7 @@ runTest('wave breakout MA20 pullback is distinct from declining-MA20 defense', (
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'up' });", context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
         state.mode = 'stock';
@@ -2091,6 +2228,7 @@ runTest('wave MA20 trend defense delays standalone L3 and limited hard invalidat
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'up' });", context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
         state.mode = 'stock';
@@ -2174,8 +2312,47 @@ runTest('wave MA20 trend defense delays standalone L3 and limited hard invalidat
     assert.strictEqual(result.hardExpired.position, 0);
     assert.strictEqual(result.hardExpired.bsMark, 'S');
     assert.strictEqual(result.hardExpired.status, 'expired');
-    assert.strictEqual(result.indexExit.position, 0);
-    assert.strictEqual(result.indexExit.bsMark, 'S');
+    assert.strictEqual(result.indexExit.position, 30);
+    assert.strictEqual(result.indexExit.bsMark, null);
+});
+
+runTest('wave bottom and range environments do not treat standalone MACD death cross as immediate clear-out', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        state.mode = 'stock';
+        state.period = 'daily';
+        state.indicators = { ma: { 20: Array(80).fill(100), 60: Array(80).fill(110) }, macd: {}, rsi: {}, kdj: {} };
+        var full = Array.from({ length: 80 }, (_, index) => ({
+            date: '2026-09-' + String(index + 1).padStart(2, '0'),
+            open: 100, high: 101, low: 98, close: 99, vol: 1000, _signals: []
+        }));
+        full[69]._decision = { position: 30, prevAdv: 0, bsMark: 'B' };
+        full[70]._signals = ['L3'];
+        var meta = {
+            currentDay: 70, currentClose: 99, type: '🚪 趋势破位', windowScore: 0,
+            buySignals: [], exitSignals: ['L3'], warningSignals: [], allSignals: { L3: true },
+            windowSignals: [], windowScoreSignals: [], invalidatedWindowSignals: [], localBreakWindowSignals: [],
+            inCooldown: false, daysSinceExit: 0
+        };
+        getWaveContext = () => ({ inScope: true, regime: 'down', regimeLabel: '下跌', boxSupport: 98, boxPressure: 105, boxMidpoint: 101.5, box: { valid: false, atr14: 1 } });
+        getSignalMeta = () => meta;
+        getMarketContext = () => ({ label: '核心宽基分化', cls: 'neutral', increaseCaps: null });
+        getRiskContext = () => ({ score: 80, level: '低波动/偏离', coef: 1, flags: [], stop: 95, pressure: 105 });
+        getExitSeverity = () => ({ level: '强离场', detail: 'MACD死叉' });
+        getBasePosition = () => 0;
+        getPositionCap = () => null;
+        getTargetStrengthTier = () => ({ tier: 'ordinary', label: '普通机会', reasons: [] });
+        getWaveRejectionProtectionContext = (idx, rows, currentMeta, prevPos, targetPosition) => ({ active: false, status: 'none', targetPosition });
+        var decision = computeDecisionForIndex(70, full, 30);
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ position: decision.position, bsMark: decision.bsMark, action: decision.simpleAction, observed: decision.waveStandaloneL3Observation })', context));
+    assert.strictEqual(result.position, 30);
+    assert.strictEqual(result.bsMark, null);
+    assert.strictEqual(result.action, '谨慎持有');
+    assert.strictEqual(result.observed, true);
 });
 
 runTest('real CYTS fixture adds the B11 wave layer then releases it on the 2026-08-07 MA20 observation day', () => {
@@ -2183,6 +2360,7 @@ runTest('real CYTS fixture adds the B11 wave layer then releases it on the 2026-
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     context.__cytsRows = readJsonFixture('.local/strategy-cache/stock_600138_1_600138_101_fqt1_lmt1000.json');
     context.__coreRows = {
         hs300: readJsonFixture('.local/strategy-cache/index_hs300_1_000300_101_fqt1_lmt1000.json'),
@@ -2244,7 +2422,7 @@ runTest('real CYTS fixture adds the B11 wave layer then releases it on the 2026-
     assert.strictEqual(result.add.prevAdv, 30);
     assert.strictEqual(result.add.bsMark, null);
     assert.strictEqual(result.add.layer.applied, true);
-    assert.strictEqual(result.add.layer.marketException, true);
+    assert.strictEqual(result.add.layer.marketException, false);
     assert.strictEqual(result.add.summary.state, '防守接管加仓');
     assert.strictEqual(result.decision.position, 30);
     assert.strictEqual(result.decision.prevAdv, 50);
@@ -2329,7 +2507,7 @@ runTest('wave expiry handoff keeps one 30 percent recovery day and requires tren
     assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(handoffDecision.waveExpiryHandoff.expiredSignals.map(item => item.signal))', context)), ['B7', 'B16']);
     assert.strictEqual(vm.runInContext('handoffSummary.state', context), '反弹接管观察');
     assert.ok(vm.runInContext('handoffSummary.why.includes("仅因窗口到期")', context));
-    assert.ok(vm.runInContext('handoffSummary.positionWhy.includes("不生成S")', context));
+    assert.strictEqual(vm.runInContext('handoffSummary.positionWhyCode', context), 'index-expiry-handoff');
     assert.strictEqual(vm.runInContext('expiredAfterGraceDecision.position', context), 0);
     assert.strictEqual(vm.runInContext('expiredAfterGraceDecision.bsMark', context), 'S');
     assert.strictEqual(vm.runInContext('trendTakeoverDecision.position', context), 50);
@@ -2423,7 +2601,7 @@ runTest('wave stock expiry keeps one defensive day when structure and medium mom
     assert.strictEqual(vm.runInContext('defensiveDecision.waveExpiryHandoff.observationMode', context), 'defensive');
     assert.strictEqual(vm.runInContext('defensiveSummary.state', context), '到期防守观察');
     assert.ok(vm.runInContext('defensiveSummary.why.includes("MA20未下行")', context));
-    assert.ok(vm.runInContext('defensiveSummary.positionWhy.includes("不生成S")', context));
+    assert.strictEqual(vm.runInContext('defensiveSummary.positionWhyCode', context), 'expiry-handoff');
     assert.ok(vm.runInContext('defensiveSummary.nextFocus.includes("重新站上MA5与MA20")', context));
     assert.ok(vm.runInContext('defensiveSummary.nextFocus.includes("观察日低点6.76")', context));
     assert.strictEqual(vm.runInContext('recoveredDecision.position', context), 30);
@@ -2446,6 +2624,7 @@ runTest('wave defensive expiry B11 takeover uses a separate 30 plus 20 position 
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'transition' });", context);
     vm.runInContext(renderSource, context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
@@ -2555,11 +2734,11 @@ runTest('wave defensive expiry B11 takeover uses a separate 30 plus 20 position 
     assert.strictEqual(vm.runInContext('addDecision.position', context), 50);
     assert.strictEqual(vm.runInContext('addDecision.bsMark', context), null);
     assert.strictEqual(vm.runInContext('addDecision.waveExpiryB11TakeoverAdd.applied', context), true);
-    assert.strictEqual(vm.runInContext('addDecision.waveExpiryB11TakeoverAdd.marketException', context), true);
-    assert.strictEqual(vm.runInContext('addDecision.marketGate.type', context), 'wave-expiry-b11-exception');
+    assert.strictEqual(vm.runInContext('addDecision.waveExpiryB11TakeoverAdd.marketException', context), false);
+    assert.strictEqual(vm.runInContext('addDecision.marketGate.type', context), 'wave-market-guidance');
     assert.strictEqual(vm.runInContext('addSummary.state', context), '防守接管加仓');
-    assert.ok(vm.runInContext('addSummary.positionWhy.includes("30%基础仓与20%波段仓")', context));
-    assert.ok(vm.runInContext('addEvidence.marketHint.includes("普通机会30%上限仍对其他事件生效")', context));
+    assert.strictEqual(vm.runInContext('addSummary.positionWhyCode', context), 'expiry-b11-takeover-add');
+    assert.ok(vm.runInContext('addEvidence.marketHint.includes("50%确认仓由个股事件决定")', context));
     assert.strictEqual(vm.runInContext('holdDecision.position', context), 50);
     assert.strictEqual(vm.runInContext('holdDecision.bsMark', context), null);
     assert.strictEqual(vm.runInContext('holdDecision.waveExpiryB11TakeoverAdd.active', context), true);
@@ -2675,7 +2854,7 @@ runTest('precomputed weekly signal contexts preserve every daily signal result',
         };
         var originalWeeklyContexts = weeklyContextRows.map(function(_, idx) {
             var ctx = new SignalContext(idx, weeklyContextRows, weeklyContextIndicators, state);
-            return { wd: ctx.wd, weeklySupport: ctx.weeklySupport };
+            return { wd: ctx.wd, weeklySupport: ctx.weeklySupport, weeklyDoubleBottom: ctx.weeklyDoubleBottom };
         });
         var precomputedWeeklyContexts = buildWeeklySignalContexts(weeklyContextRows);
         var originalDailySignals = weeklyContextRows.map(function(_, idx) {
@@ -2961,6 +3140,197 @@ runTest('B18 flags BOLL lower-band reclaim after selloff but remains observation
     assert.strictEqual(vm.runInContext('Object.values(STRATEGIES).some(strategy => strategy.buySignals.includes("B18"))', context), false);
     assert.strictEqual(vm.runInContext('meta.buySignals.includes("B18")', context), false);
     assert.strictEqual(vm.runInContext('meta.windowSignals.some(w => w.signal === "B18")', context), false);
+});
+
+runTest('B19 double bottom waits for a right-side breakout and only scores the wave strategy', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        state.mode = 'stock';
+        state.period = 'daily';
+        var data = Array.from({ length: 71 }, (_, i) => ({
+            date: '2026-08-' + String(i + 1).padStart(2, '0'),
+            open: 13.8,
+            high: 14.1,
+            low: 13.6,
+            close: 13.9,
+            vol: 1000
+        }));
+        data[62].low = 12.9;
+        data[63].low = 12.7;
+        data[64] = { date: '2026-08-24', open: 12.7, high: 12.9, low: 12.30, close: 12.6, vol: 1300 };
+        data[65] = { date: '2026-08-25', open: 12.6, high: 13.0, low: 12.55, close: 12.9, vol: 1200 };
+        data[66] = { date: '2026-08-26', open: 12.9, high: 13.50, low: 12.8, close: 13.4, vol: 1400 };
+        data[67] = { date: '2026-08-27', open: 13.35, high: 13.45, low: 13.0, close: 13.1, vol: 1100 };
+        data[68] = { date: '2026-08-28', open: 13.1, high: 13.2, low: 12.65, close: 12.8, vol: 1000 };
+        data[69] = { date: '2026-08-31', open: 12.75, high: 12.95, low: 12.34, close: 12.7, vol: 1250 };
+        data[70] = { date: '2026-09-01', open: 13.2, high: 14.0, low: 13.1, close: 13.88, vol: 1800 };
+        var ind = {
+            ma: { 5: [], 10: [], 20: [], 60: [] },
+            macd: { diff: [], dea: [] },
+            rsi: { val: [] },
+            kdj: { k: [], d: [], j: [] }
+        };
+        for (var i = 0; i < data.length; i++) {
+            ind.ma[5][i] = 13.0;
+            ind.ma[10][i] = 13.0;
+            ind.ma[20][i] = 13.2;
+            ind.ma[60][i] = 14.0;
+            ind.macd.diff[i] = 0;
+            ind.macd.dea[i] = 0;
+            ind.rsi.val[i] = 50;
+            ind.kdj.k[i] = 50;
+            ind.kdj.d[i] = 50;
+            ind.kdj.j[i] = 50;
+        }
+        var secondBottomSignals = calculateDailySignals(69, data, ind);
+        var breakoutSignals = calculateDailySignals(70, data, ind);
+        var weak = data.map(item => ({ ...item }));
+        weak[70] = { ...weak[70], open: 13.2, high: 13.58, close: 13.55 };
+        var weakSignals = calculateDailySignals(70, weak, ind);
+        state.mode = 'index';
+        var indexSignals = calculateDailySignals(70, data, ind);
+    `, context);
+    assert.strictEqual(vm.runInContext('secondBottomSignals.includes("B19")', context), false);
+    assert.strictEqual(vm.runInContext('breakoutSignals.includes("B19")', context), true);
+    assert.strictEqual(vm.runInContext('weakSignals.includes("B19")', context), false);
+    assert.strictEqual(vm.runInContext('indexSignals.includes("B19")', context), false);
+    assert.strictEqual(vm.runInContext('SIGNAL_SCORES.B19', context), 3);
+    assert.strictEqual(vm.runInContext('SIGNAL_DESC.B19.desc', context), '双底突破确认');
+    assert.strictEqual(vm.runInContext('STRATEGIES["波段抄底型"].buySignals.includes("B19")', context), true);
+    assert.strictEqual(vm.runInContext('STRATEGIES["波段抄底型"].scoreGroups.some(group => group.length === 1 && group[0] === "B19")', context), true);
+    assert.strictEqual(vm.runInContext('Object.entries(STRATEGIES).filter(([name]) => name !== "波段抄底型").some(([, strategy]) => strategy.buySignals.includes("B19"))', context), false);
+});
+
+runTest('wave strategy recognizes larger daily and weekly double-bottom repair candidates', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        state.mode = 'stock';
+        state.period = 'daily';
+        var daily = Array.from({ length: 140 }, (_, i) => ({ date: '2026-01-' + String(i + 1).padStart(3, '0'), open: 100, high: 102, low: 98, close: 100, vol: 1000 }));
+        daily[108].low = 94; daily[109].low = 92; daily[110] = { date: '2026-04-21', open: 95, high: 97, low: 90, close: 92, vol: 1000 }; daily[111].low = 93; daily[112].low = 94;
+        daily[127].low = 96; daily[128].low = 95; daily[129] = { ...daily[129], low: 94, close: 96 }; daily[130] = { date: '2026-05-29', open: 95, high: 98, low: 91, close: 97, vol: 900 };
+        var ind = { ma: { 5: [], 10: [], 20: [], 60: [] }, macd: { diff: [], dea: [] }, rsi: { val: [] }, kdj: { k: [], d: [], j: [] } };
+        for (var i = 0; i < daily.length; i++) { ind.ma[5][i] = 100; ind.ma[10][i] = 100; ind.ma[20][i] = 100; ind.ma[60][i] = 100; ind.macd.diff[i] = 0; ind.macd.dea[i] = 0; ind.rsi.val[i] = 50; ind.kdj.k[i] = 50; ind.kdj.d[i] = 50; ind.kdj.j[i] = 50; }
+        var dailySignals = calculateDailySignals(130, daily, ind);
+        state.period = 'weekly';
+        var weekly = Array.from({ length: 70 }, (_, i) => ({ date: '2026-W' + String(i + 1).padStart(2, '0'), open: 100, high: 102, low: 98, close: 100, vol: 1000 }));
+        weekly[43].low = 95; weekly[44] = { date: '2026-W45', open: 95, high: 98, low: 90, close: 92, vol: 1000 }; weekly[45].low = 94;
+        weekly[63].low = 96; weekly[64] = { ...weekly[64], low: 95, close: 96 }; weekly[65] = { date: '2026-W66', open: 95, high: 98, low: 92, close: 97, vol: 900 };
+        var weeklySignals = calculateDailySignals(65, weekly, ind);
+    `, context);
+    assert.ok(vm.runInContext('dailySignals.includes("B20")', context));
+    assert.ok(vm.runInContext('weeklySignals.includes("B21")', context));
+    assert.strictEqual(vm.runInContext('SIGNAL_DESC.B20.desc', context), '大级别双底第二底修复');
+    assert.strictEqual(vm.runInContext('SIGNAL_DESC.B21.desc', context), '周线双底第二底修复');
+});
+
+runTest('wave strategy permits a multi-timeframe double-bottom trial without lowering the ordinary score gate', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return state.weeklyData[state.id] || []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        state.strategy = '波段抄底型'; state.mode = 'stock'; state.period = 'daily'; state.id = 'mtf-test';
+        state.indicators = { ma: { 20: [], 60: [] }, macd: null, rsi: null, kdj: null };
+        var full = Array.from({ length: 70 }, (_, index) => {
+            var date = new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10);
+            return { date, open: 100, high: 102, low: 98, close: 100, vol: 1000, _signals: [] };
+        });
+        full[69] = { ...full[69], date: '2026-08-31', open: 99, high: 101, low: 98.5, close: 100, vol: 1100, _signals: ['B20'] };
+        for (var i = 0; i < full.length; i++) { state.indicators.ma[20][i] = 100; state.indicators.ma[60][i] = 110; }
+        state.indicators.ma[20][68] = 101;
+        var weekly = Array.from({ length: 10 }, (_, index) => ({ date: '2026-W' + String(index + 1).padStart(2, '0'), open: 100, high: 102, low: 95, close: 99, vol: 1000 }));
+        weekly[3].low = 95; weekly[4] = { date: '2026-W05', open: 95, high: 100, low: 90, close: 94, vol: 1000 }; weekly[5].low = 95;
+        weekly[6].low = 95; weekly[7].low = 96; weekly[8] = { ...weekly[8], low: 95, close: 93 };
+        weekly[9] = { date: '2026-08-31', open: 92, high: 96, low: 91, close: 94, vol: 1100 };
+        state.weeklyData['mtf-test'] = weekly;
+        state.rawData['mtf-test'] = full;
+        getWaveContext = () => ({ inScope: true, regime: 'down', regimeLabel: '下跌', boxSupport: 98, boxPressure: 110, boxMidpoint: 104, positionCap: 30, box: { valid: false, atr14: 1 }, lifecycle: null });
+        getMarketContext = () => ({ label: '核心宽基偏弱', cls: 'bear', increaseCaps: { ordinary: 30, independent: 50 }, trends: [] });
+        getRiskContext = () => ({ score: 100, level: '低波动/偏离', coef: 1, stop: 95, pressure: 110 });
+        getExitSeverity = () => ({ level: '无明确离场', detail: '暂无明确离场依据' });
+        getWaveRejectionProtectionContext = (idx, rows, meta, prevPos, targetPosition) => ({ active: false, status: 'none', targetPosition });
+        var meta = {
+            type: '👀 关注异动', windowScore: 3, buySignals: ['B20'], exitSignals: [], warningSignals: [],
+            allSignals: { B20: { status: true, score: 3 } }, windowSignals: [{ day: 69, signal: 'B20' }],
+            windowScoreSignals: [{ day: 69, signal: 'B20', score: 3 }], invalidatedWindowSignals: [],
+            localBreakWindowSignals: [], inCooldown: false, daysSinceExit: Infinity
+        };
+        getSignalMeta = () => meta;
+        var probeEntry = computeDecisionForIndex(69, full, 0);
+        var probeSummary = getStockDecisionSummary(meta, probeEntry);
+        weekly[4].low = 70;
+        var ordinaryThreePointEntry = computeDecisionForIndex(69, full, 0);
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ probeEntry, probeSummary, ordinaryThreePointEntry })', context));
+    assert.strictEqual(result.probeEntry.position, 30);
+    assert.strictEqual(result.probeEntry.bsMark, 'B');
+    assert.strictEqual(result.probeEntry.waveContext.lifecycle.entryMode, 'multi-timeframe-double-bottom-probe');
+    assert.strictEqual(result.probeEntry.waveContext.multiTimeframeBottomProbe.qualified, true);
+    assert.strictEqual(result.probeEntry.waveContext.multiTimeframeBottomProbe.provisional, true);
+    assert.ok(result.probeEntry.positionDriver.includes('周线双底候选与日线B20共振'));
+    assert.strictEqual(result.probeSummary.state, '多周期底部共振试探');
+    assert.ok(result.probeSummary.why.includes('周线双底第二底与日线共振'));
+    assert.strictEqual(result.ordinaryThreePointEntry.position, 0);
+    assert.strictEqual(result.ordinaryThreePointEntry.waveContext.multiTimeframeBottomProbe, null);
+});
+
+runTest('weekly double-bottom context accepts a nearby second-bottom cluster without loosening daily B20', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return state.weeklyData[state.id] || []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        state.mode = 'stock'; state.period = 'daily'; state.id = 'weekly-cluster-test';
+        var daily = Array.from({ length: 40 }, (_, index) => ({ date: '2026-01-' + String(index + 1).padStart(2, '0'), open: 100, high: 102, low: 98, close: 100, vol: 1000 }));
+        var weeks = [
+            { date: '2026-W01', open: 100, high: 102, low: 98, close: 100 },
+            { date: '2026-W02', open: 100, high: 102, low: 98, close: 100 },
+            { date: '2026-W03', open: 100, high: 102, low: 98, close: 100 },
+            { date: '2026-W04', open: 100, high: 102, low: 98, close: 100 },
+            { date: '2026-W05', open: 100, high: 103, low: 95, close: 99 },
+            { date: '2026-W06', open: 99, high: 104, low: 101, close: 103 },
+            { date: '2026-W07', open: 103, high: 104, low: 100, close: 102 },
+            { date: '2026-W08', open: 102, high: 103, low: 95.2, close: 99 },
+            { date: '2026-W09', open: 99, high: 103, low: 101, close: 102 },
+            { date: '2026-W10', open: 102, high: 103, low: 100, close: 101 },
+            { date: '2026-W11', open: 101, high: 103, low: 99, close: 102 },
+            { date: '2026-W12', open: 102, high: 103, low: 95.0, close: 99 },
+            { date: '2026-W13', open: 99, high: 103, low: 95.4, close: 101 }
+        ];
+        var contextWithNearbyLow = getWeeklyDoubleBottomContext(daily, 39, weeks, { lookbackDays: 52, minimumGap: 4, maximumGap: 26, tolerance: 0.07, pivotDays: 1, allowNearbyRecentLow: true, recentLowTolerance: 0.03 });
+        var contextWithoutNearbyLow = getWeeklyDoubleBottomContext(daily, 39, weeks, { lookbackDays: 52, minimumGap: 4, maximumGap: 26, tolerance: 0.07, pivotDays: 1, allowNearbyRecentLow: false });
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ contextWithNearbyLow, contextWithoutNearbyLow })', context));
+    assert.strictEqual(result.contextWithNearbyLow.candidate, true);
+    assert.strictEqual(result.contextWithNearbyLow.details.firstBottomValue, 95.2);
+    assert.strictEqual(result.contextWithoutNearbyLow.candidate, false);
+});
+
+runTest('wave strategy exposes daily and weekly pressure as a peak candidate and confirms weak rejection', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        state.strategy = '波段抄底型'; state.mode = 'stock'; state.period = 'daily';
+        var full = Array.from({ length: 140 }, (_, i) => ({ date: '2026-01-' + String(i + 1).padStart(3, '0'), open: 100, high: 102, low: 98, close: 100, vol: 1000 }));
+        full[110] = { date: '2026-04-21', open: 100, high: 120, low: 98, close: 115, vol: 1000 }; full[109].high = 100; full[111].high = 100;
+        full[139] = { date: '2026-06-15', open: 114, high: 122, low: 100, close: 104, vol: 1000 };
+        var ind = { ma: { 20: full.map(() => 100), 60: full.map(() => 100) } };
+        var peak = getWavePeakContext(139, full, ind, { exitSignals: [] });
+    `, context);
+    assert.strictEqual(vm.runInContext('peak.candidate', context), true);
+    assert.strictEqual(vm.runInContext('peak.confirmed', context), true);
+    assert.ok(vm.runInContext('peak.sources.length >= 1', context));
 });
 
 runTest('L7 and L8 remain visible take-profit observations without driving strategy exits', () => {
@@ -3437,11 +3807,12 @@ runTest('stock high-position qualification caps declining and unconfirmed struct
     assert.strictEqual(result.indexPath.positionCap, null);
 });
 
-runTest('wave strategy keeps 30 percent watch entry and uses unified 30/50/80 trend qualification after score readiness', () => {
+runTest('wave strategy uses event-driven 30/50/80 stages instead of moving-average qualification alone', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext('function convertDailyToWeekly() { return []; }', context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
     vm.runInContext(`
         state.period = 'daily';
         state.mode = 'stock';
@@ -3472,11 +3843,131 @@ runTest('wave strategy keeps 30 percent watch entry and uses unified 30/50/80 tr
     const result = JSON.parse(vm.runInContext('JSON.stringify({ watch, declining, repairing, bullish })', context));
     assert.strictEqual(result.watch.basePosition, 30);
     assert.strictEqual(result.watch.position, 30);
-    assert.strictEqual(result.declining.basePosition, 80);
+    assert.strictEqual(result.declining.basePosition, 30);
     assert.strictEqual(result.declining.position, 30);
-    assert.strictEqual(result.repairing.position, 50);
-    assert.strictEqual(result.bullish.position, 80);
+    assert.strictEqual(result.repairing.position, 30);
+    assert.strictEqual(result.bullish.position, 50);
     assert.strictEqual(result.bullish.bsMark, null);
+});
+
+runTest('wave double-bottom breakout waits for a pullback trial while only a fresh trend breakout reaches 80', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'down' });", context);
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        state.period = 'daily';
+        state.mode = 'stock';
+        state.indicators = { ma: { 20: [], 60: [] }, macd: null, rsi: null, kdj: null };
+        var full = Array.from({ length: 70 }, (_, index) => ({
+            date: '2026-09-' + String(index + 1).padStart(2, '0'),
+            open: 100, high: 102, low: 98, close: 101, vol: 1000, _signals: []
+        }));
+        state.indicators.ma[20][59] = 103;
+        state.indicators.ma[20][63] = 100;
+        state.indicators.ma[20][64] = 101;
+        state.indicators.ma[60][64] = 105;
+        var activeMarket = { label: '环境未知', cls: 'neutral', increaseCaps: { ordinary: 0, independent: 0 }, trends: [] };
+        getMarketContext = () => activeMarket;
+        getRiskContext = () => ({ score: 100, level: '低波动/偏离', coef: 1, flags: [], stop: 95, pressure: 110 });
+        getExitSeverity = () => ({ level: '无明确离场', detail: '暂无明确离场依据' });
+        getWaveRejectionProtectionContext = (idx, rows, currentMeta, prevPos, targetPosition) => ({ active: false, status: 'none', targetPosition });
+        var meta = {
+            type: '👀 关注异动', windowScore: 3, buySignals: ['B19'], exitSignals: [], warningSignals: [],
+            allSignals: { B19: { status: true } }, windowSignals: [{ day: 64, signal: 'B19' }],
+            windowScoreSignals: [{ day: 64, signal: 'B19', score: 3 }], invalidatedWindowSignals: [],
+            localBreakWindowSignals: [], inCooldown: false, daysSinceExit: Infinity
+        };
+        getSignalMeta = () => meta;
+        full[64]._signals = ['B19'];
+        var doubleBottomEntry = computeDecisionForIndex(64, full, 0);
+        var doubleBottomSummary = getStockDecisionSummary(meta, doubleBottomEntry);
+        full[65]._signals = ['B6'];
+        full[65].close = 101;
+        state.indicators.ma[20][65] = 100;
+        state.indicators.ma[60][65] = 105;
+        meta = { ...meta, type: '👀 关注异动', windowScore: 3, buySignals: ['B6'], windowSignals: [{ day: 65, signal: 'B6' }], windowScoreSignals: [{ day: 65, signal: 'B6', score: 2 }], allSignals: { B6: { status: true } } };
+        var breakoutPullbackEntry = computeDecisionForIndex(65, full, 0);
+        var breakoutPullbackSummary = getStockDecisionSummary(meta, breakoutPullbackEntry);
+
+        full[64]._signals = ['B9', 'B17'];
+        meta = {
+            ...meta, type: '✅ 明确转强', windowScore: 7, buySignals: ['B9', 'B17'],
+            allSignals: { B9: { status: true }, B17: { status: true } },
+            windowSignals: [{ day: 64, signal: 'B9' }, { day: 64, signal: 'B17' }],
+            windowScoreSignals: [{ day: 64, signal: 'B9', score: 4 }, { day: 64, signal: 'B17', score: 3 }]
+        };
+        var divergenceEntry = computeDecisionForIndex(64, full, 0);
+
+        full[64]._signals = [];
+        var historicalReversalOnly = computeDecisionForIndex(64, full, 0);
+
+        activeMarket = { label: '核心宽基分化', cls: 'neutral', increaseCaps: null, trends: [] };
+        state.indicators.ma[20][59] = 99;
+        state.indicators.ma[20][64] = 101;
+        state.indicators.ma[60][64] = 95;
+        full[64].close = 110;
+        meta = { ...meta, type: '✅ 明确转强', windowScore: 7 };
+        var movingAverageOnly = computeDecisionForIndex(64, full, 50);
+
+        full[64]._signals = ['B4'];
+        var trendBreakout = computeDecisionForIndex(64, full, 50);
+        var trendBreakoutSummary = getStockDecisionSummary(meta, trendBreakout);
+
+        activeMarket = { label: '核心宽基偏弱', cls: 'bear', increaseCaps: { ordinary: 30, independent: 50 }, trends: [] };
+        var weakTrendBreakout = computeDecisionForIndex(64, full, 50);
+        activeMarket = { label: '环境待确认', cls: 'neutral', increaseCaps: { ordinary: 0, independent: 0 }, trends: [] };
+        var pendingTrendBreakout = computeDecisionForIndex(64, full, 50);
+
+        meta = { ...meta, windowScore: 3 };
+        var scoreNotReady = computeDecisionForIndex(64, full, 50);
+
+        full[64]._signals = ['B5'];
+        meta = {
+            ...meta, type: '👀 关注异动', windowScore: 3, buySignals: ['B5'],
+            allSignals: { B5: { status: true } }, windowSignals: [{ day: 64, signal: 'B5' }],
+            windowScoreSignals: [{ day: 64, signal: 'B5', score: 3 }]
+        };
+        var pendingTrialEntry = computeDecisionForIndex(64, full, 0);
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ doubleBottomEntry, doubleBottomSummary, breakoutPullbackEntry, breakoutPullbackSummary, divergenceEntry, historicalReversalOnly, movingAverageOnly, trendBreakout, trendBreakoutSummary, weakTrendBreakout, pendingTrendBreakout, scoreNotReady, pendingTrialEntry })', context));
+    assert.strictEqual(result.doubleBottomEntry.position, 0);
+    assert.strictEqual(result.doubleBottomEntry.bsMark, null);
+    assert.strictEqual(result.doubleBottomEntry.wavePositionStage.stage, 'breakout-wait');
+    assert.strictEqual(result.doubleBottomEntry.wavePositionStage.triggerSignal, 'B19');
+    assert.strictEqual(result.doubleBottomEntry.marketGate.type, 'open');
+    assert.strictEqual(result.doubleBottomSummary.state, '突破后等回踩');
+    assert.strictEqual(result.doubleBottomSummary.positionWhyCode, 'stage-breakout-wait');
+    assert.strictEqual(result.breakoutPullbackEntry.position, 30);
+    assert.strictEqual(result.breakoutPullbackEntry.bsMark, 'B');
+    assert.strictEqual(result.breakoutPullbackEntry.wavePositionStage.stage, 'entry');
+    assert.strictEqual(result.breakoutPullbackEntry.wavePositionStage.triggerSignal, 'B6');
+    assert.strictEqual(result.breakoutPullbackSummary.state, '回踩试探建仓');
+    assert.strictEqual(result.breakoutPullbackSummary.action, '轻仓建仓');
+    assert.ok(result.breakoutPullbackSummary.why.includes('低吸试探仓'));
+    assert.strictEqual(result.breakoutPullbackSummary.positionWhyCode, 'stage-entry-pullback');
+    assert.strictEqual(result.divergenceEntry.position, 50);
+    assert.strictEqual(result.divergenceEntry.wavePositionStage.triggerSignal, 'multi-reversal');
+    assert.strictEqual(result.divergenceEntry.wavePositionStage.freshGroupCount, 2);
+    assert.strictEqual(result.historicalReversalOnly.position, 30);
+    assert.strictEqual(result.movingAverageOnly.position, 50);
+    assert.strictEqual(result.movingAverageOnly.wavePositionStage.stage, 'confirmation');
+    assert.strictEqual(result.trendBreakout.position, 80);
+    assert.strictEqual(result.trendBreakout.bsMark, null);
+    assert.strictEqual(result.trendBreakout.wavePositionStage.stage, 'trend');
+    assert.strictEqual(result.trendBreakout.wavePositionStage.triggerSignal, 'B4');
+    assert.strictEqual(result.trendBreakoutSummary.state, '趋势延续加仓');
+    assert.strictEqual(result.trendBreakoutSummary.positionWhyCode, 'stage-trend-increase');
+    assert.strictEqual(result.weakTrendBreakout.position, 50);
+    assert.strictEqual(result.weakTrendBreakout.marketGate.type, 'wave-trend-capped');
+    assert.strictEqual(result.weakTrendBreakout.marketGate.cap, 50);
+    assert.strictEqual(result.pendingTrendBreakout.position, 50);
+    assert.strictEqual(result.pendingTrendBreakout.marketGate.type, 'wave-trend-capped');
+    assert.strictEqual(result.scoreNotReady.position, 50);
+    assert.strictEqual(result.pendingTrialEntry.position, 30);
+    assert.strictEqual(result.pendingTrialEntry.marketGate.type, 'wave-market-guidance');
 });
 
 runTest('wave B6 trend add raises only a current 30 percent stock hold to 50 percent', () => {
@@ -3484,6 +3975,7 @@ runTest('wave B6 trend add raises only a current 30 percent stock hold to 50 per
     vm.runInContext(configSource, context);
     vm.runInContext('function convertDailyToWeekly() { return []; }', context);
     vm.runInContext(calcSource, context);
+    vm.runInContext("getWaveContext = () => ({ inScope: false, regime: 'up' });", context);
     vm.runInContext(`
         setActiveStrategy('波段抄底型');
         state.period = 'daily';
@@ -3553,7 +4045,7 @@ runTest('wave B6 trend add raises only a current 30 percent stock hold to 50 per
     assert.strictEqual(result.currentB6Summary.state, '趋势修复加仓');
     assert.ok(result.currentB6Summary.why.includes('今日缩量回踩20日线后收回'));
     assert.ok(!result.currentB6Summary.why.includes('重新站回20日线'));
-    assert.ok(result.currentB6Summary.positionWhy.includes('80%仍需买入积分正式达标'));
+    assert.strictEqual(result.currentB6Summary.positionWhyCode, 'b6-trend-add');
     assert.strictEqual(result.trendOnly.position, 30);
     assert.strictEqual(result.trendOnly.waveB6TrendAdd.eligible, false);
     assert.strictEqual(result.historicalB6.position, 30);
@@ -3563,7 +4055,7 @@ runTest('wave B6 trend add raises only a current 30 percent stock hold to 50 per
     assert.strictEqual(result.riskLimited.position, 30);
     assert.strictEqual(result.riskLimited.waveB6TrendAdd.eligible, true);
     assert.strictEqual(result.riskLimited.waveB6TrendAdd.applied, false);
-    assert.strictEqual(result.scoreReady.position, 80);
+    assert.strictEqual(result.scoreReady.position, 50);
     assert.strictEqual(result.scoreReady.waveB6TrendAdd.eligible, false);
     assert.strictEqual(result.indexPath.position, 50);
     assert.strictEqual(result.indexPath.waveB6TrendAdd.eligible, false);
@@ -3571,7 +4063,7 @@ runTest('wave B6 trend add raises only a current 30 percent stock hold to 50 per
     assert.strictEqual(result.otherStrategy.waveB6TrendAdd.eligible, false);
 });
 
-runTest('real Yilite fixture recovers on fresh multi-group signals before a later B6 trend add', () => {
+runTest('real Yilite fixture recovers on fresh multi-group signals under wave regime governance', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext(dataSource, context);
@@ -3605,11 +4097,6 @@ runTest('real Yilite fixture recovers on fresh multi-group signals before a late
         var yiliteJuneMeta = getSignalMeta(yiliteJuneIdx, yiliteFull, state.indicators);
         var yiliteJuneDecision = yiliteJuneRow._decision;
         var yiliteJuneSummary = getStockDecisionSummary(yiliteJuneMeta, yiliteJuneDecision);
-        var yiliteIdx = findDateIndex(yiliteFull, '2026-08-07', '600197');
-        var yiliteRow = yiliteFull[yiliteIdx];
-        var yiliteMeta = getSignalMeta(yiliteIdx, yiliteFull, state.indicators);
-        var yiliteDecision = yiliteRow._decision;
-        var yiliteSummary = getStockDecisionSummary(yiliteMeta, yiliteDecision);
     `, context);
     const result = JSON.parse(vm.runInContext(`JSON.stringify({
         juneRecovery: {
@@ -3620,47 +4107,25 @@ runTest('real Yilite fixture recovers on fresh multi-group signals before a late
             prevAdv: yiliteJuneDecision.prevAdv,
             bsMark: yiliteJuneDecision.bsMark,
             protection: yiliteJuneDecision.waveRejectionProtection,
+            waveContext: yiliteJuneDecision.waveContext,
+            positionDriver: yiliteJuneDecision.positionDriver,
             summary: yiliteJuneSummary
-        },
-        date: yiliteRow.date,
-        signals: yiliteRow._signals,
-        meta: {
-            type: yiliteMeta.type,
-            windowScore: yiliteMeta.windowScore,
-            exitSignals: yiliteMeta.exitSignals,
-            warningSignals: yiliteMeta.warningSignals,
-            inCooldown: yiliteMeta.inCooldown
-        },
-        position: yiliteDecision.position,
-        prevAdv: yiliteDecision.prevAdv,
-        bsMark: yiliteDecision.bsMark,
-        exit: yiliteDecision.exit,
-        risk: yiliteDecision.risk,
-        marketGate: yiliteDecision.marketGate,
-        positionCap: yiliteDecision.positionCap,
-        waveRejectionProtection: yiliteDecision.waveRejectionProtection,
-        waveB6TrendAdd: yiliteDecision.waveB6TrendAdd,
-        summary: yiliteSummary
+        }
     })`, context));
     assert.strictEqual(result.juneRecovery.windowScore, 8, JSON.stringify(result.juneRecovery, null, 2));
     assert.deepStrictEqual(result.juneRecovery.signals, ['B8', 'B9', 'B16']);
-    assert.strictEqual(result.juneRecovery.position, 30);
+    assert.strictEqual(result.juneRecovery.position, 30, JSON.stringify(result.juneRecovery, null, 2));
     assert.strictEqual(result.juneRecovery.prevAdv, 0);
     assert.strictEqual(result.juneRecovery.bsMark, 'B');
     assert.strictEqual(result.juneRecovery.protection.status, 'released');
     assert.strictEqual(result.juneRecovery.protection.strongFreshRecovery, true);
     assert.strictEqual(result.juneRecovery.protection.postEventScore, 8);
     assert.strictEqual(result.juneRecovery.protection.postEventScoreSignals.length, 3);
+    assert.strictEqual(result.juneRecovery.waveContext.supportSource, 'event-recovery-signal-low');
+    assert.ok(Number.isFinite(result.juneRecovery.waveContext.frozenHardDefense));
     assert.strictEqual(result.juneRecovery.summary.state, '风险解除');
     assert.strictEqual(result.juneRecovery.summary.action, '轻仓建仓');
     assert.ok(result.juneRecovery.summary.why.includes('新积分已达到8/4'));
-    assert.strictEqual(result.position, 50, JSON.stringify(result, null, 2));
-    assert.strictEqual(result.prevAdv, 30);
-    assert.strictEqual(result.bsMark, null);
-    assert.strictEqual(result.waveB6TrendAdd.applied, true);
-    assert.strictEqual(result.waveRejectionProtection.status, 'none');
-    assert.strictEqual(result.summary.state, '趋势修复加仓');
-    assert.ok(result.summary.why.includes('今日缩量回踩20日线后收回'));
 });
 
 runTest('four formal strategies share the decision and B/S contract while keeping their configured focus', () => {
@@ -3729,6 +4194,16 @@ runTest('four formal strategies share the decision and B/S contract while keepin
         assert.ok(['轻仓建仓', '积极建仓'].includes(result.entry.action));
         assert.ok(['text-info', 'text-bull'].includes(result.entry.color));
         assert.strictEqual(result.hold.bsMark, null);
+        if (result.strategy === '波段抄底型') {
+            assert.strictEqual(result.exit.position, 30);
+            assert.strictEqual(result.exit.bsMark, null);
+            assert.strictEqual(result.exit.action, '防守减仓');
+            assert.strictEqual(result.exit.color, 'text-warn');
+            assert.strictEqual(result.summary.positionText, '30%');
+            assert.ok(result.summary.reason.includes('MACD死叉'), result.summary.reason);
+            assert.ok(!result.summary.reason.includes('冷静期'), result.summary.reason);
+            continue;
+        }
         assert.strictEqual(result.exit.position, 0);
         assert.strictEqual(result.exit.bsMark, 'S');
         assert.strictEqual(result.exit.action, '清仓离场');
@@ -3747,7 +4222,7 @@ runTest('four formal strategies share the decision and B/S contract while keepin
         assert.ok(!/\b[BLW]\d+\b/.test(`${result.summary.why} ${result.summary.positionWhy} ${result.summary.nextFocus}`));
         assert.ok(!`${result.summary.why} ${result.summary.positionWhy}`.includes('风险系数'));
     }
-    assert.ok(results.every(item => item.summary.state === '破位防守'));
+    assert.ok(results.filter(item => item.strategy !== '波段抄底型').every(item => item.summary.state === '破位防守'));
     assert.ok(results.every(item => !item.summary.reason.includes('归零原因：白胖')));
 });
 
@@ -4179,6 +4654,97 @@ runTest('plain-language summaries cover action states, historical causes, fixed 
     assert.ok(index.positionWhy.includes('基础风险仓位'));
     assert.ok(index.positionWhy.includes('最终风险仓位'));
     assert.ok(!index.positionWhy.includes('个股') && !index.positionWhy.includes('试探仓'), index.positionWhy);
+});
+
+runTest('wave regime shadow classifies flat MA20 only with a confirmed valid box', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext([
+        "setActiveStrategy('波段抄底型'); state.mode = 'stock'; state.period = 'daily';",
+        "var full = Array.from({ length: 70 }, (_, day) => ({ date: 'D' + day, open: 100, high: 101, low: 99, close: 100, vol: 1000, _signals: [] }));",
+        "full[45].low = 90; full[50].high = 104; full[55].low = 90.3; full[60].high = 104.2; full[68].low = 88;",
+        "var ind = { ma: { 20: Array(70).fill(100), 60: Array(70).fill(100) } }; state.indicators = ind;",
+        "var box = getWaveBoxContext(69, full, STRATEGY.waveRegimePolicy);",
+        "var ranged = getWaveContext(69, full, ind, STRATEGY);",
+        "var noBoxRows = full.map(row => ({ ...row, high: 101, low: 99 }));",
+        "var transition = getWaveContext(69, noBoxRows, ind, STRATEGY);"
+    ].join('\n'), context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ box, ranged, transition })', context));
+    assert.strictEqual(result.box.valid, true);
+    assert.strictEqual(result.box.pivots.lows.some(item => item.day === 68), false, 'right-side confirmation must exclude the latest unconfirmed low');
+    assert.strictEqual(result.ranged.regime, 'range');
+    assert.strictEqual(result.ranged.consecutiveDays, 3);
+    assert.strictEqual(result.transition.regime, 'transition');
+    assert.strictEqual(result.transition.box.valid, false);
+});
+
+runTest('wave regime governance enforces down range up lifecycle caps and frozen defense', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext([
+        "setActiveStrategy('波段抄底型'); state.mode = 'stock'; state.period = 'daily';",
+        "var full = Array.from({ length: 90 }, (_, day) => ({ date: 'D' + day, open: 99.5, high: 100.5, low: 99, close: 100, vol: 1000, _signals: [] }));",
+        "state.indicators = { ma: { 20: Array(90).fill(100), 60: Array(90).fill(100) }, macd: {}, rsi: {}, kdj: {} };",
+        "var activeMeta = { currentDay: 64, type: '明确转强', windowScore: 4, buySignals: ['B9'], exitSignals: [], warningSignals: [], allSignals: { B9: true }, windowSignals: [], windowScoreSignals: [], invalidatedWindowSignals: [], localBreakWindowSignals: [], inCooldown: false };",
+        "getSignalMeta = day => ({ ...activeMeta, currentDay: day });",
+        "function candidate(regime, position, boxSupport, boxPressure) { return { position, prevAdv: 0, exit: { level: '无明确离场' }, simpleAction: position ? '轻仓建仓' : '持币观望', simpleColorClass: 'text-info', bsMark: position ? 'B' : null, positionDriver: '', waveRejectionProtection: { status: 'none' }, waveContext: { inScope: true, regime, regimeLabel: ({ down: '下跌', range: '横盘', up: '上涨', unknown: '未知' })[regime], boxSupport, boxPressure, boxMidpoint: boxSupport && boxPressure ? (boxSupport + boxPressure) / 2 : null, box: { valid: !!(boxSupport && boxPressure), atr14: 1 } } }; }",
+        "full[64]._signals = ['B9']; var downEntry = applyWaveRegimeGovernance(64, full, 0, candidate('down', 50, 99, 105), STRATEGY); var downRepairEntry = applyWaveRegimeGovernance(64, full, 0, candidate('down', 50, null, null), STRATEGY); full[64]._decision = downEntry;",
+        "full[65]._decision = downEntry; full[66]._signals = ['B11']; var downAdd = applyWaveRegimeGovernance(66, full, 30, candidate('down', 50, 99, 105), STRATEGY);",
+        "full[65]._decision = downEntry; full[66].close = 98; full[66].low = 97.8; var downBreak = applyWaveRegimeGovernance(66, full, 30, candidate('down', 30, 99, 105), STRATEGY);",
+        "full[66].close = 101; full[66].low = 99; full[64]._signals = ['B9']; var rangeEntry = applyWaveRegimeGovernance(64, full, 0, candidate('range', 30, 99, 105), STRATEGY); full[65]._decision = rangeEntry; full[65].high = 100.5; full[66]._signals = ['B11']; var rangeAdd = applyWaveRegimeGovernance(66, full, 30, candidate('range', 50, 99, 105), STRATEGY);",
+        "state.indicators.ma[20][69] = 99.5; state.indicators.ma[20][70] = 100; full[70].low = 99.8; full[70].close = 100.5; full[70]._signals = ['B11']; var upEntry = applyWaveRegimeGovernance(70, full, 0, candidate('up', 30, null, null), STRATEGY);",
+        "full[71]._decision = upEntry; full[72].low = 100; full[72].close = 101; full[72]._signals = ['B6']; var upAdd = applyWaveRegimeGovernance(72, full, 30, candidate('up', 50, null, null), STRATEGY);",
+        "full[72]._decision = upAdd; full[73]._signals = ['B4']; var upTrend = applyWaveRegimeGovernance(73, full, 50, candidate('up', 80, null, null), STRATEGY);",
+        "full[73]._decision = upTrend; var riskCandidate = candidate('up', 0, null, null); riskCandidate.risk = { score: 20 }; riskCandidate.waveRejectionProtection = { status: 'triggered', eventType: 'risk_cap_zero_exit' }; var upRiskExit = applyWaveRegimeGovernance(74, full, 80, riskCandidate, STRATEGY);",
+        "full[80]._signals = ['B9']; var unknown = applyWaveRegimeGovernance(80, full, 0, candidate('unknown', 30, 99, 105), STRATEGY);",
+        "activeMeta = { ...activeMeta, exitSignals: [], invalidatedWindowSignals: [], inCooldown: false }; full[81]._decision = { position: 80 }; var legacyDown = applyWaveRegimeGovernance(82, full, 80, { ...candidate('down', 80, 99, 105), risk: { score: 90 } }, STRATEGY);",
+        "full[82]._decision = { position: 80 }; var legacyRange = applyWaveRegimeGovernance(83, full, 80, { ...candidate('range', 80, 99, 105), risk: { score: 90 } }, STRATEGY);",
+        "full[83]._decision = { position: 50 }; var legacyUnknown = applyWaveRegimeGovernance(84, full, 50, { ...candidate('unknown', 80, 99, 105), risk: { score: 90 } }, STRATEGY);",
+        "full[84]._decision = { position: 50 }; var legacyUnknownRisk = applyWaveRegimeGovernance(85, full, 50, { ...candidate('unknown', 0, 99, 105), risk: { score: 20 }, simpleAction: '规避风险' }, STRATEGY);",
+        "var rangeLifecycle = { active: true, entryRegime: 'range', entrySignals: ['B9'], entrySignalGroups: ['B9'], entryDay: 78, entryDate: 'D78', entryClose: 100, localDefense: 98, hardDefense: 95, supportSource: 'box-support', stage: 'confirmation', positionLayer: 50, upperObservation: null };",
+        "full[85]._decision = { position: 50, waveContext: { lifecycle: rangeLifecycle } }; full[86] = { ...full[86], open: 100, high: 105, low: 99, close: 100, _signals: ['L10'] }; activeMeta = { ...activeMeta, currentDay: 86, exitSignals: ['L10'], allSignals: { L10: true } }; var rangeL10Candidate = { ...candidate('range', 0, 99, 105), exit: { level: '强离场' }, risk: { score: 90 }, waveRejectionProtection: { status: 'superseded' } }; var rangeStandaloneL10 = applyWaveRegimeGovernance(86, full, 50, rangeL10Candidate, STRATEGY);",
+        "full[86]._decision = { position: 50, waveContext: { lifecycle: rangeLifecycle } }; full[87] = { ...full[87], open: 100, high: 105, low: 99, close: 100, _signals: ['L10', 'L5'] }; activeMeta = { ...activeMeta, currentDay: 87, exitSignals: ['L10', 'L5'], allSignals: { L10: true, L5: true } }; var rangeCompositeExit = applyWaveRegimeGovernance(87, full, 50, { ...rangeL10Candidate, waveContext: candidate('range', 0, 99, 105).waveContext }, STRATEGY);",
+        "full[87]._decision = { position: 50, waveContext: { lifecycle: rangeLifecycle } }; full[88] = { ...full[88], close: 94, low: 93.5, _signals: ['L10'] }; activeMeta = { ...activeMeta, currentDay: 88, exitSignals: ['L10'], invalidatedWindowSignals: [{ signal: 'B9', reason: 'price-break', invalidationDay: 88, invalidationLevel: 95 }] }; var rangeStructureBreak = applyWaveRegimeGovernance(88, full, 50, { ...rangeL10Candidate, waveContext: candidate('range', 0, 99, 105).waveContext }, STRATEGY);"
+    ].join('\n'), context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ downEntry, downRepairEntry, downAdd, downBreak, rangeEntry, rangeAdd, upEntry, upAdd, upTrend, upRiskExit, unknown, legacyDown, legacyRange, legacyUnknown, legacyUnknownRisk, rangeStandaloneL10, rangeCompositeExit, rangeStructureBreak })', context));
+    assert.strictEqual(result.downEntry.position, 30);
+    assert.strictEqual(result.downEntry.bsMark, 'B');
+    assert.strictEqual(result.downEntry.waveContext.lifecycle.entryRegime, 'down');
+    assert.strictEqual(result.downRepairEntry.position, 30);
+    assert.strictEqual(result.downRepairEntry.bsMark, 'B');
+    assert.strictEqual(result.downRepairEntry.waveContext.lifecycle.supportSource, 'signal-low');
+    assert.strictEqual(result.downAdd.position, 30);
+    assert.strictEqual(result.downBreak.position, 0);
+    assert.strictEqual(result.downBreak.bsMark, 'S');
+    assert.strictEqual(result.rangeEntry.position, 30);
+    assert.strictEqual(result.rangeAdd.position, 50);
+    assert.strictEqual(result.rangeAdd.bsMark, null);
+    assert.strictEqual(result.upEntry.position, 30);
+    assert.strictEqual(result.upAdd.position, 50);
+    assert.strictEqual(result.upTrend.position, 80);
+    assert.strictEqual(result.upTrend.bsMark, null);
+    assert.strictEqual(result.upRiskExit.position, 0);
+    assert.strictEqual(result.upRiskExit.bsMark, 'S');
+    assert.strictEqual(result.unknown.position, 0);
+    assert.strictEqual(result.unknown.bsMark, null);
+    assert.strictEqual(result.legacyDown.position, 30);
+    assert.strictEqual(result.legacyDown.waveContext.stage, 'legacy-holding');
+    assert.strictEqual(result.legacyRange.position, 50);
+    assert.strictEqual(result.legacyUnknown.position, 50);
+    assert.strictEqual(result.legacyUnknown.bsMark, null);
+    assert.strictEqual(result.legacyUnknownRisk.position, 0);
+    assert.strictEqual(result.legacyUnknownRisk.bsMark, 'S');
+    assert.strictEqual(result.rangeStandaloneL10.position, 30);
+    assert.strictEqual(result.rangeStandaloneL10.bsMark, null);
+    assert.ok(result.rangeStandaloneL10.waveContext.lifecycle.upperObservation);
+    assert.strictEqual(result.rangeCompositeExit.position, 0);
+    assert.strictEqual(result.rangeCompositeExit.bsMark, 'S');
+    assert.strictEqual(result.rangeStructureBreak.position, 0);
+    assert.strictEqual(result.rangeStructureBreak.bsMark, 'S');
 });
 
 runTest('L5 bearish engulfing is a reduce-watch exit, not a strong trend break', () => {

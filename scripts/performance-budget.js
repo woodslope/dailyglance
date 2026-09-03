@@ -10,6 +10,13 @@ const DEFAULT_URL = 'https://woodslope.github.io/dailyglance';
 const EXPECTED_RESOURCE_VERSION = VERSION.resourceVersion;
 const EXPECTED_APP_BUILD = VERSION.appBuild;
 const STOCK_COLD_TARGET = { code: '600519', name: '贵州茅台' };
+const MIN_P95_SAMPLES = 20;
+const VIEWPORTS = {
+    mobile: { width: 390, height: 844 },
+    'compact-boundary': { width: 1023, height: 900 },
+    'desktop-boundary': { width: 1024, height: 900 },
+    desktop: { width: 1440, height: 900 }
+};
 
 const args = new Map();
 for (const arg of process.argv.slice(2)) {
@@ -18,30 +25,65 @@ for (const arg of process.argv.slice(2)) {
 }
 
 const baseUrl = (args.get('--url') || DEFAULT_URL).replace(/\/$/, '');
-const runs = Math.max(1, Number(args.get('--runs')) || 3);
+const runs = Math.max(1, Number(args.get('--runs')) || 5);
 const profile = args.get('--profile') || 'warm';
+const viewportName = args.get('--viewport') || 'desktop';
+const viewport = VIEWPORTS[viewportName];
+const storageProfile = args.get('--storage') || 'normal';
+const networkProfile = args.get('--network') || 'normal';
 const headed = args.has('--headed');
 const noFail = args.has('--no-fail');
+const summaryOutput = args.has('--summary');
+const compactViewport = viewportName === 'mobile' || viewportName === 'compact-boundary';
 const baseOrigin = new URL(baseUrl).origin;
 
 const PERFORMANCE_BUDGETS = {
-    'first-load': { actionP95: 6000, longTaskMax: 700 },
-    'stock-first-load': { traceP95: 6000, actionP95: 6000, longTaskMax: 700 },
-    'select-stock': { traceP95: 80, actionP95: 800, longTaskMax: 80 },
-    'select-index': { traceP95: 80, actionP95: 800, longTaskMax: 80 },
-    'switch-strategy-first': { traceP95: 120, actionP95: 800, longTaskMax: 180 },
-    'switch-strategy-repeat': { traceP95: 120, actionP95: 800, longTaskMax: 180 },
-    'drag-history': { actionP95: 1200, longTaskMax: 500 },
-    'restore-latest': { actionP95: 600, longTaskMax: 80 },
-    'background-refresh-during-click': { traceP95: 100, actionP95: 1000, longTaskMax: 100 }
+    'first-load': { actionLimit: 6000, actionWarn: 4000, longTaskMax: 700, longTaskWarn: 250 },
+    'stock-first-load': { traceLimit: 6000, actionLimit: 6000, longTaskMax: 700, observationLongTaskMax: 180 },
+    'select-stock': { traceLimit: 80, actionLimit: 800, longTaskMax: 80, observationLongTaskMax: 180 },
+    'select-index': { traceLimit: 80, actionLimit: 800, longTaskMax: 80, observationLongTaskMax: 180 },
+    'switch-strategy-first': { traceLimit: 120, actionLimit: 800, longTaskMax: 180, observationLongTaskMax: 180 },
+    'switch-strategy-repeat': { traceLimit: 120, actionLimit: 800, longTaskMax: 180, observationLongTaskMax: 180 },
+    'drag-history': { actionLimit: 1200, longTaskMax: 500, observationLongTaskMax: 180 },
+    'restore-latest': { actionLimit: 600, longTaskWarn: 80, longTaskMax: 180, observationLongTaskMax: 180 },
+    'background-refresh-during-click': { traceLimit: 100, actionLimit: 1000, longTaskMax: 100, observationLongTaskMax: 180 },
+    'strategy-inspector-load': { actionLimit: 6000, longTaskMax: 700 }
+};
+
+const RESOURCE_BUDGETS = {
+    main: {
+        requestWarn: 15,
+        requestHard: 18,
+        encodedWarn: 275 * 1024,
+        encodedHard: 325 * 1024,
+        decodedWarn: 1024 * 1024,
+        decodedHard: 1.1 * 1024 * 1024
+    },
+    inspector: {
+        requestWarn: 8,
+        requestHard: 10,
+        encodedWarn: 40 * 1024,
+        encodedHard: 60 * 1024,
+        decodedWarn: 150 * 1024,
+        decodedHard: 200 * 1024
+    }
+};
+
+const MEASUREMENT_ENVIRONMENT_LIMITS = {
+    load1PerCpuMax: 2.5,
+    cpuUtilizationPctMax: 90
 };
 
 const PROFILE_SCENARIOS = {
     cold: ['first-load'],
     'stock-cold': ['stock-first-load'],
     warm: ['select-stock', 'select-index', 'switch-strategy-first', 'switch-strategy-repeat', 'drag-history', 'restore-latest', 'background-refresh-during-click'],
+    inspector: ['strategy-inspector-load'],
     all: ['first-load', 'stock-first-load', 'select-stock', 'select-index', 'switch-strategy-first', 'switch-strategy-repeat', 'drag-history', 'restore-latest', 'background-refresh-during-click']
 };
+
+const STORAGE_PROFILES = new Set(['normal', 'missing', 'throw', 'blocked', 'timeout']);
+const NETWORK_PROFILES = new Set(['normal', 'slow']);
 
 function resolvePlaywright() {
     const candidates = [
@@ -65,13 +107,18 @@ function percentile(values, pct) {
 
 function summarize(values) {
     const clean = values.filter(Number.isFinite);
-    if (!clean.length) return { count: 0, avg: null, p95: null, max: null };
+    if (!clean.length) return { count: 0, avg: null, median: null, p90: null, p95: null, max: null, gateValue: null, gateStatistic: 'none' };
     const sum = clean.reduce((acc, value) => acc + value, 0);
+    const enoughForP95 = clean.length >= MIN_P95_SAMPLES;
     return {
         count: clean.length,
         avg: Number((sum / clean.length).toFixed(1)),
-        p95: percentile(clean, 95),
-        max: Number(Math.max(...clean).toFixed(1))
+        median: percentile(clean, 50),
+        p90: percentile(clean, 90),
+        p95: enoughForP95 ? percentile(clean, 95) : null,
+        max: Number(Math.max(...clean).toFixed(1)),
+        gateValue: enoughForP95 ? percentile(clean, 95) : Number(Math.max(...clean).toFixed(1)),
+        gateStatistic: enoughForP95 ? 'p95' : 'max'
     };
 }
 
@@ -114,10 +161,22 @@ function buildSystemLoad(before, after) {
 
 function isBudgetOk(summary, budget) {
     if (!budget) return true;
-    if (budget.traceP95 != null && summary.trace.p95 != null && summary.trace.p95 > budget.traceP95) return false;
-    if (budget.actionP95 != null && summary.actionDuration.p95 != null && summary.actionDuration.p95 > budget.actionP95) return false;
+    if (budget.traceLimit != null && summary.trace.gateValue != null && summary.trace.gateValue > budget.traceLimit) return false;
+    if (budget.actionLimit != null && summary.actionDuration.gateValue != null && summary.actionDuration.gateValue > budget.actionLimit) return false;
     if (budget.longTaskMax != null && summary.longTasks.max != null && summary.longTasks.max > budget.longTaskMax) return false;
+    if (budget.observationLongTaskMax != null && summary.observationLongTasks.max != null && summary.observationLongTasks.max > budget.observationLongTaskMax) return false;
     return true;
+}
+
+function getBudgetWarnings(summary, budget) {
+    const warnings = [];
+    if (budget.actionWarn != null && summary.actionDuration.gateValue != null && summary.actionDuration.gateValue > budget.actionWarn) {
+        warnings.push(`action ${summary.actionDuration.gateStatistic} ${summary.actionDuration.gateValue}ms > warning ${budget.actionWarn}ms`);
+    }
+    if (budget.longTaskWarn != null && summary.longTasks.max != null && summary.longTasks.max > budget.longTaskWarn) {
+        warnings.push(`long task max ${summary.longTasks.max}ms > warning ${budget.longTaskWarn}ms`);
+    }
+    return warnings;
 }
 
 function matchLongTasksToTraces(longTasks, traces) {
@@ -159,17 +218,130 @@ async function installLongTaskObserver(page) {
     });
 }
 
-function trackExternalResourceFailures(page, externalResourceFailures, meta = {}) {
+async function installStorageProfile(page) {
+    if (storageProfile === 'normal') return;
+    await page.addInitScript(mode => {
+        let replacement;
+        if (mode === 'missing') {
+            replacement = undefined;
+        } else if (mode === 'throw') {
+            replacement = {
+                open() {
+                    const error = new Error('performance storage profile denied access');
+                    error.name = 'SecurityError';
+                    throw error;
+                }
+            };
+        } else if (mode === 'blocked') {
+            replacement = {
+                open() {
+                    const request = {};
+                    setTimeout(() => request.onblocked?.(), 0);
+                    return request;
+                }
+            };
+        } else if (mode === 'timeout') {
+            replacement = { open() { return {}; } };
+        }
+        Object.defineProperty(window, 'indexedDB', { configurable: true, value: replacement });
+    }, storageProfile);
+}
+
+async function applyNetworkProfile(page) {
+    if (networkProfile === 'normal') return null;
+    const session = await page.context().newCDPSession(page);
+    await session.send('Network.enable');
+    await session.send('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: 400,
+        downloadThroughput: 750 * 1024 / 8,
+        uploadThroughput: 250 * 1024 / 8,
+        connectionType: 'cellular3g'
+    });
+    return session;
+}
+
+function trackExternalResourceFailures(page, externalResourceFailures, deliberateBlockedRequests, meta = {}) {
     page.on('requestfailed', request => {
         const url = request.url();
         if (!url.startsWith(baseUrl)) {
-            externalResourceFailures.push({
+            const failure = {
                 ...meta,
                 url,
                 text: request.failure()?.errorText || 'request failed'
-            });
+            };
+            if (/blocked.by.client/i.test(failure.text)) deliberateBlockedRequests.push(failure);
+            else externalResourceFailures.push(failure);
         }
     });
+}
+
+async function collectResourceFootprint(page, kind = 'main') {
+    return page.evaluate(resourceKind => {
+        const origin = location.origin;
+        const resources = performance.getEntriesByType('resource').filter(entry => {
+            try { return new URL(entry.name).origin === origin; } catch (error) { return false; }
+        });
+        const navigation = performance.getEntriesByType('navigation')[0];
+        const entries = navigation ? [navigation, ...resources] : resources;
+        const sum = key => entries.reduce((total, entry) => total + Math.max(0, Number(entry[key]) || 0), 0);
+        const encodedBodyBytes = sum('encodedBodySize');
+        const decodedBodyBytes = sum('decodedBodySize');
+        return {
+            kind: resourceKind,
+            requestCount: entries.length,
+            transferBytes: sum('transferSize'),
+            encodedBodyBytes,
+            decodedBodyBytes,
+            compressionObserved: encodedBodyBytes > 0 && decodedBodyBytes > 0 && encodedBodyBytes < decodedBodyBytes * 0.8,
+            resources: entries.map(entry => ({
+                name: entry.name,
+                initiatorType: entry.initiatorType || 'navigation',
+                transferBytes: Math.max(0, Number(entry.transferSize) || 0),
+                encodedBodyBytes: Math.max(0, Number(entry.encodedBodySize) || 0),
+                decodedBodyBytes: Math.max(0, Number(entry.decodedBodySize) || 0)
+            }))
+        };
+    }, kind);
+}
+
+function buildResourceReport(resourceSamples) {
+    const grouped = new Map();
+    for (const sample of resourceSamples) {
+        if (!sample?.kind) continue;
+        if (!grouped.has(sample.kind)) grouped.set(sample.kind, []);
+        grouped.get(sample.kind).push(sample);
+    }
+    const report = {};
+    for (const [kind, samples] of grouped.entries()) {
+        const budget = RESOURCE_BUDGETS[kind] || {};
+        const requestCount = summarize(samples.map(item => item.requestCount));
+        const transferBytes = summarize(samples.map(item => item.transferBytes));
+        const encodedBodyBytes = summarize(samples.map(item => item.encodedBodyBytes));
+        const decodedBodyBytes = summarize(samples.map(item => item.decodedBodyBytes));
+        const compressedSamples = samples.filter(item => item.compressionObserved);
+        const hardFailures = [];
+        const warnings = [];
+        if (budget.requestHard != null && requestCount.max > budget.requestHard) hardFailures.push(`request count ${requestCount.max} > ${budget.requestHard}`);
+        if (budget.decodedHard != null && decodedBodyBytes.max > budget.decodedHard) hardFailures.push(`decoded bytes ${decodedBodyBytes.max} > ${budget.decodedHard}`);
+        if (budget.encodedHard != null && compressedSamples.some(item => item.encodedBodyBytes > budget.encodedHard)) hardFailures.push(`compressed encoded bytes > ${budget.encodedHard}`);
+        if (budget.requestWarn != null && requestCount.max > budget.requestWarn) warnings.push(`request count ${requestCount.max} > warning ${budget.requestWarn}`);
+        if (budget.decodedWarn != null && decodedBodyBytes.max > budget.decodedWarn) warnings.push(`decoded bytes ${decodedBodyBytes.max} > warning ${budget.decodedWarn}`);
+        if (budget.encodedWarn != null && compressedSamples.some(item => item.encodedBodyBytes > budget.encodedWarn)) warnings.push(`compressed encoded bytes > warning ${budget.encodedWarn}`);
+        report[kind] = {
+            ok: hardFailures.length === 0,
+            budget,
+            requestCount,
+            transferBytes,
+            encodedBodyBytes,
+            decodedBodyBytes,
+            compressionSamples: compressedSamples.length,
+            warnings,
+            failures: hardFailures,
+            samples
+        };
+    }
+    return report;
 }
 
 async function waitForReady(page) {
@@ -196,7 +368,9 @@ async function waitForStockExperienceReady(page, target) {
             if (!Array.isArray(data) || data.length < 60) return false;
             const last = data[data.length - 1];
             const expectedScope = `${state.id}_daily`;
-            const canvases = ['mainChart', 'volumeChart', 'macdChart', 'kdjChart'].map(id => document.getElementById(id));
+            const compactMobile = matchMedia('(max-width: 1023px)').matches;
+            const canvasIds = compactMobile ? ['mainChart'] : ['mainChart', 'volumeChart', 'macdChart', 'kdjChart'];
+            const canvases = canvasIds.map(id => document.getElementById(id));
             if (!canvases.every(canvas => canvas && canvas.dataset.scope === expectedScope && canvas.width > 0 && canvas.height > 0)) return false;
 
             const price = document.getElementById('cardPrice');
@@ -236,7 +410,9 @@ async function collectStockExperience(page, target) {
         const data = typeof getActiveData === 'function' ? getActiveData() : [];
         const last = data?.[data.length - 1] || null;
         const expectedScope = typeof state !== 'undefined' ? `${state.id}_${state.period}` : '';
-        const canvasScopes = ['mainChart', 'volumeChart', 'macdChart', 'kdjChart'].map(id => {
+        const compactMobile = matchMedia('(max-width: 1023px)').matches;
+        const canvasIds = compactMobile ? ['mainChart'] : ['mainChart', 'volumeChart', 'macdChart', 'kdjChart'];
+        const canvasScopes = canvasIds.map(id => {
             const canvas = document.getElementById(id);
             return {
                 id,
@@ -290,6 +466,7 @@ async function collectStockExperience(page, target) {
             dataPoints: data.length,
             lastDate: last?.date || '',
             expectedScope,
+            compactMobile,
             canvasScopes,
             priceIdentity,
             priceValue,
@@ -350,22 +527,41 @@ async function measureScenario(page, name, traceLabel, action) {
         observationDuration: Number((observationEnd - scenarioStart).toFixed(1)),
         traceTotal: collected.trace?.total ?? null,
         trace: collected.trace,
+        traces: collected.traces,
         longTasks: collected.longTasks,
         observationLongTasks: collected.observationLongTasks,
+        longTaskTraceMatches: matchLongTasksToTraces(collected.longTasks, collected.traces),
+        observationLongTaskTraceMatches: matchLongTasksToTraces(collected.observationLongTasks, collected.traces),
         systemLoad: buildSystemLoad(scenarioLoadBefore, readSystemLoadSnapshot())
     };
 }
 
 async function dragHistory(page) {
-    const box = await page.locator('#mainChart').boundingBox();
+    const chart = page.locator('#mainChart');
+    await chart.scrollIntoViewIfNeeded();
+    const box = await chart.boundingBox();
     if (!box) throw new Error('mainChart is missing');
     const startX = box.x + box.width * 0.72;
     const endX = startX - Math.min(220, box.width * 0.28);
     const y = box.y + box.height * 0.5;
-    await page.mouse.move(startX, y);
-    await page.mouse.down();
-    await page.mouse.move(endX, y, { steps: 10 });
-    await page.mouse.up();
+    if (compactViewport) {
+        const session = await page.context().newCDPSession(page);
+        try {
+            await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: startX, y }] });
+            for (let step = 1; step <= 10; step += 1) {
+                const x = startX + (endX - startX) * (step / 10);
+                await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+            }
+            await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        } finally {
+            await session.detach();
+        }
+    } else {
+        await page.mouse.move(startX, y);
+        await page.mouse.down();
+        await page.mouse.move(endX, y, { steps: 10 });
+        await page.mouse.up();
+    }
     await page.waitForFunction(() => {
         const badge = document.getElementById('freezeBadge');
         return badge && getComputedStyle(badge).display !== 'none';
@@ -455,6 +651,8 @@ async function measureInitialLoad(page, runIndex) {
         && Number.isFinite(trace.endTime)
         && trace.label !== 'cachedFetchRefresh'
     )));
+    const resources = await collectResourceFootprint(page, 'main');
+    const storage = await page.evaluate(() => ({ ...(window.__DG_STORAGE__ || {}) }));
     return {
         name: 'first-load',
         actionDuration: firstLoadDuration,
@@ -464,18 +662,45 @@ async function measureInitialLoad(page, runIndex) {
         startupTraces,
         longTaskTraceMatches: matchLongTasksToTraces(firstLoadLongTasks, startupTraces),
         longTasks: firstLoadLongTasks,
-        observationLongTasks: []
+        observationLongTasks: [],
+        resources,
+        storage
     };
 }
 
-async function runColdProfile(browser, externalResourceFailures) {
+async function measureStrategyInspectorLoad(page, runIndex) {
+    const startedAt = Date.now();
+    await page.goto(`${baseUrl}/strategy-inspector.html?v=perf-inspector-${EXPECTED_RESOURCE_VERSION}-${runIndex}-${Date.now()}`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForFunction(expectedBuild => {
+        const build = document.getElementById('strategyBuild')?.textContent || '';
+        return build.includes(expectedBuild)
+            && document.querySelectorAll('#strategyTabs .strategy-tab').length >= 4
+            && !!document.getElementById('strategyOverview')?.textContent?.trim();
+    }, EXPECTED_APP_BUILD, { timeout: 20000 });
+    const duration = Date.now() - startedAt;
+    return {
+        name: 'strategy-inspector-load',
+        run: runIndex,
+        actionDuration: duration,
+        observationDuration: duration,
+        traceTotal: null,
+        trace: null,
+        longTasks: await page.evaluate(() => window.__DG_LONG_TASKS__ || []),
+        observationLongTasks: [],
+        resources: await collectResourceFootprint(page, 'inspector')
+    };
+}
+
+async function runColdProfile(browser, externalResourceFailures, deliberateBlockedRequests) {
     const samples = [];
     for (let runIndex = 0; runIndex < runs; runIndex += 1) {
         const loadBefore = readSystemLoadSnapshot();
-        const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+        const context = await browser.newContext({ viewport, hasTouch: compactViewport });
         const page = await context.newPage();
         await installLongTaskObserver(page);
-        trackExternalResourceFailures(page, externalResourceFailures, { profile: 'cold', run: runIndex + 1 });
+        await installStorageProfile(page);
+        await applyNetworkProfile(page);
+        trackExternalResourceFailures(page, externalResourceFailures, deliberateBlockedRequests, { profile: 'cold', run: runIndex + 1 });
         try {
             const sample = await measureInitialLoad(page, runIndex + 1);
             sample.run = runIndex + 1;
@@ -488,14 +713,16 @@ async function runColdProfile(browser, externalResourceFailures) {
     return samples;
 }
 
-async function runStockColdProfile(browser, externalResourceFailures) {
+async function runStockColdProfile(browser, externalResourceFailures, deliberateBlockedRequests) {
     const samples = [];
     for (let runIndex = 0; runIndex < runs; runIndex += 1) {
         const loadBefore = readSystemLoadSnapshot();
-        const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+        const context = await browser.newContext({ viewport, hasTouch: compactViewport });
         const page = await context.newPage();
         await installLongTaskObserver(page);
-        trackExternalResourceFailures(page, externalResourceFailures, { profile: 'stock-cold', run: runIndex + 1 });
+        await installStorageProfile(page);
+        await applyNetworkProfile(page);
+        trackExternalResourceFailures(page, externalResourceFailures, deliberateBlockedRequests, { profile: 'stock-cold', run: runIndex + 1 });
         try {
             await page.goto(`${baseUrl}/?v=stock-cold-${EXPECTED_RESOURCE_VERSION}-${runIndex + 1}-${Date.now()}`, { waitUntil: 'domcontentloaded', timeout: 45000 });
             await waitForReady(page);
@@ -508,6 +735,8 @@ async function runStockColdProfile(browser, externalResourceFailures) {
             sample.run = runIndex + 1;
             sample.experience = experience;
             sample.experienceOk = sampleExperienceReady && experience.ok;
+            sample.resources = await collectResourceFootprint(page, 'main');
+            sample.storage = await page.evaluate(() => ({ ...(window.__DG_STORAGE__ || {}) }));
             sample.systemLoad = buildSystemLoad(loadBefore, readSystemLoadSnapshot());
             samples.push(sample);
         } finally {
@@ -517,7 +746,27 @@ async function runStockColdProfile(browser, externalResourceFailures) {
     return samples;
 }
 
-function buildReport(samples, externalResourceFailures) {
+async function runInspectorProfile(browser, externalResourceFailures, deliberateBlockedRequests) {
+    const samples = [];
+    for (let runIndex = 0; runIndex < runs; runIndex += 1) {
+        const loadBefore = readSystemLoadSnapshot();
+        const context = await browser.newContext({ viewport, hasTouch: compactViewport });
+        const page = await context.newPage();
+        await installLongTaskObserver(page);
+        await applyNetworkProfile(page);
+        trackExternalResourceFailures(page, externalResourceFailures, deliberateBlockedRequests, { profile: 'inspector', run: runIndex + 1 });
+        try {
+            const sample = await measureStrategyInspectorLoad(page, runIndex + 1);
+            sample.systemLoad = buildSystemLoad(loadBefore, readSystemLoadSnapshot());
+            samples.push(sample);
+        } finally {
+            await context.close();
+        }
+    }
+    return samples;
+}
+
+function buildReport(samples, externalResourceFailures, deliberateBlockedRequests, resourceSamples) {
     const grouped = new Map();
     for (const sample of samples) {
         if (!grouped.has(sample.name)) grouped.set(sample.name, []);
@@ -540,23 +789,74 @@ function buildReport(samples, externalResourceFailures) {
             samples: items
         };
         summary.experienceOk = items.every(item => item.experienceOk !== false);
+        summary.warnings = getBudgetWarnings(summary, budget);
         summary.ok = isBudgetOk(summary, budget) && summary.experienceOk;
         scenarios[name] = summary;
     }
+    const resources = buildResourceReport(resourceSamples);
+    const measurementEnvironment = {
+        limits: MEASUREMENT_ENVIRONMENT_LIMITS,
+        cpuUtilizationPct: summarize(samples.map(item => item.systemLoad?.cpuUtilizationPct)),
+        load1PerCpu: summarize(samples.map(item => item.systemLoad?.load1PerCpu)),
+        failures: []
+    };
+    if (measurementEnvironment.cpuUtilizationPct.max > MEASUREMENT_ENVIRONMENT_LIMITS.cpuUtilizationPctMax) {
+        measurementEnvironment.failures.push(`host CPU utilization ${measurementEnvironment.cpuUtilizationPct.max}% > ${MEASUREMENT_ENVIRONMENT_LIMITS.cpuUtilizationPctMax}%`);
+    }
+    if (measurementEnvironment.load1PerCpu.max > MEASUREMENT_ENVIRONMENT_LIMITS.load1PerCpuMax) {
+        measurementEnvironment.failures.push(`host load per CPU ${measurementEnvironment.load1PerCpu.max} > ${MEASUREMENT_ENVIRONMENT_LIMITS.load1PerCpuMax}`);
+    }
+    measurementEnvironment.valid = measurementEnvironment.failures.length === 0;
+    const performanceOk = Object.values(scenarios).every(item => item.ok) && Object.values(resources).every(item => item.ok);
     return {
-        ok: Object.values(scenarios).every(item => item.ok),
+        ok: performanceOk && measurementEnvironment.valid,
+        performanceOk,
+        measurementEnvironment,
         expectedVersion: EXPECTED_RESOURCE_VERSION,
         expectedBuild: EXPECTED_APP_BUILD,
         runs,
         scenarios,
-        externalResourceFailures
+        resources,
+        externalResourceFailures,
+        deliberateBlockedRequests
+    };
+}
+
+function buildCompactReport(report) {
+    const scenarios = Object.fromEntries(Object.entries(report.scenarios).map(([name, scenario]) => {
+        const failedSamples = (scenario.samples || []).filter(sample => sample.experienceOk === false).map(sample => ({
+            run: sample.run,
+            experience: sample.experience || null
+        }));
+        const { samples, ...summary } = scenario;
+        return [name, { ...summary, failedSamples }];
+    }));
+    const resources = Object.fromEntries(Object.entries(report.resources).map(([name, resource]) => {
+        const { samples, ...summary } = resource;
+        return [name, summary];
+    }));
+    const blockedHosts = [...new Set(report.deliberateBlockedRequests.map(item => {
+        try { return new URL(item.url).host; } catch (error) { return 'invalid-url'; }
+    }))].sort();
+    return {
+        ...report,
+        scenarios,
+        resources,
+        deliberateBlockedRequests: {
+            count: report.deliberateBlockedRequests.length,
+            hosts: blockedHosts
+        }
     };
 }
 
 async function main() {
     if (!PROFILE_SCENARIOS[profile]) {
-        throw new Error(`Unknown --profile=${profile}. Use cold, stock-cold, warm, or all.`);
+        throw new Error(`Unknown --profile=${profile}. Use cold, stock-cold, warm, inspector, or all.`);
     }
+    if (!viewport) throw new Error(`Unknown --viewport=${viewportName}. Use ${Object.keys(VIEWPORTS).join(', ')}.`);
+    if (!STORAGE_PROFILES.has(storageProfile)) throw new Error(`Unknown --storage=${storageProfile}. Use ${[...STORAGE_PROFILES].join(', ')}.`);
+    if (!NETWORK_PROFILES.has(networkProfile)) throw new Error(`Unknown --network=${networkProfile}. Use ${[...NETWORK_PROFILES].join(', ')}.`);
+    if (profile === 'inspector' && storageProfile !== 'normal') throw new Error('--storage applies to the main app, not the strategy inspector.');
     const { chromium } = resolvePlaywright();
     const launchOptions = { headless: !headed };
     if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
@@ -564,25 +864,38 @@ async function main() {
     }
     const browser = await chromium.launch(launchOptions);
     const externalResourceFailures = [];
+    const deliberateBlockedRequests = [];
     try {
         const samples = [];
+        const resourceSamples = [];
         if (PROFILE_SCENARIOS[profile].includes('first-load')) {
-            samples.push(...await runColdProfile(browser, externalResourceFailures));
+            samples.push(...await runColdProfile(browser, externalResourceFailures, deliberateBlockedRequests));
         }
         if (PROFILE_SCENARIOS[profile].includes('stock-first-load')) {
-            samples.push(...await runStockColdProfile(browser, externalResourceFailures));
+            samples.push(...await runStockColdProfile(browser, externalResourceFailures, deliberateBlockedRequests));
+        }
+        if (PROFILE_SCENARIOS[profile].includes('strategy-inspector-load')) {
+            samples.push(...await runInspectorProfile(browser, externalResourceFailures, deliberateBlockedRequests));
         }
 
-        const warmScenarioNames = PROFILE_SCENARIOS[profile].filter(name => !['first-load', 'stock-first-load'].includes(name));
+        resourceSamples.push(...samples.map(sample => sample.resources).filter(Boolean));
+        const warmScenarioNames = PROFILE_SCENARIOS[profile].filter(name => !['first-load', 'stock-first-load', 'strategy-inspector-load'].includes(name));
         if (warmScenarioNames.length) {
-            const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+            const context = await browser.newContext({ viewport, hasTouch: compactViewport });
+            const page = await context.newPage();
             await installLongTaskObserver(page);
-            trackExternalResourceFailures(page, externalResourceFailures, { profile });
+            await installStorageProfile(page);
+            await applyNetworkProfile(page);
+            trackExternalResourceFailures(page, externalResourceFailures, deliberateBlockedRequests, { profile });
             try {
                 await page.goto(`${baseUrl}/?v=warm-${EXPECTED_RESOURCE_VERSION}-${Date.now()}`, { waitUntil: 'domcontentloaded', timeout: 45000 });
                 await waitForReady(page);
+                resourceSamples.push(await collectResourceFootprint(page, 'main'));
                 await warmInteractionPaths(page);
                 await waitForExternalScriptsToSettle(page);
+                await page.evaluate(() => {
+                    if (typeof stopRefreshSchedulers === 'function') stopRefreshSchedulers('performance-isolation');
+                });
                 await page.route('**/*', route => {
                     const url = route.request().url();
                     if (new URL(url).origin === baseOrigin || url.startsWith('data:') || url.startsWith('blob:')) {
@@ -599,12 +912,20 @@ async function main() {
                     samples.push(...await runScenarioSet(page).then(items => items.filter(item => warmScenarioNames.includes(item.name))));
                 }
             } finally {
-                await page.close();
+                await context.close();
             }
         }
-        const report = buildReport(samples, externalResourceFailures);
+        const report = buildReport(samples, externalResourceFailures, deliberateBlockedRequests, resourceSamples);
         report.profile = profile;
-        console.log(JSON.stringify(report, null, 2));
+        report.viewport = { name: viewportName, ...viewport };
+        report.storageProfile = storageProfile;
+        report.networkProfile = networkProfile;
+        report.samplePolicy = {
+            minimumP95Samples: MIN_P95_SAMPLES,
+            smallSampleGate: 'max',
+            formalGate: 'p95'
+        };
+        console.log(JSON.stringify(summaryOutput ? buildCompactReport(report) : report, null, 2));
         if (!report.ok && !noFail) process.exitCode = 1;
     } finally {
         await browser.close();

@@ -1,8 +1,9 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-08-24-02';
-const SIGNAL_VERSION = 'v4.2.32';
+const APP_BUILD = '2026-08-25-11';
+const SIGNAL_VERSION = 'v4.2.33';
+const WAVE_GOVERNANCE_VERSION = 'wave-regime-v3';
 window.__DG_BUILD__ = APP_BUILD;
 
 const STRATEGIES = {
@@ -12,8 +13,64 @@ const STRATEGIES = {
     '综合全能型': { buySignals: ['B1','B2','B3','B4','B5','B6','B7','B9','B10','B11','B12','B14','B15','B16','B17'], exitSignals: ['L1','L2','L3','L4','L5','L6','L9','L10'], warningSignals: ['W1'], scoreGroups: [['B1','B10','B15'],['B2','B12'],['B4','B14'],['B5','B6','B11','B16'],['B7'],['B17']], windowDays: 12, buyThreshold: 6, watchPosition: 30, watchPositionSignals: ['B5','B6','B7','B9','B11','B16','B17'], desc: '全量雷达观察模式，适合看全局信号，不建议直接等同交易指令' }
 };
 
+// 双底突破确认仅作为波段个股日线的独立修复组，不扩散到其他策略。
+STRATEGIES['波段抄底型'].buySignals.push('B19');
+STRATEGIES['波段抄底型'].buySignals.push('B20', 'B21');
+STRATEGIES['波段抄底型'].scoreGroups.push(['B19'], ['B20'], ['B21']);
+STRATEGIES['波段抄底型'].wavePositionStages = {
+    stocksOnly: true,
+    entryCap: 30,
+    strongEntryCap: 50,
+    structureEntrySignals: ['B19'],
+    strongReversalSignals: ['B9'],
+    minimumStrongReversalGroups: 2,
+    confirmationCap: 50,
+    confirmationSignals: ['B6','B11','B19'],
+    trendCap: 80,
+    trendContinuationSignals: ['B4','B14'],
+    breakoutPullbackWait: {
+        triggerSignals: ['B19'],
+        takeoverSignals: ['B6','B11']
+    },
+    trendMovingAveragePeriod: 20,
+    longMovingAveragePeriod: 60,
+    trendSlopeLookbackDays: 5
+};
+
+// 波段个股日线的统一三趋势治理参数。周线通常作为支撑来源；仅双底共振试探可作为资格背景参与判断。
+STRATEGIES['波段抄底型'].waveRegimePolicy = {
+    stocksOnly: true,
+    slopeLookbackDays: 5,
+    slopeThresholds: { up: 0.005, down: -0.005, flat: 0.005 },
+    confirmationDays: { up: 2, down: 2, range: 3 },
+    positionCaps: { down: 30, range: 50, up: 80, transition: 30, unknown: 0 },
+    box: {
+        windowDays: 40,
+        pivotDays: 2,
+        minimumSupportTouches: 2,
+        minimumPressureTouches: 2,
+        clusterToleranceAtr: 0.75,
+        minimumWidthAtr: 3,
+        maximumWidthRatio: 0.15,
+        edgeToleranceAtr: 0.75
+    },
+    entry: { minimumScore: 4, minimumDefenseDistanceRatio: 0.06, maximumDefenseAtr: 2 },
+    down: { entrySignals: ['B9','B16','B20'], repairSignals: ['B7','B8','B9','B16','B17','B20'], minimumRepairGroups: 2, allowSupportedTrialRiskScore: 30 },
+    range: { entrySignals: ['B5','B6','B7','B8','B9','B11','B16','B17','B20'], confirmationSignals: ['B5','B6','B7','B8','B9','B11','B16','B17','B20'] },
+    up: { entrySignals: ['B6','B11'], confirmationSignals: ['B6','B11'], trendSignals: ['B4','B14'] }
+};
+
+// 周线双底与日线第二底共振时，只开放个股日线30%试探，不改变普通4分建仓门槛。
+STRATEGIES['波段抄底型'].waveRegimePolicy.multiTimeframeBottomProbe = {
+    stocksOnly: true,
+    dailySignal: 'B20',
+    allowedRegimes: ['down', 'range', 'transition'],
+    weeklyRepair: { lookbackDays: 52, minimumGap: 4, maximumGap: 26, tolerance: 0.07, pivotDays: 1, allowNearbyRecentLow: true, recentLowTolerance: 0.03 }
+};
+
 Object.assign(STRATEGIES['波段抄底型'].waveRejectionProtection.freshEntryFailure, {
     requireCloseBelowMovingAveragePeriod: 20,
+    requireFrozenDefenseBreakForPressureFailure: true,
     ma20RejectionExit: {
         movingAveragePeriod: 20,
         longMovingAveragePeriod: 60,
@@ -70,8 +127,8 @@ const WAVE_B_QUALITY_RULESET = Object.freeze({
 
 let STRATEGY = {};
 
-const SIGNAL_SCORES = { 'B1':3,'B2':3,'B3':2,'B4':2,'B5':2,'B6':2,'B7':1,'B8':1,'B9':4,'B10':2,'B11':2,'B12':3,'B13':3,'B14':2,'B15':2,'B16':3,'B17':3,'B18':2 };
+const SIGNAL_SCORES = { 'B1':3,'B2':3,'B3':2,'B4':2,'B5':2,'B6':2,'B7':1,'B8':1,'B9':4,'B10':2,'B11':2,'B12':3,'B13':3,'B14':2,'B15':2,'B16':3,'B17':3,'B18':2,'B19':3,'B20':3,'B21':3 };
 const SIGNAL_DESC = {
-    'B1':{desc:'均线多头'}, 'B2':{desc:'MACD金叉'}, 'B3':{desc:'上穿20日线'}, 'B4':{desc:'放量突破新高'}, 'B5':{desc:'阳包阴'}, 'B6':{desc:'缩量回踩不破'}, 'B7':{desc:'RSI超卖回升'}, 'B8':{desc:'KDJ金叉'}, 'B9':{desc:'MACD底背离'}, 'B10':{desc:'MA20上穿MA60'}, 'B11':{desc:'均线回踩不破'}, 'B12':{desc:'零轴上金叉'}, 'B13':{desc:'长级别走强'}, 'B14':{desc:'平台放量突破'}, 'B15':{desc:'均线二次金叉'}, 'B16':{desc:'回踩周线支撑企稳'}, 'B17':{desc:'超跌止跌反弹'}, 'B18':{desc:'BOLL下轨止跌收回'},
+    'B1':{desc:'均线多头'}, 'B2':{desc:'MACD金叉'}, 'B3':{desc:'上穿20日线'}, 'B4':{desc:'放量突破新高'}, 'B5':{desc:'阳包阴'}, 'B6':{desc:'缩量回踩不破'}, 'B7':{desc:'RSI超卖回升'}, 'B8':{desc:'KDJ金叉'}, 'B9':{desc:'MACD底背离'}, 'B10':{desc:'MA20上穿MA60'}, 'B11':{desc:'均线回踩不破'}, 'B12':{desc:'零轴上金叉'}, 'B13':{desc:'长级别走强'}, 'B14':{desc:'平台放量突破'}, 'B15':{desc:'均线二次金叉'}, 'B16':{desc:'回踩周线支撑企稳'}, 'B17':{desc:'超跌止跌反弹'}, 'B18':{desc:'BOLL下轨止跌收回'}, 'B19':{desc:'双底突破确认'}, 'B20':{desc:'大级别双底第二底修复'}, 'B21':{desc:'周线双底第二底修复'},
     'L1':{desc:'跌破短期趋势'}, 'L2':{desc:'均线死叉'}, 'L3':{desc:'MACD死叉'}, 'L4':{desc:'跌破20日线'}, 'L5':{desc:'阴包阳'}, 'L6':{desc:'连阳后首阴'}, 'L7':{desc:'RSI超买回落'}, 'L8':{desc:'布林上轨受阻'}, 'L9':{desc:'高点回撤破位'}, 'L10':{desc:'MACD顶背离'}, 'W1':{desc:'偏离均线过大'}, 'W2':{desc:'连阳缩量迹象'}, 'W3':{desc:'放量滞涨'}, 'W4':{desc:'缩量上涨背离'}
 };

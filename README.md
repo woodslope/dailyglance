@@ -24,6 +24,18 @@ python3 -m http.server 8000
 
 策略查看器：访问 `http://localhost:8000/strategy-inspector.html`，或在主应用“设置”中打开“独立策略页”。该页面直接读取 `assets/js/00-strategy-config.js` 的生产配置，用于查看策略结构，不维护独立副本。
 
+### 性能与长时稳定性检查
+
+保持本地 HTTP 服务运行后，可以独立执行两类治理检查：
+
+```bash
+node scripts/performance-budget.js --url=http://127.0.0.1:8000 --profile=all --viewport=desktop --runs=5 --summary
+node scripts/stability-governance.js --url=http://127.0.0.1:8000 --profile=startup --summary
+node scripts/stability-governance.js --url=http://127.0.0.1:8000 --profile=lifecycle --bfcache-cycles=20 --summary
+```
+
+`performance-budget.js` 覆盖冷启动、标的切换、策略切换、历史拖动、返回最新和后台刷新竞争，并报告请求数、资源大小、长任务与主机负载。两个脚本的 `--summary` 都只隐去逐次跟踪明细，不改变门禁。性能样本少于 20 次时只用最大值作小样本门禁，不声称 p95 结论；报告中 `measurementEnvironment.valid=false` 表示同机负载已污染样本，必须在负载回落后重测，不得归因为产品回归。`stability-governance.js` 覆盖存储降级、启动终止错误、页面生命周期和长时运行；长时运行默认桌面端 60 分钟、手机精简版 30 分钟，使用 `--profile=soak --viewport=desktop|mobile` 单独执行。这些是本地定向治理工具，不替代发布流程。
+
 ## 文档地图
 
 README 只做项目总览、入口索引和目录/发布边界，不承载策略细则、数据契约或历史记录。
