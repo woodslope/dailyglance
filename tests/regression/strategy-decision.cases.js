@@ -4747,6 +4747,42 @@ runTest('wave regime governance enforces down range up lifecycle caps and frozen
     assert.strictEqual(result.rangeStructureBreak.bsMark, 'S');
 });
 
+runTest('wave peak confirmation drops one tier and ratchet lift requires minimum ATR buffer', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext('function convertDailyToWeekly() { return []; }', context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext([
+        "setActiveStrategy('波段抄底型'); state.mode = 'stock'; state.period = 'daily';",
+        "var full = Array.from({ length: 90 }, (_, day) => ({ date: 'D' + day, open: 99.5, high: 100.5, low: 99, close: 100, vol: 1000, _signals: [] }));",
+        "state.indicators = { ma: { 20: Array(90).fill(100), 60: Array(90).fill(100) }, macd: {}, rsi: {}, kdj: {} };",
+        "var activeMeta = { currentDay: 70, type: '明确转强', windowScore: 4, buySignals: [], exitSignals: [], warningSignals: [], allSignals: {}, windowSignals: [], windowScoreSignals: [], invalidatedWindowSignals: [], localBreakWindowSignals: [], inCooldown: false };",
+        "getSignalMeta = day => ({ ...activeMeta, currentDay: day });",
+        "function lifecycle(positionLayer) { return { active: true, entryRegime: 'up', entrySignals: ['B11'], entrySignalGroups: ['B11'], entryDay: 60, entryDate: 'D60', entryClose: 100, localDefense: 96, hardDefense: 95, supportSource: 'box-support', stage: positionLayer === 50 ? 'confirmation' : 'entry', positionLayer: positionLayer, upperObservation: null }; }",
+        "function candidate(position, peakConfirmed) { return { position: position, prevAdv: 0, exit: { level: '无明确离场' }, simpleAction: '谨慎持有', simpleColorClass: 'text-info', bsMark: null, positionDriver: '', waveRejectionProtection: { status: 'none' }, wavePeak: { status: peakConfirmed ? 'confirmed' : 'none', candidate: peakConfirmed, confirmed: peakConfirmed, reason: '触及日线压力后出现长上影弱收盘，按波峰确认防守' }, waveContext: { inScope: true, regime: 'up', regimeLabel: '上涨', boxSupport: null, boxPressure: null, boxMidpoint: null, box: { valid: false, atr14: 1 } } }; }",
+        // 波峰确认：50% 降一档到 30%，30% 只保持不清仓，都不生成新的 S。
+        "full[69]._decision = { position: 50, waveContext: { lifecycle: lifecycle(50) } }; var peakDropsTier = applyWaveRegimeGovernance(70, full, 50, candidate(50, true), STRATEGY);",
+        "var peakHoldsFloor = applyWaveRegimeGovernance(70, full, 30, candidate(30, true), STRATEGY);",
+        "var noPeakKeepsTier = applyWaveRegimeGovernance(70, full, 50, candidate(50, false), STRATEGY);",
+        // 棘轮：缓冲足够（99.5 <= 100 - 0.5×1）时上移；缓冲不足（99.7）时保留原防守位。
+        "var ratchetRows = full.map(row => ({ ...row })); [64, 65, 67, 68].forEach(day => { ratchetRows[day].low = 99.8; }); ratchetRows[66].low = 99.5;",
+        "ratchetRows[69]._decision = { position: 30, waveContext: { lifecycle: lifecycle(30) } }; var ratchetLifts = applyWaveRegimeGovernance(70, ratchetRows, 30, candidate(30, false), STRATEGY);",
+        "var noiseRows = full.map(row => ({ ...row })); [64, 65, 67, 68].forEach(day => { noiseRows[day].low = 99.8; }); noiseRows[66].low = 99.7;",
+        "noiseRows[69]._decision = { position: 30, waveContext: { lifecycle: lifecycle(30) } }; var ratchetBlocked = applyWaveRegimeGovernance(70, noiseRows, 30, candidate(30, false), STRATEGY);"
+    ].join('\n'), context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ peakDropsTier, peakHoldsFloor, noPeakKeepsTier, ratchetLifts, ratchetBlocked })', context));
+    assert.strictEqual(result.peakDropsTier.position, 30);
+    assert.strictEqual(result.peakDropsTier.bsMark, null, 'peak defense must not create a new S');
+    assert.ok(result.peakDropsTier.waveContext.mainEvent.includes('波峰确认防守'));
+    assert.strictEqual(result.peakHoldsFloor.position, 30, 'peak defense must not zero the 30% floor');
+    assert.strictEqual(result.peakHoldsFloor.bsMark, null);
+    assert.strictEqual(result.noPeakKeepsTier.position, 50, 'without peak confirmation the tier is unchanged');
+    assert.strictEqual(result.ratchetLifts.waveContext.frozenHardDefense, 99.5);
+    assert.strictEqual(result.ratchetLifts.waveContext.supportSource, 'confirmed-pivot-ratchet');
+    assert.strictEqual(result.ratchetBlocked.waveContext.frozenHardDefense, 95, 'lift into the close noise band must be rejected');
+    assert.strictEqual(result.ratchetBlocked.waveContext.supportSource, 'box-support');
+});
+
 runTest('L5 bearish engulfing is a reduce-watch exit, not a strong trend break', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);

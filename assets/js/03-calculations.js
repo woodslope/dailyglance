@@ -5051,7 +5051,13 @@ function applyWaveRegimeGovernance(idx, full, prevPos, candidate, strategy = STR
             governanceReason = `买入信号防守位失效但${defenseLabel}${Number(lifecycle.hardDefense).toFixed(2)}未破，保留${position}%试探仓观察`;
         }
         const pivot = findConfirmedPivotLow(full, idx, 120, 2);
-        if (lifecycle && Number.isFinite(Number(pivot?.value)) && Number(pivot.value) > Number(lifecycle.hardDefense) && Number(pivot.value) < close) {
+        // 棘轮上移必须给收盘价留出最小缓冲：缓冲不足说明新防守位已进入当日噪音带，本次不上移，等价格拉开距离后再抬。
+        const ratchetAtr14 = Number(waveContext?.box?.atr14) || getWaveAtr14At(idx, full);
+        const ratchetBuffer = Number.isFinite(ratchetAtr14) && ratchetAtr14 > 0
+            ? ratchetAtr14 * Math.max(0, Number(policy?.ratchet?.minimumBufferAtr) || 0)
+            : 0;
+        if (lifecycle && Number.isFinite(Number(pivot?.value)) && Number(pivot.value) > Number(lifecycle.hardDefense)
+            && Number(pivot.value) < close && Number(pivot.value) <= close - ratchetBuffer) {
             lifecycle.hardDefense = Number(pivot.value);
             lifecycle.supportSource = 'confirmed-pivot-ratchet';
         }
@@ -5091,6 +5097,15 @@ function applyWaveRegimeGovernance(idx, full, prevPos, candidate, strategy = STR
         if (ordinaryUpWeakness) {
             position = getLowerWavePositionStep(prevPos);
             governanceReason = '上涨环境普通转弱按层级退出，未出现结构硬破不直接归零';
+        }
+        // 波峰确认防守：触及日线/周线压力并出现长上影弱收盘时，已有仓位最多降一个档位；压力位本身不清仓，也不生成新的S。
+        if (candidate?.wavePeak?.confirmed === true && position > 0) {
+            const peakStep = Math.max(30, getLowerWavePositionStep(prevPos));
+            if (position > peakStep) {
+                position = peakStep;
+                governanceReason = (candidate.wavePeak.reason || '触及日线或周线压力并出现长上影弱收盘，按波峰确认防守')
+                    + (position < prevPos ? '，已有仓位降至' : '，本日不加仓并保持') + position + '%';
+            }
         }
         const cap = Number(policy?.positionCaps?.[waveContext.regime]);
         if (waveContext.regime !== 'unknown' && Number.isFinite(cap)) position = Math.min(position, cap);
