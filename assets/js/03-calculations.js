@@ -4803,7 +4803,13 @@ function getWaveEntryDefenseContext(idx, full, waveContext, rawSignals, strategy
         supportSource = 'event-recovery-signal-low';
     }
     const atr14 = Number(waveContext?.box?.atr14) || getWaveAtr14At(idx, full);
-    const distanceRatio = Number.isFinite(hardDefense) && close > 0 ? (close - hardDefense) / close : Infinity;
+    // 首次低吸的距离检查使用当次信号局部失效位，避免把远处历史结构位误当作建仓日的唯一风险锚。
+    // hardDefense 不变，仍由生命周期持有并负责后续结构硬失效；这里仅改变“能否建立30%试探仓”的检查。
+    const useLocalDefenseForDistance = strategy?.waveRegimePolicy?.entry?.useLocalDefenseForDistance !== false;
+    const hasUsableLocalDefense = Number.isFinite(localDefense) && Number.isFinite(close) && close > 0 && localDefense < close;
+    const entryDefense = useLocalDefenseForDistance && hasUsableLocalDefense ? localDefense : hardDefense;
+    const entryDefenseSource = useLocalDefenseForDistance && hasUsableLocalDefense ? 'local-signal' : supportSource;
+    const distanceRatio = Number.isFinite(entryDefense) && close > 0 ? (close - entryDefense) / close : Infinity;
     const maxRatio = Math.min(
         Number(strategy?.waveRegimePolicy?.entry?.minimumDefenseDistanceRatio) || 0.06,
         Number.isFinite(atr14) && close > 0
@@ -4811,7 +4817,7 @@ function getWaveEntryDefenseContext(idx, full, waveContext, rawSignals, strategy
             : 0.06
     );
     return {
-        localDefense, hardDefense, supportSource, distanceRatio, maximumDistanceRatio: maxRatio,
+        localDefense, hardDefense, entryDefense, supportSource, entryDefenseSource, distanceRatio, maximumDistanceRatio: maxRatio,
         acceptable: distanceRatio >= 0 && distanceRatio <= maxRatio
     };
 }
@@ -5017,18 +5023,26 @@ function applyWaveRegimeGovernance(idx, full, prevPos, candidate, strategy = STR
                 active: true, entryRegime: waveContext.regime, entrySignals: [...rawSignals],
                 entrySignalGroups: qualification.freshGroups, entryDay: idx, entryDate: item.date || '',
                 entryClose: close, localDefense: defense.localDefense, hardDefense: defense.hardDefense,
+                entryDefense: defense.entryDefense, entryDefenseSource: defense.entryDefenseSource,
                 supportSource: defense.supportSource,
                 entryMode: multiTimeframeProbe ? 'multi-timeframe-double-bottom-probe' : 'regime-qualified',
                 stage: 'entry', positionLayer: 30, upperObservation: null,
                 breakoutPressure: waveContext.regime === 'range' ? waveContext.boxPressure : null, breakoutRetested: false
             };
+            const entryDefenseText = Number.isFinite(Number(defense.entryDefense))
+                ? `${defense.entryDefenseSource === 'local-signal' ? '局部防守位' : '结构防守位'}${Number(defense.entryDefense).toFixed(2)}`
+                : '局部防守位';
+            const structuralDefenseText = Number.isFinite(Number(defense.hardDefense))
+                && Number(defense.hardDefense) !== Number(defense.entryDefense)
+                ? `，结构硬防守位${Number(defense.hardDefense).toFixed(2)}作为二级失效线`
+                : '';
             governanceReason = multiTimeframeProbe
                 ? '周线双底候选与日线B20共振，建立30%试探仓并冻结防守位'
                 : eventRecovery
                 ? '事件后新信号完成恢复资格，建立30%试探仓并重新冻结防守位'
                 : (waveContext.regime === 'down' && qualification.downRepairQualified
-                    ? '下跌环境修复信号达到试探资格，建立30%试探仓并冻结防守位'
-                    : waveContext.regimeLabel + '环境资格成立，建立30%试探仓并冻结防守位');
+                    ? `下跌环境修复信号达到试探资格，按${entryDefenseText}通过距离检查，建立30%试探仓并冻结防守位${structuralDefenseText}`
+                    : `${waveContext.regimeLabel}环境资格成立，按${entryDefenseText}通过距离检查，建立30%试探仓并冻结防守位${structuralDefenseText}`);
         }
     } else if (prevPos > 0) {
         if (signalBreakOnly) {
@@ -5121,6 +5135,7 @@ function applyWaveRegimeGovernance(idx, full, prevPos, candidate, strategy = STR
                 : null,
             lifecycle, stage: lifecycle?.stage || (position > 0 ? 'holding' : 'flat'), positionLayer: position,
             frozenLocalDefense: lifecycle?.localDefense ?? null, frozenHardDefense: lifecycle?.hardDefense ?? null,
+            entryDefense: lifecycle?.entryDefense ?? null, entryDefenseSource: lifecycle?.entryDefenseSource || '',
             supportSource: lifecycle?.supportSource || '', mainEvent: governanceReason, nextCondition
         }
     };

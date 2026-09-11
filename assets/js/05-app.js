@@ -1082,6 +1082,7 @@ async function updateAllWatchlistData(options = {}) {
     const batchWatchlistKey = getSupportedWatchlistTargets().map(stock => stock.secid).sort().join(',');
     const task = (async () => {
         watchlistSnapshotBatchDepth++;
+        if (typeof beginLiveOverlayCacheBatch === 'function') beginLiveOverlayCacheBatch();
         let results = [];
         try {
             results = await pLimit(stocks, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (stock) => {
@@ -1090,8 +1091,7 @@ async function updateAllWatchlistData(options = {}) {
                     const data = await syncData(secid);
                     if (data && data.length >= 30 && isValidPrice(data[data.length - 1].close, secid)) {
                         setRawData(secid, data);
-                        await dbSet(secid, data);
-                        syncWatchlistSignalSnapshotFast(stock.code, data);
+                        syncWatchlistSignalSnapshotFast(stock.code, state.rawData[secid] || data);
                         return { code: stock.code, success: true };
                     }
                     setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '数据不足', strategy: batchStrategy, date: data?.[data.length - 1]?.date || '' });
@@ -1101,7 +1101,7 @@ async function updateAllWatchlistData(options = {}) {
                     const cachedData = normalizeConfirmedHistoryData(cached?.data, secid);
                     if (cachedData && cachedData.length >= 30) {
                         setRawData(secid, cachedData);
-                        syncWatchlistSignalSnapshotFast(stock.code, cachedData);
+                        syncWatchlistSignalSnapshotFast(stock.code, state.rawData[secid] || cachedData);
                         return { code: stock.code, success: true, source: 'cache' };
                     }
                     setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '同步失败', strategy: batchStrategy, date: '' });
@@ -1110,6 +1110,7 @@ async function updateAllWatchlistData(options = {}) {
             });
         } finally {
             finishWatchlistSnapshotBatch();
+            if (typeof endLiveOverlayCacheBatch === 'function') endLiveOverlayCacheBatch();
         }
         await waitForWatchlistSnapshotQueue();
 
@@ -1291,12 +1292,19 @@ async function runSidebarFullSync() {
         if (state.tab === 'index' || state.mode === 'index') {
             const ids = INDEX_IDS.filter(id => id !== state.id);
             let failCnt = 0;
-            await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (id) => {
-                try {
-                    const data = await syncData(id);
-                    if (data && data.length >= 30) { setRawData(id, data); await dbSet(id, data); }
-                } catch(e) { failCnt++; }
-            });
+            if (typeof beginLiveOverlayCacheBatch === 'function') beginLiveOverlayCacheBatch();
+            try {
+                await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (id) => {
+                    try {
+                        const data = await syncData(id);
+                        if (data && data.length >= 30) {
+                            setRawData(id, data);
+                        }
+                    } catch(e) { failCnt++; }
+                });
+            } finally {
+                if (typeof endLiveOverlayCacheBatch === 'function') endLiveOverlayCacheBatch();
+            }
             if (failCnt >= 2) showToast('\u90e8\u5206\u6307\u6570\u5386\u53f2\u6570\u636e\u540c\u6b65\u5931\u8d25', 'warn', 4000);
             const leftTxn = failCnt < ids.length ? beginRefreshTransaction('leftList', { source: 'sidebar-full-sync', area: 'index-list' }) : null;
             renderIndexList();

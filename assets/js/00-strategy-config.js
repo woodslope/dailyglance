@@ -1,8 +1,8 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-09-11-01';
-const SIGNAL_VERSION = 'v4.2.34';
+const APP_BUILD = '2026-09-11-02';
+const SIGNAL_VERSION = 'v4.2.35';
 const WAVE_GOVERNANCE_VERSION = 'wave-regime-v3';
 window.__DG_BUILD__ = APP_BUILD;
 
@@ -58,7 +58,8 @@ STRATEGIES['波段抄底型'].waveRegimePolicy = {
         maximumWidthRatio: 0.15,
         edgeToleranceAtr: 0.75
     },
-    entry: { minimumScore: 4, minimumDefenseDistanceRatio: 0.06, maximumDefenseAtr: 2 },
+    // 首次试探只用当次信号的局部失效位检查风险距离；结构硬防守仍在生命周期内保留为二级失效线。
+    entry: { minimumScore: 4, minimumDefenseDistanceRatio: 0.06, maximumDefenseAtr: 2, useLocalDefenseForDistance: true },
     // 硬防守随已确认结构上移时，必须给收盘价留出的最小缓冲；缓冲不足说明防守位已进入当日噪音带，本次不上移。
     ratchet: { minimumBufferAtr: 0.5 },
     down: { entrySignals: ['B9','B16','B20'], repairSignals: ['B7','B8','B9','B16','B17','B20'], minimumRepairGroups: 2, allowSupportedTrialRiskScore: 30 },

@@ -860,6 +860,15 @@ function setRawData(id, data) {
     data = normalizeConfirmedHistoryData(data, id);
     const prevData = state.rawData[id];
     const mutation = prevData ? getDataMutationMeta(prevData, data) : { mode: 'full', startIdx: 0 };
+
+    // 盘中轮询经常会拿到同一份确认历史。保留原数组和派生缓存，
+    // 避免每只标的重复重建周线、清理渲染缓存并触发主线程长任务。
+    if (prevData && data && mutation.mode === 'unchanged') {
+        // 即使确认历史未变，盘后仍需清理已经被确认覆盖的同日临时 K 线。
+        clearConfirmedLiveBar(id, prevData);
+        return { changed: false, mutation };
+    }
+
     if (mutation.mode !== 'full' && prevData && data) {
         const preserveUntil = mutation.mode === 'unchanged'
             ? Math.min(prevData.length, data.length)
@@ -910,6 +919,7 @@ function setRawData(id, data) {
     } else {
         clearDerivedCaches();
     }
+    return { changed: true, mutation };
 }
 
 function barsEqual(a, b) {
@@ -1292,7 +1302,11 @@ async function syncData(id) {
     if(isMarketOpen()) { 
         if(hasEnough) { 
             const incremental = await syncDataIncremental(id); 
-            if(incremental && incremental.length > 0) { await dbSet(id, incremental); cached = incremental; }
+            if (incremental && incremental.length > 0) {
+                const mutation = getDataMutationMeta(cached, incremental);
+                if (mutation.mode !== 'unchanged') await dbSet(id, incremental);
+                cached = incremental;
+            }
             const rt = await requestManager.fetchRealtimeWithThrottle(id); 
             if (rt) applyRealtimeQuoteForSeries(id, cached, rt);
             else tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);
@@ -1320,7 +1334,8 @@ async function syncData(id) {
         if(hasEnough) { 
             const incremental = await syncDataIncremental(id); 
             if(incremental && incremental.length > 0) {
-                await dbSet(id, incremental);
+                const mutation = getDataMutationMeta(cached, incremental);
+                if (mutation.mode !== 'unchanged') await dbSet(id, incremental);
                 if (!isConfirmedSeriesFreshEnough(incremental)) tryApplyCachedLiveOverlay(id, incremental);
                 return incremental;
             }
@@ -1829,8 +1844,6 @@ async function cachedFetch(id) {
     if (shouldApplyFresh) {
         setRawData(id, fresh);
         PERF.mark(perfTrace, 'active-data', { source: 'fresh', points: fresh.length });
-        await dbSet(id, fresh);
-        PERF.mark(perfTrace, 'dbSet');
         if (typeof syncWatchlistSignalSnapshotFast === 'function') {
             const matched = (state.watchlist || []).find(stock => normalizeSecurityTarget(stock).secid === id);
             if (matched) syncWatchlistSignalSnapshotFast(matched.code, fresh);
@@ -1903,8 +1916,6 @@ function scheduleCachedFetchRefresh(id) {
         if (hasUpdate) {
             setRawData(id, fresh);
             PERF.mark(perfTrace, 'apply-raw');
-            await dbSet(id, fresh);
-            PERF.mark(perfTrace, 'dbSet');
         } else {
             PERF.mark(perfTrace, 'apply-live-overlay');
         }
@@ -1961,7 +1972,6 @@ async function ensureMarketTemperatureData() {
             const data = await syncData(id);
             if (data && data.length >= 30) {
                 setRawData(id, data);
-                await dbSet(id, data);
             }
         } catch(e) {}
     }
