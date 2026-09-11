@@ -23,6 +23,7 @@ function clearSecondaryChartInstances() {
 }
 
 function clearCharts(reason = 'empty'){
+    cancelChartInteraction('clear-charts');
     CHART_CANVAS_IDS.forEach(id => { const c = Chart.getChart(id); if(c) c.destroy(); });
     state.charts = {};
     document.querySelectorAll('.empty-hint').forEach(el => el.remove());
@@ -276,6 +277,13 @@ let chartDragPanBound = false;
 let chartDragPanRAF = 0;
 let chartDragPan = null;
 let chartHoverSuppressUntil = 0;
+let chartDragSidebarTimer = 0;
+let chartDragSidebarLastAt = 0;
+let chartDragSecondaryLastAt = 0;
+let chartInteractionBlocked = false;
+let chartInteractionBlockSeq = 0;
+let chartInteractionIgnoreInputUntil = 0;
+const CHART_DRAG_SIDEBAR_MS = 100;
 
 function cancelPendingChartHoverSelection() {
     pendingHoverIdx = -1;
@@ -294,11 +302,62 @@ function suppressChartHoverSelection(ms = 350) {
     chartHoverSuppressUntil = Date.now() + ms;
 }
 
+function cancelChartDragPan(reason = '') {
+    const activeDrag = chartDragPan;
+    cancelChartDragPanFrame();
+    cancelChartDragSidebarUpdate();
+    chartDragPan = null;
+    if (activeDrag) getChartDragMainBox(activeDrag.target)?.classList?.remove('drag-panning');
+    clearChartDragPreview();
+}
+
+function cancelChartInteraction(reason = '') {
+    cancelPendingChartHoverSelection();
+    cancelChartDragPan(reason);
+    chartHoverSuppressUntil = Date.now() + 120;
+}
+
+function beginChartInteractionBlock() {
+    chartInteractionBlockSeq += 1;
+    chartInteractionBlocked = true;
+    chartInteractionIgnoreInputUntil = Date.now() + 220;
+    cancelChartInteraction('selection-start');
+    return chartInteractionBlockSeq;
+}
+
+function releaseChartInteractionBlock(token) {
+    if (token !== chartInteractionBlockSeq) return;
+    chartInteractionBlocked = false;
+    chartInteractionIgnoreInputUntil = Date.now() + 140;
+}
+
+function releaseChartInteractionAfterPaint(token) {
+    const schedule = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : (callback => setTimeout(callback, 0));
+    schedule(() => releaseChartInteractionBlock(token));
+}
+
+function isChartInteractionBlocked() {
+    return chartInteractionBlocked;
+}
+
+function isChartInteractionActive() {
+    return chartInteractionBlocked || !!chartDragPan;
+}
+
+function shouldIgnoreChartInteractionEvent(event) {
+    if (chartInteractionBlocked) return true;
+    if (Date.now() >= chartInteractionIgnoreInputUntil) return false;
+    if (/^(pointer|mouse)(up|cancel)$/.test(event?.type || '')) chartInteractionIgnoreInputUntil = 0;
+    return true;
+}
+
 function runHoverSidebarUpdate() {
     hoverRAF = null;
     hoverSidebarTimer = null;
     hoverSidebarLastAt = Date.now();
-    safeUpdateSidebar();
+    safeUpdateSidebar({ interactive: true });
 }
 
 function scheduleHoverSidebarUpdate() {
@@ -328,7 +387,7 @@ function refreshHoverSelection() {
     if (pendingHoverIdx < 0 || pendingHoverIdx === state.lockIdx) return;
     setLockIdx(pendingHoverIdx);
     pendingHoverIdx = -1;
-    safeUpdateSidebar();
+    safeUpdateSidebar({ interactive: true });
     updateCrosshairOverlay();
 }
 
@@ -349,7 +408,7 @@ function resetHoverSelectionToLatest() {
     if (state.lockIdx === latestIdx) { updateFreezeBadge(); updateCrosshairOverlay(); return; }
     setLockIdx(latestIdx);
     resetViewportToLatest(activeData);
-    safeUpdateSidebar();
+    safeUpdateSidebar({ interactive: true });
     updateFreezeBadge();
     updateCrosshairOverlay();
 }
@@ -363,6 +422,44 @@ function getChartPanBarWidth() {
     return width > 0 ? width / labels.length : 0;
 }
 
+function cancelChartDragPanFrame() {
+    if (chartDragPanRAF) {
+        cancelAnimationFrame(chartDragPanRAF);
+        chartDragPanRAF = 0;
+    }
+}
+
+function scheduleChartDragPanFrame() {
+    if (!chartDragPan || chartDragPanRAF) return;
+    chartDragPanRAF = requestAnimationFrame(() => applyChartDragPan(false));
+}
+
+function cancelChartDragSidebarUpdate() {
+    if (chartDragSidebarTimer) {
+        clearTimeout(chartDragSidebarTimer);
+        chartDragSidebarTimer = 0;
+    }
+}
+
+function scheduleChartDragSidebarUpdate() {
+    if (!chartDragPan || shouldRenderCompactMainChartOnly() || chartDragSidebarTimer) return;
+    const elapsed = Date.now() - chartDragSidebarLastAt;
+    const wait = Math.max(0, CHART_DRAG_SIDEBAR_MS - elapsed);
+    chartDragSidebarTimer = setTimeout(() => {
+        chartDragSidebarTimer = 0;
+        if (!chartDragPan) return;
+        chartDragSidebarLastAt = Date.now();
+        safeUpdateSidebar({ interactive: true });
+    }, wait);
+}
+
+function isMismatchedChartDragEvent(event) {
+    if (!chartDragPan || !event) return false;
+    if (chartDragPan.inputKind === 'pointer' && event.type === 'mousemove') return true;
+    if (chartDragPan.inputKind === 'mouse' && event.pointerId != null) return true;
+    return false;
+}
+
 function applyChartDragPan(force = false) {
     chartDragPanRAF = 0;
     if (!chartDragPan) return;
@@ -371,20 +468,35 @@ function applyChartDragPan(force = false) {
     const rawDelta = chartDragPan.currentX - chartDragPan.lastAppliedX;
     const deltaBars = Math.trunc(rawDelta / barWidth);
     if (!force && deltaBars === 0) return;
-    if (deltaBars === 0) return;
+    if (deltaBars === 0) {
+        const secondaryReady = state.charts.vol && state.charts.macd && state.charts.kdj;
+        if (force && chartDragPan.didPan && secondaryReady) {
+            drawViewport({ interaction: true, updateSecondary: true });
+            chartDragSecondaryLastAt = Date.now();
+        }
+        return;
+    }
 
     const activeData = getActiveData();
     if (!activeData || !activeData.length) return;
     if (panViewportByBars(deltaBars, activeData)) {
         chartDragPan.lastAppliedX += deltaBars * barWidth;
         chartDragPan.didPan = true;
+        const frameNow = Date.now();
         clearStaleTooltips();
-        drawViewport();
-        }
+        const updateSecondary = force || (frameNow - chartDragSecondaryLastAt >= 64);
+        drawViewport({ interaction: true, updateSecondary });
+        if (updateSecondary) chartDragSecondaryLastAt = frameNow;
+        scheduleChartDragSidebarUpdate();
+    }
 }
 
 function startChartDragPan(event) {
+    if (shouldIgnoreChartInteractionEvent(event)) return;
     if (event?.button != null && event.button !== 0) return;
+    const inputKind = event?.pointerId != null ? 'pointer' : 'mouse';
+    if (chartDragPan && chartDragPan.inputKind === 'pointer' && inputKind === 'mouse') return;
+    if (chartDragPan && chartDragPan.inputKind === inputKind) return;
     const activeData = getActiveData();
     if (!activeData || activeData.length <= getViewportLength()) return;
     const barWidth = getChartPanBarWidth();
@@ -401,12 +513,13 @@ function startChartDragPan(event) {
         didPan: false,
         target: event.currentTarget || null,
         pointerId: event.pointerId,
-        pointerCaptured: false
+        pointerCaptured: false,
+        inputKind
     };
 }
 
 function moveChartDragPan(event) {
-    if (!chartDragPan) return;
+    if (shouldIgnoreChartInteractionEvent(event) || !chartDragPan || isMismatchedChartDragEvent(event)) return;
     chartDragPan.currentX = event.clientX;
     const deltaX = chartDragPan.currentX - chartDragPan.startX;
     const deltaY = event.clientY - chartDragPan.startY;
@@ -424,13 +537,16 @@ function moveChartDragPan(event) {
         getChartDragMainBox(chartDragPan.target)?.classList?.add('drag-panning');
     }
     if (!chartDragPan.pointerCaptured) return;
-    if (!chartDragPanRAF) chartDragPanRAF = requestAnimationFrame(() => applyChartDragPan(false));
+    scheduleChartDragPanFrame();
     event?.preventDefault?.();
 }
 
 function finishChartDragPan(event) {
-    if (!chartDragPan) return;
+    if (shouldIgnoreChartInteractionEvent(event) || !chartDragPan || isMismatchedChartDragEvent(event)) return;
     const target = chartDragPan.target || event?.currentTarget;
+    cancelChartDragPanFrame();
+    cancelChartDragSidebarUpdate();
+    chartDragSecondaryLastAt = 0;
     applyChartDragPan(true);
     if (chartDragPan.pointerCaptured && target?.releasePointerCapture && event?.pointerId != null) {
         try { target.releasePointerCapture(event.pointerId); } catch(e) {}
@@ -439,6 +555,7 @@ function finishChartDragPan(event) {
     clearChartDragPreview();
     if (chartDragPan.didPan) {
         suppressChartHoverSelection();
+        chartDragSidebarLastAt = Date.now();
         safeUpdateSidebar();
         updateFreezeBadge();
         updateCrosshairOverlay();
@@ -453,6 +570,7 @@ function getChartDragMainBox(target) {
 }
 
 function handleChartWheelPan(event) {
+    if (shouldIgnoreChartInteractionEvent(event)) return;
     const deltaX = Number(event?.deltaX) || 0;
     if (Math.abs(deltaX) < 1 || Math.abs(deltaX) < Math.abs(Number(event?.deltaY) || 0)) return;
     event?.preventDefault?.();
@@ -468,8 +586,8 @@ function handleChartWheelPan(event) {
     if (panViewportByBars(deltaBars, activeData)) {
         suppressChartHoverSelection();
         clearStaleTooltips();
-        drawViewport();
-        safeUpdateSidebar();
+        drawViewport({ interaction: true, updateSecondary: true });
+        safeUpdateSidebar({ interactive: true });
         updateFreezeBadge();
         updateCrosshairOverlay();
     } else {
@@ -504,7 +622,7 @@ function bindChartPointerReset() {
 }
 
 function handleChartHover(e, els) {
-    if (chartDragPan) return;
+    if (chartInteractionBlocked || chartDragPan) return;
     if (Date.now() < chartHoverSuppressUntil) return;
     
     if (els && els.length) {
@@ -534,7 +652,7 @@ function draw() {
     renderChartViewport(perfTrace);
 }
 
-function drawViewport() {
+function drawViewport(options = {}) {
     const perfTrace = PERF.start('drawViewport', { id: state.id, mode: state.mode, period: state.period, range: state.range });
     bindChartPointerReset();
     bindChartDragPan();
@@ -545,10 +663,10 @@ function drawViewport() {
         updateAllIndicators();
         PERF.mark(perfTrace, 'indicators');
     }
-    renderChartViewport(perfTrace);
+    renderChartViewport(perfTrace, options);
 }
 
-function renderChartViewport(perfTrace) {
+function renderChartViewport(perfTrace, options = {}) {
     const currentFd = getActiveData(); 
     if(!currentFd || !currentFd.length) { clearCharts(); updateFreezeBadge(); PERF.end(perfTrace, { status: 'empty' }); return; }
     const visibleRange = getVisibleRange(currentFd);
@@ -578,6 +696,7 @@ function renderChartViewport(perfTrace) {
         responsive: true, 
         maintainAspectRatio: false, 
         animation: false, 
+        normalized: true,
         layout: getLayout(), 
         interaction: { mode: 'index', intersect: false },
         onHover: handleChartHover
@@ -595,8 +714,16 @@ function renderChartViewport(perfTrace) {
             existingChart = null;
         }
         
-        if (existingChart) { 
-            existingChart.data = cfg.data; 
+        if (existingChart) {
+            // 保留 Chart.js 的 dataset 实例，只替换本次可见窗口的数据引用，
+            // 减少拖动时反复创建和解析 dataset 对象的成本。
+            existingChart.data.labels = cfg.data.labels;
+            const nextDatasets = cfg.data.datasets || [];
+            existingChart.data.datasets.length = nextDatasets.length;
+            nextDatasets.forEach((nextDataset, index) => {
+                if (!existingChart.data.datasets[index]) existingChart.data.datasets[index] = {};
+                Object.assign(existingChart.data.datasets[index], nextDataset);
+            });
             existingChart.options = cfg.options; 
             existingChart.update('none'); 
             state.charts[k] = existingChart; 
@@ -640,6 +767,28 @@ function renderChartViewport(perfTrace) {
     if (shouldRenderCompactMainChartOnly()) {
         clearSecondaryChartInstances();
         PERF.end(perfTrace, { points: slice.length, charts: 'main-only' });
+        updateFreezeBadge();
+        updateCrosshairOverlay();
+        return;
+    }
+
+    // 拖动历史窗口时主图必须每帧跟手；次级指标保留同步更新，但允许短暂合帧，
+    // 避免四个 Chart.js 实例在同一帧反复计算布局。释放拖动时会强制全量追平。
+    const secondaryReady = state.charts.vol && state.charts.macd && state.charts.kdj;
+    if (options.interaction && options.updateSecondary === false && secondaryReady) {
+        PERF.end(perfTrace, { points: slice.length, charts: 'main-only-interaction' });
+        updateFreezeBadge();
+        updateCrosshairOverlay();
+        return;
+    }
+
+    // 首次首屏先让主图可交互，次级图表在下一帧补齐，避免四个 Chart.js 实例阻塞输入响应。
+    if (!options.interaction && options.deferSecondary !== false && !secondaryReady && !shouldRenderCompactMainChartOnly()) {
+        const schedule = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (callback => setTimeout(callback, 0));
+        schedule(() => {
+            if (state.charts.main && getActiveData()?.length) drawViewport({ deferSecondary: false });
+        });
+        PERF.end(perfTrace, { points: slice.length, charts: 'main-deferred-secondary' });
         updateFreezeBadge();
         updateCrosshairOverlay();
         return;
@@ -701,22 +850,16 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
         || ['清仓离场', '规避风险'].includes(action);
     const scoreText = `${scoreReset ? 0 : (meta?.windowScore ?? 0)}/${STRATEGY?.buyThreshold ?? '-'}`;
     const previousPosition = Number(decision?.prevAdv) || 0;
-    const marketGate = decision?.marketGate || {};
     const signalCause = getSignalCauseSummary(meta);
     const causeText = signalCause.text || '近窗有效信号';
 
-    let marketHint = '核心建仓门禁开放；是否开仓、持有、减仓或离场仍由标的自身信号决定。';
-    if (marketGate.type === 'increase-capped') {
-        const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
-        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap}%，当前仓位不会因宽基状态被动降低。`;
+    // 个股仓位完全由个股信号、风险与趋势决定，核心宽基在这里只是背景信息。
+    // 因此不再按环境分支逐个声明它对个股仓位没有约束——那是在解释一条并不存在的限制；
+    // 只对数据缺失单独说明标签来源。
+    let marketHint = '仅作市场背景参考；这只股票的开仓、持有、加仓与离场，由它自身的信号、风险和趋势决定。';
+    if (['环境未知', '环境待确认'].includes(decision?.market?.label)) {
+        marketHint = '三项核心宽基数据尚未补齐，环境暂时无法判定；这只股票的结论仍由它自身的信号、风险和趋势决定。';
     }
-    else if (marketGate.type === 'wave-expiry-b11-exception') marketHint = '核心宽基偏弱，但本次属于到期防守观察成功后的新B11接管，只允许已有30%增加20%波段仓；普通机会30%上限仍对其他事件生效。';
-    else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次开仓被暂停。';
-    else if (decision?.market?.label === '核心宽基偏弱') {
-        const tierText = marketGate.strengthTier === 'independent' ? '标的自身独立走强' : '普通机会';
-        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap ?? 30}%，本次未触发额外截断。`;
-    }
-    else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停开新仓和加仓；已有仓位仍按自身信号处理。';
 
     let signalHint = scoreReset
         ? `离场后积分：此前买入依据已失效，当前按 ${scoreText} 处理。`
@@ -752,17 +895,14 @@ function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const signalCause = getSignalCauseSummary(meta);
     const causeText = signalCause.text || '近窗有效指数信号';
 
-    let marketHint = '核心宽基增仓环境开放；当前指数是否提高风险仓位，继续由自身动能和风险决定。';
+    // 只有真正截断当天才说明上限；没有截断时不写“未限制/未触发”，避免读成一条正在作用的限制。
+    let marketHint = '仅作市场背景参考；当前指数是否提高风险仓位，由它自身的动能和风险决定。';
     if (marketGate.type === 'increase-capped') {
         const tierText = marketGate.strengthTier === 'independent' ? '指数自身独立走强' : '普通机会';
-        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap}%，已有风险仓位不会因此被动压缩。`;
+        marketHint = `核心宽基偏弱，本次${tierText}新增风险上限为${marketGate.cap}%；已有风险仓位不会因此被动压缩。`;
     }
     else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次暂停增加市场风险暴露。';
-    else if (decision?.market?.label === '核心宽基偏弱') {
-        const tierText = marketGate.strengthTier === 'independent' ? '指数自身独立走强' : '普通机会';
-        marketHint = `核心宽基偏弱；${tierText}新增风险上限为${marketGate.cap ?? 30}%，本次未触发额外截断。`;
-    }
-    else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，暂停增加市场风险；已有风险仓位仍按指数自身信号处理。';
+    else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，本次暂停增加市场风险；已有风险仓位仍按指数自身信号处理。';
 
     let signalHint = scoreReset
         ? `离场后动能：此前动能依据已失效，当前按 ${scoreText} 处理。`
@@ -911,7 +1051,7 @@ function generateAnalysisHTML(idx, full, meta) {
 
     const cooldownHtml = meta.inCooldown ? '<div class="cooldown-ribbon">防守冷静期</div>' : '';
     const titleHtml = getConclusionTitleHTML(isIndexMode);
-    const evidenceTitle1 = isIndexMode ? '核心市场环境' : '核心建仓门禁';
+    const evidenceTitle1 = isIndexMode ? '核心宽基环境' : '市场背景';
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
     const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
     const positionLabel = isIndexMode ? '当前风险仓位' : '策略参考仓位';
@@ -923,9 +1063,14 @@ function generateAnalysisHTML(idx, full, meta) {
         const text = String(value ?? '').trim();
         return text && /[。！？；]$/.test(text) ? text : `${text}。`;
     };
+    const waveGoverned = decision?.waveContext?.inScope;
+    const hasWaveDefense = Number.isFinite(Number(decision?.waveContext?.frozenHardDefense));
     const hasB11StructureDefense = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel));
-    const visibleDefenseLabel = hasB11StructureDefense ? '结构防守位' : '防守位';
-    const visibleDefenseLevel = hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop;
+    const visibleDefenseLabel = hasWaveDefense ? '硬防守位' : (hasB11StructureDefense ? '结构防守位' : '防守位');
+    const visibleDefenseLevel = hasWaveDefense
+        ? decision.waveContext.frozenHardDefense
+        : (hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop);
+    const showDefensePill = !waveGoverned || (Number(decision.position) > 0 && hasWaveDefense);
 
     const actionPanelHtml = `
         <div class="action-panel ${panelClass}">
@@ -958,9 +1103,9 @@ function generateAnalysisHTML(idx, full, meta) {
                 </div>
             </div>
             <div class="level-line">
-                <div class="level-pill">
+                ${showDefensePill ? `<div class="level-pill">
                     <span>${visibleDefenseLabel}</span><strong class="mono">${fmt(visibleDefenseLevel)}</strong>
-                </div>
+                </div>` : ''}
                 <div class="level-pill">
                     <span>压力区</span><strong class="mono">${fmt(decision.risk.pressure)}</strong>
                 </div>
@@ -1004,7 +1149,7 @@ function generateAnalysisHTML(idx, full, meta) {
     `;
 }
 
-function safeUpdateSidebar() {
+function safeUpdateSidebar(options = {}) {
     const perfTrace = PERF.start('sidebar', { id: state.id, mode: state.mode, period: state.period });
     const rd = getActiveData();
     if (rd && rd.length > 0) {
@@ -1039,7 +1184,7 @@ function safeUpdateSidebar() {
         }
 
         if (renderCache.has(cacheKey)) { 
-            applySidebarHTML(renderCache.get(cacheKey), cacheKey); 
+            applySidebarHTML(renderCache.get(cacheKey), cacheKey, options);
             updateNavCapsuleVisuals(safeIdx, rd.length); 
             PERF.end(perfTrace, { status: 'cache-hit', date: item.date });
             return; 
@@ -1054,7 +1199,7 @@ function safeUpdateSidebar() {
         }
         renderCache.set(cacheKey, htmlBundle);
         
-        applySidebarHTML(htmlBundle, cacheKey);
+        applySidebarHTML(htmlBundle, cacheKey, options);
         updateNavCapsuleVisuals(safeIdx, rd.length);
         PERF.end(perfTrace, { status: 'cache-miss', date: item.date });
     } else {
@@ -1252,7 +1397,7 @@ function isLatestNavActive(safeIdx, totalLen) {
     return !state.isFrozen && safeIdx === totalLen - 1;
 }
 
-function applySidebarHTML(bundle, cacheKey = '') {
+function applySidebarHTML(bundle, cacheKey = '', options = {}) {
     const cPrice = document.getElementById('cardPrice');
     const cAnalysis = document.getElementById('cardAnalysis');
     if(!cPrice || !cAnalysis) return;
@@ -1263,10 +1408,10 @@ function applySidebarHTML(bundle, cacheKey = '') {
         return;
     }
 
-    cPrice.style.display = 'flex';
-    cPrice.style.flexDirection = 'column';
-    cAnalysis.style.display = 'flex';
-    cAnalysis.style.flexDirection = 'column';
+    if (cPrice.style.display !== 'flex') cPrice.style.display = 'flex';
+    if (cPrice.style.flexDirection !== 'column') cPrice.style.flexDirection = 'column';
+    if (cAnalysis.style.display !== 'flex') cAnalysis.style.display = 'flex';
+    if (cAnalysis.style.flexDirection !== 'column') cAnalysis.style.flexDirection = 'column';
 
     if (cacheKey && cPrice.dataset.key === cacheKey) {
         updateDataStatusRefreshBadge();
@@ -1284,23 +1429,38 @@ function applySidebarHTML(bundle, cacheKey = '') {
     var prevPriceHash = parseInt(cPrice.dataset.ph || '0', 10);
     var prevAnalysisHash = parseInt(cAnalysis.dataset.ah || '0', 10);
 
-    // 价格区：用淡入过渡防白闪
+    const interactive = options.interactive === true;
+
+    // 交互态（hover/拖动）必须保持当前 K 线跟手，避免 opacity + offsetHeight 触发同步布局。
     if (priceHash !== prevPriceHash) {
-        cPrice.style.opacity = '0';
-        cPrice.innerHTML = priceHtml;
-        cPrice.dataset.ph = String(priceHash);
-        // 强制回流后恢复可见（浏览器会在下一帧渲染，不会看到空白帧）
-        cPrice.offsetHeight; 
-        cPrice.style.opacity = '';
+        // 首次填充空卡片无需淡入和强制回流；强制回流只保留给已有内容的普通刷新。
+        const shouldAnimate = !interactive && !!cPrice.innerHTML.trim();
+        if (!shouldAnimate) {
+            cPrice.innerHTML = priceHtml;
+            cPrice.dataset.ph = String(priceHash);
+        } else {
+            cPrice.style.opacity = '0';
+            cPrice.innerHTML = priceHtml;
+            cPrice.dataset.ph = String(priceHash);
+            // 普通刷新保留淡入过渡；仅在非交互路径强制回流。
+            cPrice.offsetHeight;
+            cPrice.style.opacity = '';
+        }
     }
 
-    // 分析区：同样用淡入过渡
+    // 分析区与价格区采用相同策略，保留右侧结论同步但不在交互帧中强制回流。
     if (analysisHash !== prevAnalysisHash) {
-        cAnalysis.style.opacity = '0';
-        cAnalysis.innerHTML = analysisHtml;
-        cAnalysis.dataset.ah = String(analysisHash);
-        cAnalysis.offsetHeight;
-        cAnalysis.style.opacity = '';
+        const shouldAnimate = !interactive && !!cAnalysis.innerHTML.trim();
+        if (!shouldAnimate) {
+            cAnalysis.innerHTML = analysisHtml;
+            cAnalysis.dataset.ah = String(analysisHash);
+        } else {
+            cAnalysis.style.opacity = '0';
+            cAnalysis.innerHTML = analysisHtml;
+            cAnalysis.dataset.ah = String(analysisHash);
+            cAnalysis.offsetHeight;
+            cAnalysis.style.opacity = '';
+        }
     }
 
     if (cacheKey) cPrice.dataset.key = cacheKey;

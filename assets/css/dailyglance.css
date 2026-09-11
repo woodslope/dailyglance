@@ -304,8 +304,6 @@ body { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .market-gate-panel { padding: 8px 10px; gap: 5px; }
 .market-gate-panel .action-line { align-items: center; gap: var(--space-2); }
 .market-gate-panel .action-name { font-size: 15px; line-height: 1.2; }
-.market-gate-panel .action-cap span { font-size: 9px; margin-bottom: 0; }
-.market-gate-panel .action-cap strong { font-size: 13px; line-height: 1.2; }
 .market-gate-panel .action-sub { padding-top: 5px; font-size: 10px; line-height: 1.35; }
 .market-core-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding-top: 5px; border-top: 1px solid var(--border-light); }
 .market-core-state { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -634,7 +632,8 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     position: fixed; inset: 0; background: rgba(11,14,20,0.85); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); 
     display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 99999; color: var(--blue-text); font-size: var(--text-md); font-weight: 700; transition: opacity var(--transition-slow); opacity: 0; pointer-events: none; letter-spacing: 1px;
 }
-#loading.show { opacity: 1; pointer-events: auto; }
+#loading.show { opacity: 1; pointer-events: none; }
+#loading.show.is-error { pointer-events: auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
 .loading-wrap { display: flex; align-items: center; gap: var(--space-3); background: var(--sidebar-bg); padding: var(--space-4) var(--space-6); border-radius: var(--radius-lg); border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.5); color: var(--text-main); }

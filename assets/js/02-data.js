@@ -328,13 +328,19 @@ function getMergedLiveDailyData(id) {
     const confirmed = state.rawData[id] || [];
     const liveBar = state.liveBars?.[id];
     if (!liveBar) return confirmed;
+    if (state.liveDailyData?.[id]) return state.liveDailyData[id];
     if (!confirmed.length) return [liveBar];
     const last = confirmed[confirmed.length - 1];
-    if (!last || liveBar.date < last.date) return confirmed;
-    if (liveBar.date === last.date) {
-        return confirmed.slice(0, -1).concat(liveBar);
+    if (!last || liveBar.date < last.date) {
+        state.liveDailyData[id] = confirmed;
+        return state.liveDailyData[id];
     }
-    return confirmed.concat(liveBar);
+    if (liveBar.date === last.date) {
+        state.liveDailyData[id] = confirmed.slice(0, -1).concat(liveBar);
+        return state.liveDailyData[id];
+    }
+    state.liveDailyData[id] = confirmed.concat(liveBar);
+    return state.liveDailyData[id];
 }
 
 function getMergedLiveWeeklyData(id) {
@@ -381,22 +387,71 @@ function getLiveOverlayCacheKey(id) {
     return `${SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY}:${id}`;
 }
 
+let liveOverlayCacheBatchDepth = 0;
+let liveOverlayCacheBatchHydrated = false;
+let liveOverlayCacheBatchDirty = false;
+let liveOverlayCacheBatchDeletedIds = new Set();
+
 function hydrateLiveOverlayCacheState() {
     if (!state.liveOverlayCache) state.liveOverlayCache = {};
+    if (liveOverlayCacheBatchDepth > 0 && liveOverlayCacheBatchHydrated) return state.liveOverlayCache;
     try {
         const raw = localStorage.getItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY);
         state.liveOverlayCache = raw ? JSON.parse(raw) || {} : {};
     } catch (error) {
         state.liveOverlayCache = {};
     }
+    if (liveOverlayCacheBatchDepth > 0) liveOverlayCacheBatchHydrated = true;
     return state.liveOverlayCache;
 }
 
-function persistLiveOverlayCacheState() {
+function persistLiveOverlayCacheStateNow() {
     if (!state.liveOverlayCache) state.liveOverlayCache = {};
     try {
-        localStorage.setItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY, JSON.stringify(state.liveOverlayCache));
+        // 合并同源页面在本批次期间写入的更新，避免批量行情覆盖其他页面的标的。
+        let latest = {};
+        const raw = localStorage.getItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY);
+        if (raw) latest = JSON.parse(raw) || {};
+        const merged = { ...latest };
+        liveOverlayCacheBatchDeletedIds.forEach(id => delete merged[id]);
+        Object.entries(state.liveOverlayCache).forEach(([id, entry]) => {
+            if (liveOverlayCacheBatchDeletedIds.has(id)) return;
+            const latestAt = Number(merged[id]?.cachedAt) || 0;
+            const localAt = Number(entry?.cachedAt) || 0;
+            if (!merged[id] || localAt >= latestAt) merged[id] = entry;
+        });
+        state.liveOverlayCache = merged;
+        localStorage.setItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY, JSON.stringify(merged));
+        if (liveOverlayCacheBatchDepth === 0) liveOverlayCacheBatchDeletedIds = new Set();
     } catch (error) {}
+}
+
+function persistLiveOverlayCacheState() {
+    if (liveOverlayCacheBatchDepth > 0) {
+        liveOverlayCacheBatchDirty = true;
+        return;
+    }
+    persistLiveOverlayCacheStateNow();
+}
+
+function beginLiveOverlayCacheBatch() {
+    if (liveOverlayCacheBatchDepth === 0) {
+        liveOverlayCacheBatchDirty = false;
+        liveOverlayCacheBatchDeletedIds = new Set();
+        liveOverlayCacheBatchHydrated = false;
+        hydrateLiveOverlayCacheState();
+    }
+    liveOverlayCacheBatchDepth += 1;
+}
+
+function endLiveOverlayCacheBatch() {
+    if (liveOverlayCacheBatchDepth <= 0) return;
+    liveOverlayCacheBatchDepth -= 1;
+    if (liveOverlayCacheBatchDepth > 0) return;
+    if (liveOverlayCacheBatchDirty) persistLiveOverlayCacheStateNow();
+    liveOverlayCacheBatchDirty = false;
+    liveOverlayCacheBatchHydrated = false;
+    liveOverlayCacheBatchDeletedIds = new Set();
 }
 
 function normalizeLiveOverlayCacheBar(id, bar) {
@@ -422,7 +477,8 @@ function getLiveOverlayCacheEntry(id) {
     const entry = store[id];
     if (!entry || !entry.bar) return null;
     const cachedAt = Number(entry.cachedAt) || 0;
-    const cacheAgeMs = Number.isFinite(Number(entry.cacheAgeMs)) ? Number(entry.cacheAgeMs) : (cachedAt ? Date.now() - cachedAt : Infinity);
+    // cacheAgeMs 只是写入时的快照，恢复时必须以 cachedAt 重新计算，避免盘中缓存重载后短暂显示为新鲜。
+    const cacheAgeMs = cachedAt ? Math.max(0, Date.now() - cachedAt) : Infinity;
     const bar = normalizeLiveOverlayCacheBar(id, entry.bar);
     if (!bar || !cachedAt) {
         if (entry) {
@@ -447,10 +503,11 @@ function setLiveOverlayCache(id, bar, meta = {}) {
     hydrateLiveOverlayCacheState();
     state.liveOverlayCache[id] = {
         cachedAt: Number(meta.cachedAt) || Date.now(),
-        cacheAgeMs: Number.isFinite(Number(meta.cacheAgeMs)) ? Number(meta.cacheAgeMs) : 0,
+        cacheAgeMs: Number.isFinite(Number(meta.cacheAgeMs)) ? Math.max(0, Number(meta.cacheAgeMs)) : 0,
         source: meta.source || 'api',
         bar: normalizedBar
     };
+    liveOverlayCacheBatchDeletedIds.delete(id);
     persistLiveOverlayCacheState();
     return true;
 }
@@ -459,6 +516,7 @@ function clearLiveOverlayCache(id) {
     hydrateLiveOverlayCacheState();
     if (state.liveOverlayCache && state.liveOverlayCache[id]) {
         delete state.liveOverlayCache[id];
+        liveOverlayCacheBatchDeletedIds.add(id);
         persistLiveOverlayCacheState();
     }
 }
@@ -534,6 +592,7 @@ function setLiveQuote(id, bar, quality = 'quote-only', reason = '', meta = {}) {
 function setLiveBar(id, bar, source = 'api', meta = {}) {
     if (!id || !bar || !isValidPrice(bar.close, id)) return false;
     if (!state.liveBars) state.liveBars = {};
+    if (!state.liveDailyData) state.liveDailyData = {};
     if (!state.liveWeeklyData) state.liveWeeklyData = {};
     const isCachedLive = source === 'cache' || !!meta.isCachedLive;
     const cachedAt = Number(meta.cachedAt) || (isCachedLive ? Date.now() : 0);
@@ -551,6 +610,7 @@ function setLiveBar(id, bar, source = 'api', meta = {}) {
         _cachedAt: cachedAt,
         _cacheAgeMs: cacheAgeMs
     };
+    delete state.liveDailyData[id];
     delete state.liveWeeklyData[id];
     setDisplayStatus(id, {
         mode: displayMode,
@@ -570,8 +630,10 @@ function setLiveBar(id, bar, source = 'api', meta = {}) {
 
 function clearLiveBar(id) {
     if (!state.liveBars) state.liveBars = {};
+    if (!state.liveDailyData) state.liveDailyData = {};
     if (!state.liveWeeklyData) state.liveWeeklyData = {};
     delete state.liveBars[id];
+    delete state.liveDailyData[id];
     delete state.liveWeeklyData[id];
 }
 
@@ -727,6 +789,9 @@ function findDateIndex(data, date, id = '') {
     }
     if (res === -1) res = data.length - 1; 
     dateIndexCache.set(cacheKey, res); 
+    // hover/切换日期会产生大量短生命周期 key，限制上限避免长时间盘中运行持续增长。
+    const maxEntries = Math.max(128, Number(SYS_CONFIG.RENDER_CACHE_SIZE || 50) * 4);
+    while (dateIndexCache.size > maxEntries) dateIndexCache.delete(dateIndexCache.keys().next().value);
     return res;
 }
 
@@ -808,6 +873,8 @@ function setRawData(id, data) {
         }
     }
     state.rawData[id] = data;
+    if (!state.liveDailyData) state.liveDailyData = {};
+    delete state.liveDailyData[id];
     if (data) state.weeklyData[id] = convertDailyToWeekly(data); else state.weeklyData[id] = null;
     clearConfirmedLiveBar(id, data);
     if (data?.length) {
@@ -1171,6 +1238,9 @@ function shouldSkipHistoryRefresh(id, cached) {
     const lastDate = cached[cached.length - 1]?.date || '';
     if (lastDate && lastDate < getLastTradingDate()) return false;
     if (meta.lastDate && meta.lastDate !== lastDate) return false;
+    // 盘中确认历史只到上一交易日；实时价由独立报价链路更新。
+    // 首次成功校验后，当前交易日内不再每 30 秒重复下载整份历史，收盘后日期变化会自动解除此条件。
+    if (isMarketOpen() && lastDate === getLastTradingDate() && meta.lastSuccessAt) return true;
     if (meta.lastSuccessAt && now - meta.lastSuccessAt < SYS_CONFIG.HISTORY_FRESH_MS) return true;
     if (meta.lastAttemptAt && now - meta.lastAttemptAt < SYS_CONFIG.HISTORY_REFRESH_COOLDOWN_MS) return true;
     return false;
@@ -1181,6 +1251,16 @@ async function syncDataIncremental(id) {
         const cached = await dbGet(id); 
         const cachedData = normalizeConfirmedHistoryData(cached?.data, id);
         if(!cachedData || !cachedData.length) return await syncDataWithHistory(id); 
+        if (Number(cached?.updated) > 0) {
+            const meta = getHistoryRefreshMeta(id);
+            if (!meta.lastSuccessAt || Number(cached.updated) > meta.lastSuccessAt) {
+                setHistoryRefreshMeta(id, {
+                    lastSuccessAt: Number(cached.updated),
+                    lastAttemptAt: Number(cached.updated),
+                    lastDate: cachedData[cachedData.length - 1]?.date || ''
+                });
+            }
+        }
         if (shouldSkipHistoryRefresh(id, cachedData)) return cachedData;
         
         setHistoryRefreshMeta(id, { lastAttemptAt: Date.now(), lastDate: cachedData[cachedData.length - 1]?.date || '' });
@@ -1444,7 +1524,19 @@ function dbSet(id, data) {
         }
     });
 }
-async function getCachedData(id) { const c = await dbGet(id); return (c && c.data) ? normalizeConfirmedHistoryData(c.data, id) : null; }
+async function getCachedData(id) {
+    const c = await dbGet(id);
+    const data = (c && c.data) ? normalizeConfirmedHistoryData(c.data, id) : null;
+    if (data?.length && Number(c?.updated) > 0) {
+        // 页面重开后恢复历史刷新元数据，避免盘中重复下载整份确认历史。
+        setHistoryRefreshMeta(id, {
+            lastSuccessAt: Math.max(0, Number(c.updated)),
+            lastAttemptAt: Math.max(0, Number(c.updated)),
+            lastDate: data[data.length - 1]?.date || ''
+        });
+    }
+    return data;
+}
 
 function getRenderedSidebarDate() {
     var cPriceEl = document.getElementById('cardPrice');
@@ -1499,6 +1591,15 @@ function scheduleCachedFetchRefreshApply(id) {
         requestAnimationFrame(() => {
             if (applyId !== state.id) {
                 PERF.end(perfTrace, { status: 'skipped' });
+                return;
+            }
+            if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
+                cachedFetchRefreshApplyTimer = window.setTimeout(() => {
+                    cachedFetchRefreshApplyTimer = 0;
+                    if (applyId !== state.id) return;
+                    scheduleCachedFetchRefreshApply(applyId);
+                }, 120);
+                PERF.end(perfTrace, { status: 'deferred-interaction' });
                 return;
             }
             const rightTxn = beginRefreshTransaction('rightPanel', { source: 'cached-fetch-refresh-apply', id: applyId });
@@ -1604,6 +1705,7 @@ async function clearAllCache() {
     state.liveBars = {};
     state.liveQuotes = {};
     state.liveWeeklyData = {};
+    state.liveDailyData = {};
     state.liveOverlayCache = {};
     try { localStorage.removeItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY); } catch(e) {}
     try { localStorage.removeItem(SECTOR_TREND_CONFIG.CACHE_KEY); } catch(e) {}
@@ -1815,18 +1917,9 @@ function scheduleCachedFetchRefresh(id) {
             scheduleCachedFetchRefreshApply(id);
             PERF.mark(perfTrace, 'queue-active-apply');
         }
-        if (state.mode === 'index') {
-            const leftTxn = beginRefreshTransaction('leftList', { source: 'cachedFetchRefresh', id });
-            renderIndexList();
-            if (typeof markLeftListRefreshForActiveTab === 'function') markLeftListRefreshForActiveTab(leftTxn, { area: 'index-list', id });
-            PERF.mark(perfTrace, 'render-index-list');
-        }
-        if (state.mode === 'stock' && typeof scheduleWatchlistRender === 'function') {
-            scheduleWatchlistRender({
-                markRefresh: true,
-                refreshTxn: beginRefreshTransaction('leftList', { source: 'cachedFetchRefresh', id })
-            });
-        }
+        // 当前标的的后台历史补数只更新内存/右侧面板；左侧列表由批量刷新协调器统一提交，
+        // 避免单个标的先完成时把整张列表提前刷新成新旧混合状态。
+        PERF.mark(perfTrace, 'defer-left-list-commit', { id });
         PERF.end(perfTrace, { status: 'updated' });
     })().finally(() => {
         cachedFetchRefreshJobs.delete(id);

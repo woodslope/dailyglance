@@ -10,7 +10,6 @@ function scheduleIdleTask(fn, timeout = 300) {
 function scheduleStartupBackgroundHydration() {
     scheduleIdleTask(async () => {
         await preloadCacheOnly();
-        await ensureMarketTemperatureData();
         if (state.mode === 'index') {
             renderIndexList();
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
@@ -21,6 +20,24 @@ function scheduleStartupBackgroundHydration() {
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
         }
     }, 600);
+
+    // 首屏先保持可交互；核心宽基的陈旧缓存补数放到更晚的空闲窗口，
+    // 仍会在后台完成，不与首次打开和第一次拖动争抢主线程。
+    registerRefreshTimeout(() => {
+        scheduleIdleTask(async () => {
+            if (document.hidden) return;
+            await ensureMarketTemperatureData();
+            if (state.mode === 'index') {
+                renderIndexList();
+                if (isMarketOpen()) await refreshSidebarRealtime();
+            } else if (state.mode === 'stock' || state.tab === 'stock') {
+                const leftTxn = beginRefreshTransaction('leftList', { source: 'delayed-startup-hydration', area: 'stock-list' });
+                renderWatchlist();
+                markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
+                if (isMarketOpen()) await refreshSidebarRealtime();
+            }
+        }, 1200);
+    }, 1800);
     scheduleIdleTask(() => refreshWatchlistSignalSnapshots(), 900);
 }
 
