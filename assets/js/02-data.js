@@ -961,16 +961,39 @@ function getDataMutationMeta(prevData, nextData) {
 
 // 外部环境与板块趋势观察数据已拆到 02-observation-data.js；核心历史、缓存与实时行情继续留在本文件。
 
+function createRealtimeFetchSkipped(reason) {
+    return { __dgRealtimeFetch: 'skipped', reason: reason || 'throttled' };
+}
+
+function isRealtimeFetchSkipped(result) {
+    return !!result && result.__dgRealtimeFetch === 'skipped';
+}
+
+let realtimeRequestSeq = 0;
+function createRealtimeRequestToken(kind) {
+    realtimeRequestSeq += 1;
+    return `${kind || 'realtime'}:${Date.now()}:${realtimeRequestSeq}`;
+}
+
 const requestManager = {
     limiters: new Map(),
     async fetchRealtimeWithThrottle(id) {
-        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return null;
+        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return createRealtimeFetchSkipped('not-leader');
         const now = Date.now(), s = this.limiters.get(id) || { lastCall: 0, isFetching: false };
-        if (s.isFetching) return null; if (now - s.lastCall < SYS_CONFIG.THROTTLE_MS) return null;
-        s.isFetching = true; this.limiters.set(id, s);
+        if (s.isFetching) return createRealtimeFetchSkipped('in-flight');
+        if (now - s.lastCall < SYS_CONFIG.THROTTLE_MS) return createRealtimeFetchSkipped('throttled');
+        const requestToken = createRealtimeRequestToken('single');
+        s.isFetching = requestToken; this.limiters.set(id, s);
         try { const rt = await getRealtimePriceJSONP(id); return rt; }
         catch (e) { return null; }
-        finally { s.lastCall = Date.now(); s.isFetching = false; this.limiters.set(id, s); }
+        finally {
+            const current = this.limiters.get(id) || s;
+            if (current.isFetching === requestToken) {
+                current.lastCall = Date.now();
+                current.isFetching = false;
+                this.limiters.set(id, current);
+            }
+        }
     }
 };
 
@@ -1176,14 +1199,30 @@ function batchGetRealtimePrices(ids) {
     return new Promise(resolve => {
         if (!ids || !ids.length) return resolve({});
         if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return resolve({});
+        const requestToken = createRealtimeRequestToken('batch');
+        const now = Date.now();
+        const requestIds = ids.filter(id => {
+            const limiter = requestManager.limiters.get(id);
+            if (limiter?.isFetching || now - Number(limiter?.lastCall || 0) < SYS_CONFIG.THROTTLE_MS) return false;
+            requestManager.limiters.set(id, { ...(limiter || { lastCall: 0 }), isFetching: requestToken });
+            return true;
+        });
+        if (!requestIds.length) return resolve({});
+        const releaseBatchRequest = () => {
+            requestIds.forEach(id => {
+                const limiter = requestManager.limiters.get(id);
+                if (!limiter || limiter.isFetching !== requestToken) return;
+                requestManager.limiters.set(id, { ...limiter, isFetching: false });
+            });
+        };
         const symToId = {}, symbols = [];
-        for (const id of ids) { const sym = resolveTencentSymbol(id); symToId[sym] = id; symbols.push(sym); }
+        for (const id of requestIds) { const sym = resolveTencentSymbol(id); symToId[sym] = id; symbols.push(sym); }
         const script = document.createElement('script');
         script.src = `https://qt.gtimg.cn/q=${symbols.join(',')}`;
         script.charset = 'GBK';
         let cl = false;
         const cleanup = () => { if (cl) return; cl = true; clearTimeout(timer); if (script.parentNode) script.remove(); };
-        const timer = setTimeout(() => { cleanup(); resolve({}); }, 5000);
+        const timer = setTimeout(() => { releaseBatchRequest(); cleanup(); resolve({}); }, 5000);
         const results = {};
         script.onload = () => {
             cleanup();
@@ -1202,9 +1241,10 @@ function batchGetRealtimePrices(ids) {
                     delete window[varName];
                 }
             }
+            releaseBatchRequest();
             resolve(results);
         };
-        script.onerror = () => { cleanup(); resolve({}); };
+        script.onerror = () => { releaseBatchRequest(); cleanup(); resolve({}); };
         document.head.appendChild(script);
     });
 }
@@ -1290,12 +1330,27 @@ async function syncDataIncremental(id) {
     } catch(e) { return await getCachedData(id) || null; } 
 }
 
-async function syncData(id) { 
+const syncDataInFlight = new Map();
+
+function clearSyncDataInFlight(id, task) {
+    if (syncDataInFlight.get(id) === task) syncDataInFlight.delete(id);
+}
+
+async function syncData(id) {
+    if (!id) return null;
+    if (syncDataInFlight.has(id)) return syncDataInFlight.get(id);
+    const task = performSyncData(id).finally(() => clearSyncDataInFlight(id, task));
+    syncDataInFlight.set(id, task);
+    return task;
+}
+
+async function performSyncData(id) {
     let cached = await getCachedData(id);
     const hasEnough = cached && cached.length >= 30; 
     const cachedLastDate = cached && cached.length ? (cached[cached.length - 1]?.date || '') : '';
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
-        if (hasEnough) tryApplyCachedLiveOverlay(id, cached);
+        // 当前页面未持有行情租约时，保留已经展示的盘中状态；只有没有现有 overlay 时才恢复缓存。
+        if (hasEnough && !state.liveBars?.[id]) tryApplyCachedLiveOverlay(id, cached);
         return hasEnough ? cached : null;
     }
     
@@ -1307,10 +1362,11 @@ async function syncData(id) {
                 if (mutation.mode !== 'unchanged') await dbSet(id, incremental);
                 cached = incremental;
             }
-            const rt = await requestManager.fetchRealtimeWithThrottle(id); 
-            if (rt) applyRealtimeQuoteForSeries(id, cached, rt);
-            else tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);
-            if (!state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
+            const rt = await requestManager.fetchRealtimeWithThrottle(id);
+            const realtimeSkipped = isRealtimeFetchSkipped(rt);
+            if (rt && !realtimeSkipped) applyRealtimeQuoteForSeries(id, cached, rt);
+            else if (!realtimeSkipped) tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);
+            if (!realtimeSkipped && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
                 setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
             }
             return cached; 
@@ -1321,9 +1377,10 @@ async function syncData(id) {
             setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastDate: data[data.length - 1]?.date || '' });
             await dbSet(id, data);
             const rt = await requestManager.fetchRealtimeWithThrottle(id);
-            if (rt) applyRealtimeQuoteForSeries(id, data, rt);
-            else tryApplyCachedLiveOverlay(id, data);
-            if (!state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
+            const realtimeSkipped = isRealtimeFetchSkipped(rt);
+            if (rt && !realtimeSkipped) applyRealtimeQuoteForSeries(id, data, rt);
+            else if (!realtimeSkipped) tryApplyCachedLiveOverlay(id, data);
+            if (!realtimeSkipped && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
                 setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
             }
             return data;
@@ -1751,7 +1808,25 @@ function buildDataRefreshResult(id, oldConfirmed, oldVisible, freshConfirmed, ne
     };
 }
 
+const cachedFetchInFlight = new Map();
+
+function getCachedFetchKey(id) {
+    return `${id}:${globalSelectionSeq}:${state.mode}:${state.period}:${state.strategy}`;
+}
+
+function clearCachedFetchInFlight(key, task) {
+    if (cachedFetchInFlight.get(key) === task) cachedFetchInFlight.delete(key);
+}
+
 async function cachedFetch(id) {
+    const key = getCachedFetchKey(id);
+    if (cachedFetchInFlight.has(key)) return cachedFetchInFlight.get(key);
+    const task = performCachedFetch(id).finally(() => clearCachedFetchInFlight(key, task));
+    cachedFetchInFlight.set(key, task);
+    return task;
+}
+
+async function performCachedFetch(id) {
     const perfTrace = PERF.start('cachedFetch', { id, activeId: state.id, mode: state.mode });
     const fetchStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
     const fetchSelectionSeq = globalSelectionSeq;

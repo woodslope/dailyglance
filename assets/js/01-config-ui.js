@@ -187,6 +187,8 @@ let state = {
     liveWeeklyData: {},
     confirmedStatus: {},
     displayStatus: {},
+    realtimeBatchAt: {},
+    activeHistoryRefreshAt: {},
     leftListRefreshAt: 0,
     refreshSeq: 0,
     refreshSnapshots: {

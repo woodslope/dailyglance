@@ -1178,6 +1178,20 @@ function isCurrentSidebarRealtimeBatch(area, ids) {
         currentIds.slice().sort().join(',') === ids.slice().sort().join(',');
 }
 
+function shouldSkipScheduledActiveRefresh(id) {
+    if (!id || !state.rawData?.[id]?.length) return false;
+    const batchAt = Number(state.realtimeBatchAt?.[id]) || 0;
+    if (!batchAt || Date.now() - batchAt >= SYS_CONFIG.THROTTLE_MS) return false;
+    const lastHistoryCheckAt = Number(state.activeHistoryRefreshAt?.[id]) || 0;
+    const historyCheckInterval = SYS_CONFIG.THROTTLE_MS * 6;
+    if (Date.now() - lastHistoryCheckAt >= historyCheckInterval) {
+        if (!state.activeHistoryRefreshAt) state.activeHistoryRefreshAt = {};
+        state.activeHistoryRefreshAt[id] = Date.now();
+        return false;
+    }
+    return true;
+}
+
 function refreshSidebarRealtime() {
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
     if (sidebarRealtimeInFlight) return sidebarRealtimeInFlight;
@@ -1188,7 +1202,13 @@ function refreshSidebarRealtime() {
     const area = getSidebarRealtimeArea();
     const batchId = ++sidebarRealtimeBatchSeq;
     const task = (async () => {
-        const prices = await batchGetRealtimePrices(ids);
+        const now = Date.now();
+        const requestIds = ids.filter(id => {
+            const limiter = requestManager.limiters.get(id);
+            return !limiter?.isFetching && now - Number(limiter?.lastCall || 0) >= SYS_CONFIG.THROTTLE_MS;
+        });
+        if (!requestIds.length) return { status: 'deferred', batchId, expectedCount: ids.length, receivedCount: 0, appliedCount: 0 };
+        const prices = await batchGetRealtimePrices(requestIds);
         if (!isCurrentSidebarRealtimeBatch(area, ids)) return { status: 'stale', batchId };
 
         const receivedIds = ids.filter(id => Object.prototype.hasOwnProperty.call(prices, id));
@@ -1252,6 +1272,11 @@ function refreshSidebarRealtime() {
             missingIds,
             status
         });
+        if (activeOverlayChanged) {
+            const activeId = state.id;
+            if (!state.realtimeBatchAt) state.realtimeBatchAt = {};
+            state.realtimeBatchAt[activeId] = batchFetchedAt;
+        }
         if (activeOverlayChanged && !state.isFrozen) {
             const activeId = state.id;
             const applyActiveRefresh = () => {
@@ -1283,6 +1308,10 @@ async function runSidebarFullSync() {
     if (document.hidden) return null;
     if (!isMarketOpen()) return null;
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return null;
+    // 先让同一时间片的左侧批量行情完成，再开始历史补数，避免两条链路同时提交同一批标的。
+    if (sidebarRealtimeInFlight) {
+        try { await sidebarRealtimeInFlight; } catch (error) {}
+    }
 
     sidebarFullSyncRuntime.inFlight = true;
     sidebarFullSyncRuntime.startedAt = Date.now();

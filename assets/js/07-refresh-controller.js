@@ -19,6 +19,14 @@ function scheduleStartupBackgroundHydration() {
             markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
         }
+
+        // 盘后先确认自选股历史，再计算策略快照，避免旧缓存让左侧长期停在“同步”。
+        // 复用现有批量同步和状态口径，不新增可见状态，也不改变盘中刷新频率。
+        if (!document.hidden && !isMarketOpen() && typeof updateAllWatchlistData === 'function') {
+            await updateAllWatchlistData();
+        } else if (typeof refreshWatchlistSignalSnapshots === 'function') {
+            await refreshWatchlistSignalSnapshots();
+        }
     }, 600);
 
     // 首屏先保持可交互；核心宽基的陈旧缓存补数放到更晚的空闲窗口，
@@ -38,7 +46,6 @@ function scheduleStartupBackgroundHydration() {
             }
         }, 1200);
     }, 1800);
-    scheduleIdleTask(() => refreshWatchlistSignalSnapshots(), 900);
 }
 
 const refreshSchedulerRuntime = {
@@ -106,8 +113,8 @@ function startRefreshSchedulers() {
     registerRefreshTimeout(() => {
         registerRefreshInterval(() => {
             if (document.hidden || !isMarketOpen()) return;
-            if (state.mode === 'index') cachedFetch(state.id);
-            else if (state.mode === 'stock' && state.id) cachedFetch(state.id);
+            if (state.mode === 'index' && !shouldSkipScheduledActiveRefresh(state.id)) cachedFetch(state.id);
+            else if (state.mode === 'stock' && state.id && !shouldSkipScheduledActiveRefresh(state.id)) cachedFetch(state.id);
         }, SYS_CONFIG.THROTTLE_MS);
     }, SYS_CONFIG.THROTTLE_MS / 2);
 
