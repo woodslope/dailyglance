@@ -8,9 +8,9 @@
     const positionSteps = Array.isArray(POSITION_STEPS) ? POSITION_STEPS : [0, 30, 50, 80];
     const labels = { 0: '空仓 / 防守', 30: '试探仓', 50: '确认仓', 80: '趋势仓' };
     const descriptions = {
-        0: '没有有效开仓依据、触发强离场或风险条件不允许持仓。',
+        0: '没有有效开仓依据、触发强离场、结构失效或处于冷静期。',
         30: '允许保留修复观察仓，但不代表趋势已经确认。',
-        50: '趋势修复或市场偏弱时的确认仓，仍受风险限制。',
+        50: '趋势修复或市场偏弱时的确认仓，仍受趋势/结构限制。',
         80: '买入积分达标且个股完整多头结构允许时使用。'
     };
     const signalTypes = {
@@ -92,7 +92,7 @@
     }
 
     function renderPositions() {
-        document.getElementById('positionSteps').innerHTML = positionSteps.map(value => `<article class="position-step"><div class="position-step-head"><strong class="mono">${esc(value)}%</strong><span class="position-step-label">${esc(labels[value] || '统一档位')}</span></div><p>${esc(descriptions[value] || '由基础决策与风险上限共同决定。')}</p></article>`).join('');
+        document.getElementById('positionSteps').innerHTML = positionSteps.map(value => `<article class="position-step"><div class="position-step-head"><strong class="mono">${esc(value)}%</strong><span class="position-step-label">${esc(labels[value] || '统一档位')}</span></div><p>${esc(descriptions[value] || '由基础决策与结构/市场限制共同决定。')}</p></article>`).join('');
     }
 
     function renderSignals(strategy) {
@@ -116,7 +116,7 @@
         const items = [
             ['强离场', strongExit, 'exit'],
             ['窗口保护', windowGuards, 'info'],
-            ['趋势与仓位', '个股趋势资格和风险评分只限制最高允许仓位；核心宽基只作市场背景，不限制个股仓位，也不用于个股高仓资格。', 'info'],
+            ['趋势与仓位', '个股趋势资格、结构防守和离场信号决定最高允许仓位；风险评分仅作辅助诊断，不参与仓位、B/S 或清仓。核心宽基只作市场背景，不限制个股仓位。', 'info'],
             ['波段例外', activeName === '波段抄底型' ? '包含回踩防守、到期接管、冲高回落保护和趋势加仓等跨日例外。' : '当前策略没有波段专属跨日例外。', activeName === '波段抄底型' ? 'warning' : 'info'],
             ['趋势状态', '上升、下降、横盘、向上反转、向下反转、未知；只作为解释字段。', 'info']
         ];

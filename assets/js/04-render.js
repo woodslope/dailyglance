@@ -853,12 +853,12 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const signalCause = getSignalCauseSummary(meta);
     const causeText = signalCause.text || '近窗有效信号';
 
-    // 个股仓位完全由个股信号、风险与趋势决定，核心宽基在这里只是背景信息。
+    // 个股仓位完全由个股信号、结构与离场规则决定，核心宽基在这里只是背景信息。
     // 因此不再按环境分支逐个声明它对个股仓位没有约束——那是在解释一条并不存在的限制；
     // 只对数据缺失单独说明标签来源。
-    let marketHint = '仅作市场背景参考；这只股票的开仓、持有、加仓与离场，由它自身的信号、风险和趋势决定。';
+    let marketHint = '仅作市场背景参考；这只股票的开仓、持有、加仓与离场，由它自身的信号、结构和离场规则决定。';
     if (['环境未知', '环境待确认'].includes(decision?.market?.label)) {
-        marketHint = '三项核心宽基数据尚未补齐，环境暂时无法判定；这只股票的结论仍由它自身的信号、风险和趋势决定。';
+        marketHint = '三项核心宽基数据尚未补齐，环境暂时无法判定；这只股票的结论仍由它自身的信号、结构和离场规则决定。';
     }
 
     let signalHint = scoreReset
@@ -869,7 +869,7 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     } else if (!scoreReset && position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
         signalHint = `持仓依据：${causeText}使买入积分维持在 ${scoreText}，当前持仓依据仍在。`;
     } else if (!scoreReset && position > 0) {
-        signalHint = `观察依据：买入积分为 ${scoreText}，当前仓位主要依赖已有趋势和风控约束。`;
+        signalHint = `观察依据：买入积分为 ${scoreText}，当前仓位主要依赖已有趋势和结构防守。`;
     }
 
     const structureDefenseText = formatPriceLevel(decision?.b11StructureDefense?.structureLevel);
@@ -877,8 +877,8 @@ function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const stopText = hasStructureDefense ? structureDefenseText : formatPriceLevel(decision?.risk?.stop);
     const riskText = guardHint || (displayExitLevel && displayExitLevel !== '无明确离场' ? displayExitLevel : '暂无额外风险压制');
     const guardAction = stopText === '--'
-        ? `风险依据：${riskText}。`
-        : `风险依据：${riskText}；${hasStructureDefense ? '结构防守位' : '防守位'} ${stopText}。`;
+        ? `防守依据：${riskText}。`
+        : `防守依据：${riskText}；${hasStructureDefense ? '结构防守位' : '防守位'} ${stopText}。`;
 
     return { marketHint, signalHint, guardHint: guardAction, scoreText };
 }
@@ -896,7 +896,7 @@ function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     const causeText = signalCause.text || '近窗有效指数信号';
 
     // 只有真正截断当天才说明上限；没有截断时不写“未限制/未触发”，避免读成一条正在作用的限制。
-    let marketHint = '仅作市场背景参考；当前指数是否提高风险仓位，由它自身的动能和风险决定。';
+    let marketHint = '仅作市场背景参考；当前指数是否提高风险仓位，由它自身的动能和离场规则决定。';
     if (marketGate.type === 'increase-capped') {
         const tierText = marketGate.strengthTier === 'independent' ? '指数自身独立走强' : '普通机会';
         marketHint = `核心宽基偏弱，本次${tierText}新增风险上限为${marketGate.cap}%；已有风险仓位不会因此被动压缩。`;
@@ -912,14 +912,14 @@ function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
     } else if (!scoreReset && position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
         signalHint = `维持依据：${causeText}使指数动能积分维持在 ${scoreText}，当前风险仓位仍有动能支持。`;
     } else if (!scoreReset && position > 0) {
-        signalHint = `观察依据：指数动能积分为 ${scoreText}，当前风险仓位主要依赖已有趋势和风控约束。`;
+        signalHint = `观察依据：指数动能积分为 ${scoreText}，当前风险仓位主要依赖已有趋势和结构防守。`;
     }
 
     const stopText = formatPriceLevel(decision?.risk?.stop);
     const riskText = guardHint || (displayExitLevel && displayExitLevel !== '无明确离场' ? displayExitLevel : '暂无额外风险压制');
     const guardAction = stopText === '--'
-        ? `市场风险：${riskText}。`
-        : `市场风险：${riskText}；指数防守位 ${stopText}。`;
+        ? `市场防守：${riskText}。`
+        : `市场防守：${riskText}；指数防守位 ${stopText}。`;
 
     return { marketHint, signalHint, guardHint: guardAction, scoreText };
 }
@@ -1021,14 +1021,15 @@ function generateAnalysisHTML(idx, full, meta) {
     const decision = full[idx]?._decision; 
     if (!decision) return ''; 
     const noviceSummary = getNoviceDecisionSummary(meta, decision, state.mode);
-    const riskFlags = decision.risk.flags.length ? decision.risk.flags.join(' / ') : '处于安全空间，无明显偏离';
     const diagnosis = state.mode === 'stock' ? getHoldingDiagnosis(idx, full, state.indicators, meta, decision) : null;
     const exitEvidence = getExitSignalEvidence(meta, decision);
     const hasExitContext = decision.exit.level !== '无明确离场' || exitEvidence.direct.length || exitEvidence.windowDesc !== '近窗内无额外离场形态';
     const displayExitLevel = getExitDisplayLevel(decision.exit.level, hasExitContext);
     const isDirectExitContext = decision.exit.level !== '无明确离场' || exitEvidence.direct.length;
-    const guardValue = hasExitContext ? displayExitLevel : decision.risk.level;
-    const guardTextClass = isDirectExitContext || decision.risk.score < 60 ? 'text-warn' : 'text-main';
+    const guardValue = hasExitContext
+        ? displayExitLevel
+        : (Number.isFinite(Number(decision?.waveContext?.frozenHardDefense)) ? '结构防守' : '无明确离场');
+    const guardTextClass = isDirectExitContext ? 'text-warn' : 'text-main';
     const guardSignals = [
         ...exitEvidence.direct,
         ...(exitEvidence.window || []).filter(sig => !exitEvidence.direct.includes(sig))
@@ -1038,7 +1039,7 @@ function generateAnalysisHTML(idx, full, meta) {
     const b11StructureText = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel))
         ? `B11结构防守 ${Number(decision.b11StructureDefense.structureLevel).toFixed(2)}`
         : '';
-    const guardHint = [riskFlags, guardSignalSummary, b11StructureText, guardHoldingText].filter(Boolean).join(' · ');
+    const guardHint = [guardSignalSummary, b11StructureText, guardHoldingText].filter(Boolean).join(' · ') || '买入信号、离场信号与结构防守共同决定';
     const noviceEvidence = getNoviceEvidenceCopy(meta, decision, displayExitLevel, guardHint, state.mode);
 
     let panelClass = 'panel-neutral';
@@ -1053,7 +1054,7 @@ function generateAnalysisHTML(idx, full, meta) {
     const titleHtml = getConclusionTitleHTML(isIndexMode);
     const evidenceTitle1 = isIndexMode ? '核心宽基环境' : '市场背景';
     const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
-    const evidenceTitle3 = isIndexMode ? '市场风险/防守' : '风控/防守';
+    const evidenceTitle3 = isIndexMode ? '市场环境/防守' : '离场/结构防守';
     const positionLabel = isIndexMode ? '当前风险仓位' : '策略参考仓位';
     const positionWhyLabel = `为什么是${noviceSummary.positionText}`;
     const whyText = noviceSummary.why || noviceSummary.reason;
@@ -1159,7 +1160,10 @@ function safeUpdateSidebar(options = {}) {
         
         const item = rd[safeIdx];
         let decision = item._decision || null;
-        if ((!decision || item._strategy !== state.strategy || item._signalVersion !== SIGNAL_VERSION) && typeof updateAllIndicators === 'function') {
+        const decisionGovernanceStale = typeof isCurrentDecisionGovernanceVersion === 'function'
+            && !isCurrentDecisionGovernanceVersion(decision);
+        if ((!decision || item._strategy !== state.strategy || item._signalVersion !== SIGNAL_VERSION || decisionGovernanceStale)
+            && typeof updateAllIndicators === 'function') {
             updateAllIndicators(safeIdx);
             decision = item._decision || null;
         }
