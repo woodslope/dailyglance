@@ -3606,6 +3606,8 @@ function getWaveExpiryHandoffContext(idx, full, meta, prevPos, basePosition, exi
     const entryLow = Number.isInteger(entryDay) ? Number(full?.[entryDay]?.low) : null;
     const close = Number(full?.[idx]?.close);
     const previousClose = Number(full?.[idx - 1]?.close);
+    const previousLifecycle = full?.[idx - 1]?._decision?.waveContext?.lifecycle;
+    const frozenHardDefense = Number(previousLifecycle?.hardDefense);
     const movingAveragePeriod = Math.max(1, Number(config.movingAveragePeriod) || 5);
     const shortMA = Number(state.indicators?.ma?.[movingAveragePeriod]?.[idx]);
     if (!Number.isFinite(entryLow) || !Number.isFinite(close) || !Number.isFinite(previousClose) || !Number.isFinite(shortMA)) return empty;
@@ -3639,22 +3641,43 @@ function getWaveExpiryHandoffContext(idx, full, meta, prevPos, basePosition, exi
     const establishedWashoutRange = establishedCloseGapRatio <= Math.max(0, Number(defensiveConfig?.maximumCloseGapRatio) || 0.03)
         && establishedCloseGapAtr <= Math.max(0, Number(defensiveConfig?.maximumCloseGapAtr) || 1);
     const positiveMacdBar = Number.isFinite(macdBar) && macdBar > 0;
+    // 底部试探仓的积分到期不能仅因 MA20 短暂下行就清仓：只要价格仍守住当次生命周期冻结的硬防守位、
+    // 处于回踩而非反弹追价，且中期动能仍为正，先给一次和“到期防守观察”同等的一日宽限。
+    // 这条兜底只覆盖个股日线的既有30%试探仓，不改变真实失效、离场、预警或冷静期优先级。
+    const holdsFrozenHardDefense = Number.isFinite(close)
+        && Number.isFinite(frozenHardDefense)
+        && close >= frozenHardDefense;
+    const bottomDefenseObservation = !!defensiveConfig
+        && defensiveStocksOnly
+        && state.mode === 'stock'
+        && !strictRecovery
+        && !trendMANotFalling
+        && holdsFrozenHardDefense
+        && Number.isFinite(previousClose)
+        && close <= previousClose
+        && Number.isFinite(trendMA)
+        && close <= trendMA
+        && positiveMacdBar;
     const defensiveObservation = !!defensiveConfig
         && (!defensiveStocksOnly || state.mode === 'stock')
-        && trendMANotFalling
+        && (trendMANotFalling || bottomDefenseObservation)
         && (!defensiveConfig.requirePositiveMacdBar || positiveMacdBar);
     if (!strictRecovery && !defensiveObservation) return empty;
 
     const observationMode = strictRecovery ? 'rebound' : 'defensive';
     const momentumSignals = strictRecovery
         ? [macdImproving ? 'MACD柱改善' : '', kdjImproving ? 'KDJ继续修复' : ''].filter(Boolean)
-        : [`MA${trendPeriod}未下行`, 'MACD柱仍为正'];
+        : (bottomDefenseObservation
+            ? ['冻结硬防守位未破', 'MACD柱仍为正']
+            : [`MA${trendPeriod}未下行`, 'MACD柱仍为正']);
     return {
         applied: true,
         observationMode,
         reason: strictRecovery
             ? '买入积分仅因窗口自然到期，价格与短线动能仍在修复，保留一日低风险仓位等待接管'
-            : '买入积分仅因窗口自然到期，价格仍守住买入日防守位，且中期均线未下行、MACD柱仍为正，保留一日30%防守观察',
+            : (bottomDefenseObservation
+                ? '买入积分仅因窗口自然到期，价格仍守住冻结硬防守位、MACD柱仍为正，底部回踩先保留一日30%防守观察'
+                : '买入积分仅因窗口自然到期，价格仍守住买入日防守位，且中期均线未下行、MACD柱仍为正，保留一日30%防守观察'),
         holdTradingDays: Math.max(1, Number(config.holdTradingDays) || 1),
         triggerDay: idx,
         triggerDate: full?.[idx]?.date || '',
@@ -3674,6 +3697,7 @@ function getWaveExpiryHandoffContext(idx, full, meta, prevPos, basePosition, exi
         closeGapRatio: establishedCloseGapRatio,
         closeGapAtr: establishedCloseGapAtr,
         trendWashout: observationMode === 'defensive' && establishedUptrend && establishedWashoutRange,
+        bottomDefenseObservation,
         previousWindowScore: Number(previousMeta.windowScore) || 0,
         currentWindowScore: Number(meta?.windowScore) || 0,
         expiredSignals: missingPreviousSignals.map(item => ({ signal: item.signal, day: item.day, signalDate: item.signalDate || full?.[item.day]?.date || '' })),
