@@ -1,8 +1,8 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-09-16-01';
-const SIGNAL_VERSION = 'v4.2.37';
+const APP_BUILD = '2026-09-17-01';
+const SIGNAL_VERSION = 'v4.2.38';
 const WAVE_GOVERNANCE_VERSION = 'wave-regime-v5';
 window.__DG_BUILD__ = APP_BUILD;
 
@@ -38,7 +38,15 @@ STRATEGIES['波段抄底型'].wavePositionStages = {
     },
     trendMovingAveragePeriod: 20,
     longMovingAveragePeriod: 60,
-    trendSlopeLookbackDays: 5
+    trendSlopeLookbackDays: 5,
+    // 现有下跌/过渡状态中的短期修复确认：不新增状态，只解除30%上限对确认仓的截断。
+    shortRepair: {
+        stocksOnly: true,
+        shortMovingAveragePeriod: 5,
+        trendMovingAveragePeriod: 20,
+        directSignals: ['B6', 'B11'],
+        structuralSignals: ['B16', 'B20']
+    }
 };
 
 // 波段个股日线的统一三趋势治理参数。周线通常作为支撑来源；仅双底共振试探可作为资格背景参与判断。
