@@ -137,10 +137,17 @@ function normalizeSecurityTarget(input = {}) {
 }
 function isFundSecurity(input) {
     if (!input) return false;
-    if (typeof input === 'object') return normalizeSecurityTarget(input).type === 'fund';
+    if (typeof input === 'object') {
+        const target = normalizeSecurityTarget(input);
+        if (target.type === 'fund') return true;
+        // 搜索结果/测试上下文可能没有携带类型字段，但交易所 ETF 代码本身足以确定三位价格精度。
+        return /^(?:5\d{5}|1[568]\d{4})$/.test(target.code);
+    }
     const text = String(input || '').trim();
     const matched = state?.watchlist?.find(item => item.secid === text || item.code === text);
-    return matched ? normalizeSecurityTarget(matched).type === 'fund' : false;
+    if (matched) return isFundSecurity(matched);
+    const code = text.includes('.') ? text.split('.')[1] : text;
+    return /^(?:5\d{5}|1[568]\d{4})$/.test(code);
 }
 function getSecurityPricePrecision(input) {
     return isFundSecurity(input) ? 3 : 2;
