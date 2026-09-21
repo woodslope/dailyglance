@@ -1136,7 +1136,8 @@ function getExitSeverity(meta, idx, full, ind) {
     const strongExitSet = getStrongExitSignals(STRATEGY);
     const strongExitSignals = exits.filter(s => strongExitSet.has(s));
     if (strongExitSignals.length) return { level: '强离场', detail: `触发核心破位防守：${strongExitSignals.map(s => getUserSignalText(s)).join('+')}` };
-    if (exits.some(s => ['L1', 'L2', 'L3', 'L5', 'L6', 'L7', 'L8'].includes(s)) || (meta.warningSignals || []).length) return { level: '减仓观察', detail: '短线动能转弱或过热，适合降低仓位等待结构确认' };
+    // L7/L8 从不出现在任何策略的 exitSignals 配置里，此处只列可达的普通离场信号。
+    if (exits.some(s => ['L1', 'L2', 'L3', 'L5', 'L6'].includes(s)) || (meta.warningSignals || []).length) return { level: '减仓观察', detail: '短线动能转弱或过热，适合降低仓位等待结构确认' };
     if (meta.windowSignals) {
         const recentExits = meta.windowSignals.filter(w => w.signal.startsWith('L') && (idx - w.day) >= 1 && (idx - w.day) <= 2);
         if (recentExits.length > 0 && ind.ma?.[5] && full[idx] && full[idx].close < ind.ma[5][idx]) return { level: '延续防守', detail: '近期高位释放过防守信号，尚未重获短期均线支撑' };
@@ -3095,6 +3096,40 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
     const previous = full?.[idx - 1]?._decision?.waveRejectionProtection;
     const entryDayPressureVeto = getWaveEntryDayPressureVetoContext(idx, full, meta, prevPos, targetPosition, strategy);
     if (entryDayPressureVeto.status === 'entry_blocked') return entryDayPressureVeto;
+    // 首破确认缓冲期：上一日首次破位只降到 pending 仓位并锁定，这里判定是否收复或最终确认清仓。
+    if (previous?.status === 'pending_hard_break') {
+        const pendingEntryLow = Number(previous.entrySignalLow);
+        const pendingCap = Math.max(0, Number(previous.pendingPositionCap) || hardBreakPendingPositionCap);
+        const confirmDays = Math.max(1, Number(previous.confirmTradingDays) || hardBreakConfirmTradingDays || 1);
+        const pendingAge = idx - Number(previous.triggerDay);
+        const recovered = Number.isFinite(close) && Number.isFinite(pendingEntryLow) && close >= pendingEntryLow;
+        if (recovered) {
+            // 次日收盘收复买入日最低价：解除首破锁定，交回主链继续按原目标持有。
+            return { ...previous, active: false, status: 'hard_break_recovered', resolvedDay: idx, resolvedDate: item.date || '', targetPosition };
+        }
+        if (pendingAge >= confirmDays) {
+            // 缓冲期满仍未收复：确认结构性首破，执行整清。
+            return {
+                ...previous,
+                active: true,
+                status: 'triggered',
+                eventType: 'fresh_entry_hard_break',
+                confirmedDay: idx,
+                confirmedDate: item.date || '',
+                sourcePosition: prevPos,
+                targetPosition: 0,
+                recoveryPending: false,
+                recoveryHoldRemaining: 0
+            };
+        }
+        // 仍在缓冲期内且未收复：维持 pending 锁定，不新增仓位。
+        return {
+            ...previous,
+            status: 'pending_hard_break',
+            pendingAge,
+            targetPosition: Math.min(targetPosition, pendingCap, prevPos)
+        };
+    }
     if (previous?.active) {
         const age = idx - Number(previous.triggerDay);
         const minimumLockTradingDays = Math.max(1, Number(config.minimumLockTradingDays) || 2);
@@ -3358,6 +3393,10 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
     const nearPressure = previousHigh > 0 && high >= previousHigh * Number(config.pressureToleranceRatio);
     const freshEntryConfig = isStock ? config.freshEntryFailure : indexFreshEntryConfig;
     const downsideConfig = isIndex ? indexDownsideConfig : config.freshEntryDownsideFailure;
+    // 首破买入日最低价的确认缓冲：默认 0 = 当日即清仓（现行生产行为）；
+    // 设为 N≥1 时首破不整清，先降到 pending 仓位并锁定，之后 N 日内收盘收复则解除，仍不收复才确认清仓。
+    const hardBreakConfirmTradingDays = Math.max(0, Number(downsideConfig?.hardBreakConfirmTradingDays) || 0);
+    const hardBreakPendingPositionCap = Math.max(0, Number(downsideConfig?.hardBreakPendingPositionCap) || 30);
     let entryDay = null;
     for (let day = idx - 1; day >= 0; day--) {
         const priorDecision = full?.[day]?._decision;
@@ -3536,6 +3575,34 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
             sourcePosition: prevPos,
             targetPosition: Math.min(targetPosition, holdPositionCap),
             holdPositionCap,
+            recoveryPending: false,
+            recoveryHoldRemaining: 0
+        };
+    }
+    // 首破确认缓冲：仅当首破是唯一硬事件（无信号硬失效并存）且启用缓冲时，首日不整清，降到 pending 仓位锁定，
+    // 交由后续 pending_hard_break 分支在缓冲期内判定收复或确认清仓。默认 confirmDays=0 时跳过，保持现行即时清仓。
+    if (freshEntryHardBreakTriggered && !signalHardInvalidationExitTriggered && hardBreakConfirmTradingDays >= 1) {
+        const pendingCap = Math.min(hardBreakPendingPositionCap, getLowerWavePositionStep(prevPos, config.positionSteps));
+        return {
+            active: true,
+            status: 'pending_hard_break',
+            eventType: 'fresh_entry_hard_break',
+            triggerDay: idx,
+            triggerDate: item.date || '',
+            triggerHigh: high,
+            triggerLow: low,
+            triggerClose: close,
+            recoveryCloseLevel: close,
+            entryClose,
+            entryDay,
+            entryDate: Number.isInteger(entryDay) ? full?.[entryDay]?.date || '' : '',
+            entryAge,
+            entrySignalLow,
+            confirmTradingDays: hardBreakConfirmTradingDays,
+            pendingPositionCap: hardBreakPendingPositionCap,
+            pendingAge: 0,
+            sourcePosition: prevPos,
+            targetPosition: Math.min(targetPosition, pendingCap, prevPos),
             recoveryPending: false,
             recoveryHoldRemaining: 0
         };
@@ -4418,7 +4485,11 @@ function computeBaseDecisionForIndex(idx, full, prevPos) {
             || (rawMeta.type || '').includes('规避') || (rawMeta.type || '').includes('破位');
         waveRejectionProtection = { active: false, status: 'superseded', targetPosition: position };
     }
-    const waveDriver = waveRejectionProtection.status === 'entry_blocked'
+    const waveDriver = waveRejectionProtection.status === 'pending_hard_break'
+        ? '首次建仓后跌破买入日最低价，先降到观察仓位，等待次日确认是否收复'
+        : (waveRejectionProtection.status === 'hard_break_recovered'
+        ? '首破后次日收盘收复买入日最低价，解除首破锁定'
+        : (waveRejectionProtection.status === 'entry_blocked'
         ? '建仓日触及下降均线压力并长上影受阻，取消本次试探建仓'
         : (waveRejectionProtection.status === 'ma20_hold'
         ? '首次建仓后冲击压力回落，但收盘仍站在MA20上方，仅保留30%观察'
@@ -4436,7 +4507,7 @@ function computeBaseDecisionForIndex(idx, full, prevPos) {
             ? '冲高回落风险尚未解除，局部阻止旧积分立即回补'
             : (['released', 'recovery_pending'].includes(waveRejectionProtection.status)
                 ? '冲高回落风险已局部解除'
-                : (['recovery_started', 'recovery_hold'].includes(waveRejectionProtection.status) ? '冲高回落风险解除后分步恢复' : '')))));
+                : (['recovery_started', 'recovery_hold'].includes(waveRejectionProtection.status) ? '冲高回落风险解除后分步恢复' : '')))))));
     const basePositionDriver = getPositionDriverText(meta, market, risk, exit, base, position, prevPos, positionCap, marketGate);
     const handoffDriver = waveL10TrendHandoff.applied ? waveL10TrendHandoff.reason : '';
     const expiryHandoffDriver = waveExpiryHandoff.applied ? waveExpiryHandoff.reason : '';
