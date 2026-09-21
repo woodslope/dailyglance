@@ -1,9 +1,9 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-09-17-01';
-const SIGNAL_VERSION = 'v4.2.38';
-const WAVE_GOVERNANCE_VERSION = 'wave-regime-v5';
+const APP_BUILD = '2026-09-21-01';
+const SIGNAL_VERSION = 'v4.2.39';
+const WAVE_GOVERNANCE_VERSION = 'wave-regime-v6';
 window.__DG_BUILD__ = APP_BUILD;
 
 const STRATEGIES = {
@@ -39,7 +39,7 @@ STRATEGIES['波段抄底型'].wavePositionStages = {
     trendMovingAveragePeriod: 20,
     longMovingAveragePeriod: 60,
     trendSlopeLookbackDays: 5,
-    // 现有下跌/过渡状态中的短期修复确认：不新增状态，只解除30%上限对确认仓的截断。
+    // 下跌/过渡状态中的高质量短期修复确认：不新增状态，允许0%直接建立或30%提高至50%确认仓。
     shortRepair: {
         stocksOnly: true,
         shortMovingAveragePeriod: 5,
@@ -110,12 +110,14 @@ Object.assign(STRATEGIES['波段抄底型'].waveRejectionProtection.freshEntryFa
     }
 });
 
-// 完整观察期结束后，压力失败/下跌失败也允许用事件后的完整新信号重入；硬失效仍沿用同一门槛。
+// 完整观察期结束后，压力失败/下跌失败与结构硬失效都只允许用事件后的完整新信号重入。
 STRATEGIES['波段抄底型'].waveRejectionProtection.strongFreshRecovery.eventTypes = [
     'fresh_entry_hard_break',
     'fresh_entry_failure',
-    'fresh_entry_downside_failure'
+    'fresh_entry_downside_failure',
+    'structure_hard_break'
 ];
+STRATEGIES['波段抄底型'].waveRejectionProtection.strongFreshRecovery.minimumEventAgeTradingDays = 5;
 
 // 指数与个股共用“新仓冲高失败”语义，但按指数波动特征使用独立阈值。
 STRATEGIES['波段抄底型'].waveRejectionProtection.indexFreshEntryFailure = {
