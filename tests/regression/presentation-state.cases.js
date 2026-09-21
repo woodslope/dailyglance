@@ -76,7 +76,7 @@ runTest('sector trend display stays a separate read-only workspace', () => {
     const conceptSection = indexSource.indexOf('id="sectorConceptHighlights"');
     assert.ok(overviewSection < leadersSection && leadersSection < turningSection && turningSection < momentumSection && momentumSection < conceptSection, 'sector modules should move from confirmed trends to weaker auxiliary evidence');
     assert.ok(indexSource.includes('今日辅助观察') && indexSource.includes('不纳入行业趋势统计'), 'concept hotspots should be visibly demoted to auxiliary evidence');
-    assert.ok(indexSource.includes('不参与大盘八指数、核心门禁、个股仓位、B/S 或收益计算'), 'sector boundary should be visible');
+    assert.ok(indexSource.includes('不参与大盘八指数、核心宽基环境、个股仓位、B/S 或收益计算'), 'sector boundary should be visible');
     assert.ok(indexSource.includes('class="icon-btn icon-btn-label" onclick="handleExternalRefresh()"'));
     assert.ok(cssSource.includes('.sector-summary-grid'));
     assert.ok(cssSource.includes('.external-env-strip'));
@@ -650,6 +650,49 @@ runTest('right panel computes temporary live conclusion instead of showing analy
     assert.ok(!result.analysisHtml.includes('分析同步中'), 'right panel should not expose the pending fallback for valid cached live data');
 });
 
+runTest('right panel rejects stale wave governance decisions before rendering', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(renderSource, context);
+    vm.runInContext(`
+        state.mode = 'stock';
+        state.id = '1.600000';
+        state.stockId = '600000';
+        state.strategy = '波段抄底型';
+        state.period = 'daily';
+        state.rawData['1.600000'] = [{
+            date: '2026-07-13', open: 9.60, high: 9.78, low: 9.48, close: 9.69, vol: 1000, amt: 10000,
+            _strategy: state.strategy,
+            _signalVersion: SIGNAL_VERSION,
+            _decision: { position: 0, bsMark: 'S', simpleAction: '规避风险', waveGovernanceVersion: 'wave-regime-v3' }
+        }];
+        state.lockIdx = 0;
+        var recomputeCount = 0;
+        var renderedDecision = null;
+        updateAllIndicators = function(idx) {
+            recomputeCount++;
+            var row = getActiveData()[idx];
+            row._strategy = state.strategy;
+            row._signalVersion = SIGNAL_VERSION;
+            row._decision = { position: 30, bsMark: null, simpleAction: '持有观察', waveGovernanceVersion: WAVE_GOVERNANCE_VERSION };
+        };
+        generateSidebarBundle = function(item) {
+            renderedDecision = item._decision;
+            return { priceHtml: '', analysisHtml: '', isHide: false };
+        };
+        applySidebarHTML = function() {};
+        updateNavCapsuleVisuals = function() {};
+        safeUpdateSidebar();
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ recomputeCount, renderedDecision })', context));
+    assert.strictEqual(result.recomputeCount, 1, 'stale governance decisions should trigger an indicator rebuild');
+    assert.strictEqual(result.renderedDecision.position, 30, 'right panel should render the rebuilt position');
+    assert.strictEqual(result.renderedDecision.bsMark, null, 'right panel should not render the stale sell marker');
+    assert.strictEqual(result.renderedDecision.waveGovernanceVersion, vm.runInContext('WAVE_GOVERNANCE_VERSION', context));
+});
+
 runTest('wave B quality stays hidden in production shadow while explicit research states remain testable', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -834,13 +877,27 @@ runTest('scrollable dialogs avoid backdrop blur during scrolling', () => {
 
 runTest('decision evidence panel uses novice-readable why/action copy', () => {
     assert.ok(renderSource.includes('function getNoviceEvidenceCopy('), 'missing novice evidence copy helper');
-    assert.ok(renderSource.includes('核心建仓门禁开放'), 'market evidence must explain the one-way risk gate');
-    assert.ok(renderSource.includes('核心宽基偏弱') && renderSource.includes('普通机会') && renderSource.includes('标的自身独立走强') && renderSource.includes('marketGate.cap'), 'weak-market evidence must explain tiered increase caps');
+    assert.ok(renderSource.includes('仅作市场背景参考'), 'stock market evidence must present core breadth as background only');
+    // 个股仓位本就不受核心宽基约束，因此不得再逐个环境声明“不限制个股仓位”这条并不存在的限制。
+    assert.ok(!renderSource.includes('不限制个股仓位'), 'stock evidence must not explain a limit that no longer exists');
+    assert.ok(!renderSource.includes('未触发额外截断') && !renderSource.includes('核心宽基环境未限制'), 'index evidence must not narrate a cap that did not apply');
+    assert.ok(renderSource.includes('核心宽基偏弱') && renderSource.includes('普通机会') && renderSource.includes('指数自身独立走强') && renderSource.includes('marketGate.cap'), 'index evidence must explain tiered increase caps when one actually applies');
     assert.ok(renderSource.includes('买入依据') && renderSource.includes('未买入原因'), 'signal evidence must explain buy/no-buy reason');
-    assert.ok(renderSource.includes('风险依据') && renderSource.includes('防守位'), 'risk evidence must explain defensive basis');
+    assert.ok(renderSource.includes('防守依据') && renderSource.includes('防守位'), 'defensive evidence must explain structural basis');
     assert.ok(renderSource.includes('noviceEvidence.marketHint'), 'market hint must be rendered');
     assert.ok(renderSource.includes('noviceEvidence.signalHint'), 'signal hint must be rendered');
     assert.ok(renderSource.includes('noviceEvidence.guardHint'), 'guard hint must be rendered');
+});
+
+runTest('conclusion copy never narrates a limit that did not apply', () => {
+    // 只清理“说了但不生效”的描述：风险评估没有压低仓位、市场没有截断时，不得出现任何限制句。
+    assert.ok(!calcSource.includes('风险评估未限制'), 'position path must omit the risk line when risk did not cap the position');
+    assert.ok(!calcSource.includes('风险评估未额外下调'), 'position path must not claim risk made no adjustment');
+    assert.ok(!calcSource.includes('未超过市场新增风险上限'), 'stock and index paths must not cite an untriggered market cap');
+    assert.ok(!calcSource.includes('风险评估暂按原值处理'), 'position path must not narrate an inert risk step');
+    assert.ok(!calcSource.includes('大盘虽偏好'), 'stock conclusions must not frame the no-entry reason around market mood');
+    assert.ok(!calcSource.includes('isFavorableMarket'), 'the retired favorable-market branch must be gone');
+    assert.ok(calcSource.includes('本次提高仓位由个股信号与趋势决定') && calcSource.includes('本次提高风险仓位由指数自身动能与趋势决定'), 'an unconstrained increase must still say what drove it');
 });
 
 runTest('strong exits reset the effective score in stock and index evidence', () => {
@@ -868,16 +925,94 @@ runTest('strong exits reset the effective score in stock and index evidence', ()
     assert.ok(index.signalHint.includes('此前动能依据已失效') && index.signalHint.includes(index.scoreText), index.signalHint);
 });
 
-runTest('market context UI exposes an increase gate instead of a position coefficient', () => {
-    assert.ok(appSource.includes('核心建仓门禁'), 'market context card must name the core entry gate');
-    assert.ok(appSource.includes('market.increaseCaps') && appSource.includes('market.increaseCaps.ordinary') && appSource.includes('market.increaseCaps.independent'), 'weak market gate must show tiered increase caps');
-    assert.ok(appSource.includes('门禁核心') && appSource.includes('仅观察'), 'index rows must distinguish gate inputs from observation-only indices');
+runTest('market context UI stays an environment browser instead of a position suggestion', () => {
+    assert.ok(appSource.includes('核心宽基环境'), 'market context card must name the core breadth environment');
+    assert.ok(!appSource.includes('market.increaseCaps'), 'browsing card must not render index increase caps as a standing number');
+    assert.ok(!appSource.includes('指数新增风险'), 'browsing card must not label a number as an index risk allowance');
+    assert.ok(appSource.includes('核心宽基') && appSource.includes('仅观察'), 'index rows must distinguish environment inputs from observation-only indices');
+    assert.ok(!appSource.includes('环境核心'), 'index rows must reuse the single core-breadth term instead of a second synonym');
     assert.ok(appSource.includes("renderLeftListHeader('市场与板块指数')"), 'left list title must cover market and board indices');
     assert.ok(cssSource.includes('.market-gate-panel') && cssSource.includes('.market-core-grid'), 'core gate module must use the compact layout');
+    assert.ok(!cssSource.includes('.market-gate-panel .action-cap'), 'the retired cap slot must not keep dead styling');
     assert.ok(!appSource.includes('建议仓位上限'), 'market context must not present a holding cap');
     assert.ok(indexSource.includes('先看状态') && indexSource.includes('再看动作') && indexSource.includes('最后看风险'), 'help copy must keep the compact daily-use path');
     assert.ok(indexSource.includes('strategy-inspector.html') && indexSource.includes('查看完整策略说明'), 'help copy must route advanced strategy details to the standalone inspector');
     assert.ok(!indexSource.includes('决定市场环境系数和仓位上限'), 'help copy must not describe the retired multiplier model');
+});
+
+runTest('core breadth card shows only the environment, never a standing cap number', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var trends = [
+            { id: 'hs300', name: '沪深300', state: '空头', score: -1 },
+            { id: 'zz500', name: '中证500', state: '空头', score: -1 },
+            { id: 'zz1000', name: '中证1000', state: '震荡', score: 0 }
+        ];
+        var cases = {
+            weak: { label: '核心宽基偏弱', cls: 'bear', increaseCaps: { ordinary: 30, independent: 50 }, reason: '三项核心宽基多数空头；指数普通机会新增风险上限 30%', trends: trends },
+            blocked: { label: '环境待确认', cls: 'neutral', increaseCaps: { ordinary: 0, independent: 0 }, reason: '三项核心宽基尚未补齐，指数暂停增加风险', trends: trends },
+            open: { label: '核心宽基偏强', cls: 'bull', increaseCaps: null, reason: '三项核心宽基多数走强，指数新增风险不受限', trends: trends }
+        };
+        var rendered = {};
+        Object.keys(cases).forEach(function(name) {
+            getMarketContext = function() { return cases[name]; };
+            updateLeftMarketContext('2026-07-21');
+            rendered[name] = document.getElementById('leftMarketContext').innerHTML;
+        });
+    `, context);
+    const rendered = JSON.parse(vm.runInContext('JSON.stringify(rendered)', context));
+    // 卡片只做浏览：环境标签、指数口径说明和三项核心宽基状态；不再有独立的上限数字栏。
+    for (const [name, html] of Object.entries(rendered)) {
+        assert.ok(!html.includes('action-cap'), `${name} must not keep the retired cap slot`);
+        assert.ok(!html.includes('独立走强'), `${name} must not surface the near-unused independent tier: ${html}`);
+        assert.ok(html.includes('沪深300') && html.includes('中证500') && html.includes('中证1000'), `${name} must keep the three core breadth states`);
+    }
+    assert.ok(rendered.weak.includes('核心宽基偏弱') && rendered.weak.includes('指数普通机会新增风险上限 30%'), rendered.weak);
+    assert.ok(rendered.blocked.includes('环境待确认') && rendered.blocked.includes('指数暂停增加风险'), rendered.blocked);
+    assert.ok(rendered.open.includes('核心宽基偏强') && rendered.open.includes('指数新增风险不受限'), rendered.open);
+});
+
+runTest('core breadth reasons describe the index path only', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        var reasons = [];
+        var trendStub = {};
+        getIndexTrend = function(id) {
+            if (!(id in trendStub)) return null;
+            var score = trendStub[id];
+            return { id: id, name: id, state: score > 0 ? '多头' : (score < 0 ? '空头' : '震荡'), score: score };
+        };
+        function reasonFor(stub) {
+            trendStub = stub;
+            return getMarketContext('2026-07-21').reason;
+        }
+        var ids = CORE_MARKET_INDEX_IDS;
+        reasons.push(reasonFor({ [ids[0]]: -1, [ids[1]]: -1, [ids[2]]: 0 }));
+        reasons.push(reasonFor({ [ids[0]]: 1, [ids[1]]: 1, [ids[2]]: 0 }));
+        reasons.push(reasonFor({ [ids[0]]: 1, [ids[1]]: -1, [ids[2]]: 0 }));
+        reasons.push(reasonFor({ [ids[0]]: -1 }));
+        reasons.push(reasonFor({}));
+    `, context);
+    const reasons = JSON.parse(vm.runInContext('JSON.stringify(reasons)', context));
+    assert.strictEqual(reasons.length, 5);
+    // 该文案只在大盘页的核心宽基环境卡片出现，不能再提个股，否则又变成“说了但不生效”的限制描述。
+    for (const reason of reasons) {
+        assert.ok(!reason.includes('个股'), `core breadth reason must not mention stock positions: ${reason}`);
+        assert.ok(!reason.includes('标的'), `core breadth reason must stay index-scoped: ${reason}`);
+    }
+    assert.ok(reasons[0].includes('指数普通机会新增风险上限 30%'), reasons[0]);
+    // independent 档在全量回放里只占偏弱 bar 的 0.09%，不放进常驻 reason，避免读成常见分档。
+    assert.ok(!reasons[0].includes('独立走强'), `browsing reason must not advertise the near-unused independent tier: ${reasons[0]}`);
+    assert.ok(reasons[1].includes('指数新增风险不受限'), reasons[1]);
+    assert.ok(reasons[2].includes('不额外限制指数新增风险'), reasons[2]);
+    assert.ok(reasons[3].includes('指数暂停增加风险'), reasons[3]);
+    assert.ok(reasons[4].includes('指数暂停增加风险'), reasons[4]);
 });
 
 runTest('historical exit context does not turn a current hold into a reduce instruction', () => {
@@ -901,7 +1036,7 @@ runTest('historical exit context does not turn a current hold into a reduce inst
     `, context);
     const guardHint = vm.runInContext('evidence.guardHint', context);
     assert.ok(guardHint.includes('近期出现过普通离场信号'));
-    assert.ok(guardHint.includes('风险依据'));
+    assert.ok(guardHint.includes('防守依据'));
     assert.ok(!guardHint.includes('降低仓位'));
 });
 
@@ -982,7 +1117,7 @@ runTest('buy conclusion names the effective signal and keeps technical traceabil
     const panelText = vm.runInContext('panelText', context);
     assert.ok(panelText.includes('均线多头'), panelText);
     assert.ok(panelText.includes('动能依据'), panelText);
-    assert.ok(panelText.includes('市场风险'), panelText);
+    assert.ok(panelText.includes('市场防守'), panelText);
     assert.ok(!panelText.includes('风险仓位计算链') && !panelText.includes('今日 · 计分 +3'), panelText);
     assert.ok(!renderSource.includes('技术细节') && !renderSource.includes('今日原始信号') && !renderSource.includes('指数动能与离场窗口'), 'daily panel should leave technical trace to the standalone strategy page');
     assert.ok(!cssSource.includes('.position-calculation-copy'), 'daily panel should not keep duplicate technical detail styles');
@@ -1040,10 +1175,11 @@ runTest('stock and index conclusions share decisions but use different product l
     assert.ok(stockText.includes('为什么是80%'), stockText);
     assert.ok(indexText.includes('为什么是80%'), indexText);
     assert.ok(stockText.includes('个股每日结论') && stockText.includes('策略参考仓位') && stockText.includes('买入依据'), stockText);
-    assert.ok(stockText.includes('核心建仓门禁') && stockText.includes('标的自身独立走强') && stockText.includes('50%'), stockText);
+    assert.ok(stockText.includes('市场背景') && stockText.includes('仅作市场背景参考'), stockText);
+    assert.ok(!stockText.includes('不限制个股仓位') && !stockText.includes('风险评估未限制'), stockText);
     assert.ok(indexText.includes('大盘每日结论') && indexText.includes('当前风险仓位') && indexText.includes('动能依据'), indexText);
-    assert.ok(indexText.includes('核心市场环境') && indexText.includes('指数自身独立走强') && indexText.includes('50%'), indexText);
-    assert.ok(indexText.includes('指数自身动能') && indexText.includes('市场风险/防守'), indexText);
+    assert.ok(indexText.includes('核心宽基环境') && indexText.includes('指数自身独立走强') && indexText.includes('50%'), indexText);
+    assert.ok(indexText.includes('指数自身动能') && indexText.includes('市场环境/防守'), indexText);
     assert.ok(!indexText.includes('风险仓位计算链'), indexText);
     assert.ok(!indexText.includes('个股信号') && !indexText.includes('买入依据') && !indexText.includes('持仓依据'), indexText);
     assert.deepStrictEqual(vm.runInContext('after', context), vm.runInContext('before', context));
@@ -1544,8 +1680,10 @@ runTest('novice copy explains the one-day soft-invalidation grace and its expiry
 runTest('product guide fixes the right panel copy standard', () => {
     assert.ok(productGuideSource.includes('右侧决策面板话术规范'), 'missing right-panel copy standard');
     assert.ok(productGuideSource.includes('结论 -> 关键推导依据') && productGuideSource.includes('独立策略页'), 'copy standard must define the two-level daily panel and standalone detail page');
-    assert.ok(productGuideSource.includes('一般策略与指数路径仍按核心宽基状态限制新增风险') && productGuideSource.includes('30%') && productGuideSource.includes('50%'), 'copy standard must preserve the ordinary strategy and index market gate');
-    assert.ok(productGuideSource.includes('波段抄底型个股日线') && productGuideSource.includes('30%') && productGuideSource.includes('50%') && productGuideSource.includes('80%') && productGuideSource.includes('趋势仓') && productGuideSource.includes('封顶'), 'copy standard must explain the wave-stage market gate');
+    assert.ok(productGuideSource.includes('指数路径仍按核心宽基状态说明实际新增风险上限') && productGuideSource.includes('30%') && productGuideSource.includes('50%'), 'copy standard must preserve the index-only market limit');
+    assert.ok(productGuideSource.includes('明确它不限制个股仓位') && productGuideSource.includes('不得写成仓位上限'), 'copy standard must state that core breadth never caps stock positions');
+    assert.ok(productGuideSource.includes('它不常驻展示上限数字') && productGuideSource.includes('由右侧结论面板在当天说明'), 'copy standard must keep the left card a browsing surface instead of a standing cap display');
+    assert.ok(productGuideSource.includes('结论三行只写真正生效的限制') && productGuideSource.includes('无限制的加仓只说明驱动因素'), 'copy standard must forbid narrating limits that did not apply');
     assert.ok(productGuideSource.includes('买入依据') && productGuideSource.includes('持仓依据') && productGuideSource.includes('未买入原因'), 'copy standard must cover novice evidence language');
     assert.ok(productGuideSource.includes('信号发生日') && productGuideSource.includes('失效原因'), 'copy standard must expose historical signal timing and invalidation reason');
     assert.ok(productGuideSource.includes('实际压力类型与价格') && productGuideSource.includes('上影占全天振幅的比例'), 'pressure-failure copy must expose verifiable price evidence');
@@ -1806,7 +1944,7 @@ runTest('strong-exit metadata distinguishes a repeated trigger from cooldown day
     assert.strictEqual(after.daysSinceExit, 4);
 });
 
-runTest('novice summary attributes position compression to stock risk instead of market state', () => {
+runTest('novice summary does not attribute position compression to the retired risk score', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
     vm.runInContext('function convertDailyToWeekly() { return []; }', context);
@@ -1838,11 +1976,8 @@ runTest('novice summary attributes position compression to stock risk instead of
     `, context);
     const summary = JSON.parse(vm.runInContext('JSON.stringify(summary)', context));
     assertPresentationSummary(summary);
-    assert.ok(summary.why.includes('买入积分为 5/5'), summary.why);
-    assert.ok(summary.why.includes('基础仓位原为 40%'), summary.why);
-    assert.ok(!summary.why.includes('风险系数'), summary.why);
-    assert.ok(!summary.why.includes('市场系数'), summary.why);
-    assert.ok(summary.why.includes('当前从40%降至 0%'), summary.why);
+    assert.ok(!summary.why.includes('风险系数') && !summary.why.includes('风险评分') && !summary.why.includes('极端风险'), summary.why);
+    assert.ok(!summary.positionWhy.includes('风险系数') && !summary.positionWhy.includes('风险评分') && !summary.positionWhy.includes('极端风险'), summary.positionWhy);
     assert.ok(summary.positionWhy.includes('最终由40%降至0%'), summary.positionWhy);
 });
 

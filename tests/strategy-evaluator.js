@@ -8,6 +8,8 @@ const {
     summarizeEvaluationRows,
     subtractSummaries,
     buildCalendarWindows,
+    CANDIDATE_GOAL_CLASS,
+    assertCandidateGoalMatchesClass,
     evaluateCandidateScreen,
     evaluateCandidateGates
 } = require('../scripts/strategy-evaluator');
@@ -196,5 +198,50 @@ const controlGate = evaluateCandidateGates({
 });
 assert.strictEqual(controlGate.status, 'baseline_control');
 assert.strictEqual(stableHash({ b: 2, a: 1 }), stableHash({ a: 1, b: 2 }));
+
+// 目标与准入类别错配必须报错，而不是静默按错配的门槛评判。
+// 8 月九个波段候选只过一个，直接原因就是把卖点时机目标填成了 risk_control。
+assert.throws(() => evaluateCandidateScreen({
+    candidateClass: 'risk_control',
+    primaryGoal: 'signal_timing_correction',
+    policy,
+    overallDelta: { avgStrategyRet: -0.001, avgMaxDrawdown: -0.006 },
+    affectedDecisionDays: 2
+}), /候选目标与准入类别错配/, '卖点时机目标不得套用 risk_control 门槛');
+assert.throws(() => evaluateCandidateGates({
+    candidateClass: 'performance',
+    primaryGoal: 'drawdown_reduction',
+    policy,
+    overallDelta: { avgStrategyRet: 0.01, avgMaxDrawdown: -0.01 },
+    affectedDecisionDays: 40,
+    completedTrades: 40
+}), /候选目标与准入类别错配/, '回撤目标不得套用 performance 门槛');
+assert.throws(() => evaluateCandidateScreen({
+    candidateClass: 'signal_timing',
+    primaryGoal: 'sell_timing',
+    policy,
+    overallDelta: {},
+    affectedDecisionDays: 1
+}), /unknown candidate goal/, '拼错的目标不得静默通过');
+
+// 目标一致时行为与不声明目标完全相同，并原样回显到报告。
+const goalAligned = evaluateCandidateScreen({
+    candidateClass: 'signal_timing',
+    primaryGoal: 'signal_timing_correction',
+    policy,
+    overallDelta: { avgStrategyRet: 0.019346, avgMaxDrawdown: 0.009474, turnoverRatio: 0.100303 },
+    affectedDecisionDays: 1001
+});
+assert.strictEqual(goalAligned.status, signalTimingScreen.status);
+assert.strictEqual(goalAligned.primaryGoal, 'signal_timing_correction');
+assert.deepStrictEqual(goalAligned.checks, signalTimingScreen.checks);
+assert.strictEqual(signalTimingScreen.primaryGoal, null, '不声明目标时保持向后兼容');
+assert.strictEqual(controlGate.primaryGoal, null);
+assert.strictEqual(assertCandidateGoalMatchesClass('control', 'baseline_hold'), 'baseline_hold');
+assert.deepStrictEqual(
+    Object.keys(CANDIDATE_GOAL_CLASS).sort(),
+    ['baseline_hold', 'drawdown_reduction', 'return_improvement', 'semantic_correction', 'signal_timing_correction', 'turnover_reduction'],
+    '目标表必须覆盖全部准入类别'
+);
 
 console.log('策略共享评估器契约通过');

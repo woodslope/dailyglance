@@ -35,6 +35,81 @@ runTest('history source circuit opens globally after repeated transport failures
     assert.strictEqual(result.circuitAfterReset, false);
 });
 
+runTest('same symbol sync requests share one in-flight cycle', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    const result = JSON.parse(await vm.runInContext(`
+        (async function() {
+            var releases = {};
+            var performCalls = 0;
+            performSyncData = function(id) {
+                performCalls++;
+                return new Promise(function(resolve) { releases[id] = resolve; });
+            };
+            var first = syncData('sh');
+            var second = syncData('sh');
+            var other = syncData('sz');
+            await Promise.resolve();
+            var callsBeforeRelease = performCalls;
+            releases.sh({ id: 'sh' });
+            releases.sz({ id: 'sz' });
+            var values = await Promise.all([first, second, other]);
+            return JSON.stringify({ callsBeforeRelease, values });
+        })()
+    `, context));
+    assert.strictEqual(result.callsBeforeRelease, 2);
+    assert.deepStrictEqual(result.values, [{ id: 'sh' }, { id: 'sh' }, { id: 'sz' }]);
+});
+
+runTest('same selection cached fetches share one active load', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    const result = JSON.parse(await vm.runInContext(`
+        (async function() {
+            var release;
+            var performCalls = 0;
+            performCachedFetch = function(id) {
+                performCalls++;
+                return new Promise(function(resolve) { release = resolve; });
+            };
+            state.mode = 'index';
+            state.period = 'daily';
+            state.strategy = '稳健趋势型';
+            var first = cachedFetch('sh');
+            var second = cachedFetch('sh');
+            await Promise.resolve();
+            var callsBeforeRelease = performCalls;
+            release('ready');
+            var values = await Promise.all([first, second]);
+            return JSON.stringify({ callsBeforeRelease, values });
+        })()
+    `, context));
+    assert.strictEqual(result.callsBeforeRelease, 1);
+    assert.deepStrictEqual(result.values, ['ready', 'ready']);
+});
+
+runTest('batch realtime request occupies per-symbol slot until completion', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    const result = JSON.parse(await vm.runInContext(`
+        (async function() {
+            var pendingScript = null;
+            document.head.appendChild = function(script) { pendingScript = script; };
+            var request = batchGetRealtimePrices(['sh']);
+            await Promise.resolve();
+            var during = !!requestManager.limiters.get('sh')?.isFetching;
+            pendingScript.onerror();
+            await request;
+            var after = !!requestManager.limiters.get('sh')?.isFetching;
+            return JSON.stringify({ during, after });
+        })()
+    `, context));
+    assert.deepStrictEqual(result, { during: true, after: false });
+});
+
 runTest('jsonp cleanup registry releases completed jobs and settles cancelled jobs', async () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -197,6 +272,21 @@ runTest('history sync prefers TickFlow and keeps source-specific fallbacks', asy
     assert.strictEqual(result.eastmoneyFallbackStatus.source, 'eastmoney');
 });
 
+runTest('regression harness keeps each vm context on its own console shell', () => {
+    // 被测代码或测试覆盖 console.error 时，绝不能连带替掉 runTest 打印 `not ok` 的宿主 console.error，
+    // 否则此后的失败只剩退出码、没有任何输出。makeBrowserContext 因此给每个上下文发独立 console 壳。
+    const before = console.error;
+    const first = makeBrowserContext();
+    const second = makeBrowserContext();
+    assert.notStrictEqual(first.console, console, 'vm context must not share the host console object');
+    assert.notStrictEqual(first.console, second.console, 'each context needs its own console shell');
+    vm.runInContext('console.error = function() { globalThis.__swallowed = true; };', first);
+    vm.runInContext('console.error("inside first context");', first);
+    assert.strictEqual(vm.runInContext('globalThis.__swallowed', first), true, 'the override must apply inside its own context');
+    assert.strictEqual(console.error, before, 'the host console.error must survive a context-level override');
+    assert.notStrictEqual(second.console.error, first.console.error, 'the override must not leak into another context');
+});
+
 runTest('sector trend refresh deduplicates the board scan and enforces cooldown', async () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -254,6 +344,10 @@ runTest('sector trend refresh deduplicates the board scan and enforces cooldown'
                 refreshSectorTrendSnapshot({ reason: 'visibility' }),
                 refreshSectorTrendSnapshot({ reason: 'tab-enter' })
             ]);
+            // 冷却窗口按真实墙上时钟计算，而 runTest 不被 await：本测试的 await 恢复点
+            // 取决于整个套件同步阶段的耗时。把 lastAttemptAt 钉到当下，让“冷却期内不重扫”
+            // 这条断言只验证去重逻辑，不再随套件总时长翻转（同文件 60 秒冷却测试同样写法）。
+            sectorTrendState.lastAttemptAt = Date.now();
             await refreshSectorTrendSnapshot({ reason: 'manual-again' });
             sectorRefreshResult = {
                 listCalls: sectorListCalls,
@@ -446,6 +540,37 @@ runTest('data refresh result separates confirmed and visible mutations', () => {
     assert.deepStrictEqual(results[2], { id: 'sh', confirmedChanged: true, visibleChanged: true, path: 'confirmed' });
 });
 
+runTest('unchanged confirmed history reuses the in-memory series', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(`
+        var confirmedRows = [
+            { date: '2026-01-01', open: 10, high: 11, low: 9, close: 10, vol: 100, amt: 1000 },
+            { date: '2026-01-02', open: 10, high: 12, low: 9, close: 11, vol: 120, amt: 1320 }
+        ];
+        state.rawData.sh = confirmedRows;
+        state.weeklyData.sh = { sentinel: true };
+        var originalSeries = state.rawData.sh;
+        var originalWeekly = state.weeklyData.sh;
+        var clearCount = 0;
+        clearDerivedCaches = function() { clearCount++; };
+        var applyResult = setRawData('sh', confirmedRows.map(function(row) { return { ...row }; }));
+        unchangedApplyResult = {
+            changed: applyResult.changed,
+            sameSeries: state.rawData.sh === originalSeries,
+            sameWeekly: state.weeklyData.sh === originalWeekly,
+            clearCount
+        };
+    `, context);
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(unchangedApplyResult)', context)), {
+        changed: false,
+        sameSeries: true,
+        sameWeekly: true,
+        clearCount: 0
+    });
+});
+
 runTest('confirmed manual refresh uses history sync instead of cooled incremental sync', async () => {
     const context = makeBrowserContext();
     const instrumentedConfigSource = configSource
@@ -624,6 +749,53 @@ runTest('market-open realtime bar stays in live overlay instead of confirmed his
     assert.strictEqual(result.activeLastClose, 107);
     assert.strictEqual(result.returnedLastDate, '2026-06-26');
     assert.ok(result.cachedLastCloses.every(close => close !== 107), JSON.stringify(result.cachedLastCloses));
+});
+
+runTest('throttled chart refresh preserves the current live overlay instead of downgrading to cache', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    const instrumentedDataSource = dataSource
+        .replace(/function getBJDate\(\) \{ return new Date\(new Date\(\)\.toLocaleString\("en-US", \{timeZone: "Asia\/Shanghai"\}\)\); \}/, "function getBJDate() { return new Date('2026-06-30T10:30:20+08:00'); }")
+        .replace(/function dbGet\(id\) \{[\s\S]*?\n\}/, "function dbGet(id) { return Promise.resolve({ data: cachedRows }); }")
+        .replace(/function dbSet\(id, data\) \{[\s\S]*?\n\}/, "function dbSet(id, data) { return Promise.resolve(); }")
+        .replace(/async function syncDataWithHistory\(id\) \{[\s\S]*?\n\}/, "async function syncDataWithHistory(id) { return cachedRows.map(row => ({ ...row })); }");
+    vm.runInContext(instrumentedDataSource, context);
+    vm.runInContext('function markIndicatorsDirty() { state.indicatorKey = ""; }', context);
+    vm.runInContext(`
+        var cachedRows = Array.from({ length: 31 }, function(_, i) {
+            var close = 130 + i * 0.2;
+            return {
+                date: i === 30 ? '2026-06-29' : '2026-05-' + String(i + 1).padStart(2, '0'),
+                open: close - 0.5,
+                high: close + 1,
+                low: close - 1,
+                close,
+                vol: 3000 + i * 10,
+                amt: 30000 + i * 100
+            };
+        });
+        var realtimeCallCount = 0;
+        getRealtimePriceJSONP = async function() {
+            realtimeCallCount++;
+            return { date: '2026-06-30', open: 131, high: 134, low: 130, close: 133, prevClose: 131, vol: 3400, amt: 34000 };
+        };
+    `, context);
+    await vm.runInContext('(async function() { returnedRows = await syncData("sh"); setRawData("sh", returnedRows); })()', context);
+    await vm.runInContext('(async function() { returnedRows2 = await syncData("sh"); })()', context);
+    vm.runInContext('canRequestMarketData = function() { return false; };', context);
+    await vm.runInContext('(async function() { returnedRows3 = await syncData("sh"); })()', context);
+    const result = JSON.parse(vm.runInContext(`JSON.stringify({
+        realtimeCallCount,
+        displayMode: state.displayStatus.sh.mode,
+        activeClose: getActiveData()[getActiveData().length - 1].close,
+        liveClose: state.liveBars.sh.close
+    })`, context));
+    assert.deepStrictEqual(result, {
+        realtimeCallCount: 1,
+        displayMode: 'live-overlay',
+        activeClose: 133,
+        liveClose: 133
+    });
 });
 
 runTest('market-open cached live overlay restores within ttl without mutating confirmed history', async () => {
@@ -1725,8 +1897,9 @@ runTest('refresh timestamps are written after the matching UI data is applied', 
     assert.ok(firstLeftApplyIdx > -1 && firstLeftApplyIdx < firstRightApplyIdx, 'active cached data should commit the left-list snapshot before the right-panel snapshot');
     assert.ok(appSource.includes('renderWatchlist();\n            if (shouldMarkRefresh) markLeftListRefreshForActiveTab(refreshTxn'), 'scheduled stock list render should mark refresh time after DOM render');
     assert.ok(appSource.includes('refreshIndexListQuotes();') && appSource.includes('markLeftListRefreshForActiveTab(leftTxn'), 'realtime left-list quote refresh should mark time after quote DOM update');
-    assert.ok(dataSource.includes('renderIndexList();\n            if (typeof markLeftListRefreshForActiveTab === \'function\') markLeftListRefreshForActiveTab(leftTxn'), 'background index list data refresh should mark after index list render');
-    assert.ok(dataSource.includes('scheduleWatchlistRender({\n                markRefresh: true,\n                refreshTxn: beginRefreshTransaction'), 'background stock list data refresh should mark after scheduled stock list render');
+    assert.ok(dataSource.includes('defer-left-list-commit'), 'single-symbol background history refresh should defer the left-list commit to the batch coordinator');
+    assert.ok(appSource.includes('expectedCount: stocks.length') && appSource.includes('status: successCount === stocks.length ? \'full\' : \'partial\''), 'watchlist history batch should expose expected/applied coverage');
+    assert.ok(appSource.includes('await waitForWatchlistSnapshotQueue()'), 'watchlist status batch should wait for queued snapshots before rendering');
 });
 
 runTest('refresh transaction snapshots expose independent left and right versions', () => {
@@ -1735,7 +1908,7 @@ runTest('refresh transaction snapshots expose independent left and right version
     vm.runInContext(`
         var leftTxn = beginRefreshTransaction('leftList', { source: 'test-left' });
         var rightTxn = beginRefreshTransaction('rightPanel', { source: 'test-right' });
-        markLeftListRefreshTime(leftTxn, { rows: 4 });
+        markLeftListRefreshTime(leftTxn, { rows: 4, expectedCount: 4, appliedCount: 3, status: 'partial' });
         markRefreshTime(rightTxn, { id: 'sh' });
         var result = {
             left: state.refreshSnapshots.leftList,
@@ -1753,6 +1926,8 @@ runTest('refresh transaction snapshots expose independent left and right version
     assert.ok(result.left.appliedAt >= result.left.startedAt);
     assert.ok(result.right.appliedAt >= result.right.startedAt);
     assert.ok(result.leftText.includes('列表刷新于'));
+    assert.ok(result.leftText.includes('（3/4）'));
+    assert.strictEqual(result.left.meta.status, 'partial');
     assert.notStrictEqual(result.rightText, '--:--:--');
     assert.strictEqual(result.rightDataset.refreshId, result.right.id);
     assert.strictEqual(Number(result.rightDataset.refreshVersion), result.right.version);

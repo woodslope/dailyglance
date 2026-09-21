@@ -183,9 +183,12 @@ let state = {
     liveBars: {},
     liveQuotes: {},
     liveOverlayCache: {},
+    liveDailyData: {},
     liveWeeklyData: {},
     confirmedStatus: {},
     displayStatus: {},
+    realtimeBatchAt: {},
+    activeHistoryRefreshAt: {},
     leftListRefreshAt: 0,
     refreshSeq: 0,
     refreshSnapshots: {
@@ -428,13 +431,19 @@ function getRefreshSnapshot(scope) {
 
 function getLeftListRefreshText() {
     const snapshot = getRefreshSnapshot('leftList');
-    return `列表刷新于 ${formatLeftListRefreshTime(snapshot?.appliedAt || state.leftListRefreshAt)}`;
+    const meta = snapshot?.meta || {};
+    const expected = Number(meta.expectedCount);
+    const applied = Number(meta.appliedCount ?? meta.receivedCount);
+    const coverage = Number.isFinite(expected) && expected > 0 && Number.isFinite(applied) && applied < expected
+        ? `（${Math.max(0, Math.min(expected, applied))}/${expected}）`
+        : '';
+    return `列表刷新于 ${formatLeftListRefreshTime(snapshot?.appliedAt || state.leftListRefreshAt)}${coverage}`;
 }
 
 function renderLeftListHeader(title, options = {}) {
     const snapshot = getRefreshSnapshot('leftList') || {};
     const refreshHtml = options.showRefresh === false ? '' : `
-                <span class="left-list-refresh-time" data-left-list-refresh data-refresh-id="${escapeHTML(snapshot.id || '')}" data-refresh-version="${snapshot.version || 0}" data-refresh-applied-at="${snapshot.appliedAt || 0}">${getLeftListRefreshText()}</span>`;
+                <span class="left-list-refresh-time" data-left-list-refresh data-refresh-id="${escapeHTML(snapshot.id || '')}" data-refresh-version="${snapshot.version || 0}" data-refresh-applied-at="${snapshot.appliedAt || 0}" data-refresh-status="${escapeHTML(snapshot.meta?.status || '')}">${getLeftListRefreshText()}</span>`;
     return `
         <div class="stock-header">
             <div class="title-wrap">
@@ -452,6 +461,7 @@ function updateLeftListRefreshLabels() {
         el.dataset.refreshId = snapshot.id || '';
         el.dataset.refreshVersion = String(snapshot.version || 0);
         el.dataset.refreshAppliedAt = String(snapshot.appliedAt || 0);
+        el.dataset.refreshStatus = snapshot.meta?.status || '';
     });
 }
 

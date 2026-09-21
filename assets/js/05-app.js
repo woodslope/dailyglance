@@ -451,9 +451,16 @@ async function saveWatchlist() {
 }
 
 let watchlistDragCode = '';
+let watchlistDropTargetRow = null;
+let watchlistRenderDeferred = false;
 
 function clearWatchlistDropTargets() {
-    document.querySelectorAll('#stockNavList .nav-list-item').forEach(item => {
+    if (watchlistDropTargetRow) {
+        watchlistDropTargetRow.classList.remove('drag-before', 'drag-after');
+        watchlistDropTargetRow = null;
+        return;
+    }
+    document.querySelectorAll('#stockNavList .nav-list-item.drag-before, #stockNavList .nav-list-item.drag-after').forEach(item => {
         item.classList.remove('drag-before', 'drag-after');
     });
 }
@@ -486,13 +493,21 @@ function startWatchlistDrag(event, code) {
 }
 
 function updateWatchlistDragTarget(event, targetCode) {
-    if (!watchlistDragCode || watchlistDragCode === targetCode) return;
+    if (!watchlistDragCode) return;
+    if (watchlistDragCode === targetCode) {
+        clearWatchlistDropTargets();
+        return;
+    }
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    clearWatchlistDropTargets();
     const row = event.currentTarget;
     const rect = row.getBoundingClientRect();
+    if (watchlistDropTargetRow && watchlistDropTargetRow !== row) {
+        watchlistDropTargetRow.classList.remove('drag-before', 'drag-after');
+    }
+    row.classList.remove('drag-before', 'drag-after');
     row.classList.add(event.clientY > rect.top + rect.height / 2 ? 'drag-after' : 'drag-before');
+    watchlistDropTargetRow = row;
 }
 
 async function applyWatchlistOrder(nextWatchlist) {
@@ -537,6 +552,10 @@ async function dropWatchlistItem(event, targetCode) {
 function finishWatchlistDrag() {
     watchlistDragCode = '';
     clearWatchlistDragVisuals();
+    if (watchlistRenderDeferred) {
+        watchlistRenderDeferred = false;
+        scheduleWatchlistRender();
+    }
 }
 
 async function handleWatchlistDragKeydown(event, code) {
@@ -609,6 +628,11 @@ let watchlistRenderShouldMarkRefresh = false;
 let watchlistRenderRefreshTxn = null;
 let watchlistSnapshotFlushHandle = 0;
 const watchlistSnapshotQueue = new Map();
+let watchlistSnapshotBatchDepth = 0;
+let watchlistSnapshotQueueWaiters = [];
+let watchlistDataRefreshInFlight = null;
+let sidebarRealtimeInFlight = null;
+let sidebarRealtimeBatchSeq = 0;
 
 function getWatchlistNoviceActionText(decision) {
     if (!decision) return '';
@@ -697,6 +721,14 @@ function scheduleWatchlistRender(options = {}) {
         const refreshTxn = watchlistRenderRefreshTxn;
         watchlistRenderShouldMarkRefresh = false;
         watchlistRenderRefreshTxn = null;
+        if (watchlistDragCode) {
+            watchlistRenderDeferred = true;
+            if (shouldMarkRefresh) {
+                watchlistRenderShouldMarkRefresh = true;
+                watchlistRenderRefreshTxn = refreshTxn;
+            }
+            return;
+        }
         if (state.mode === 'stock') {
             renderWatchlist();
             if (shouldMarkRefresh) markLeftListRefreshForActiveTab(refreshTxn, { area: 'stock-list' });
@@ -812,25 +844,49 @@ function computeWatchlistDecisionSnapshot(full, code) {
 
 function flushWatchlistSnapshotQueue(deadline) {
     watchlistSnapshotFlushHandle = 0;
+    const startedAt = Date.now();
+    const budgetMs = 8;
     let processed = 0;
-    const canContinue = () => !deadline || deadline.didTimeout || deadline.timeRemaining() > 6 || processed === 0;
+    const canContinue = () => processed === 0
+        || (Date.now() - startedAt < budgetMs
+            && (!deadline || deadline.didTimeout || deadline.timeRemaining() > 4));
     while (watchlistSnapshotQueue.size && canContinue()) {
         const [code, full] = watchlistSnapshotQueue.entries().next().value;
         watchlistSnapshotQueue.delete(code);
         syncWatchlistSignalSnapshot(code, full);
         processed++;
     }
-    if (watchlistSnapshotQueue.size) scheduleWatchlistSnapshotQueue();
+    if (watchlistSnapshotQueue.size) {
+        scheduleWatchlistSnapshotQueue();
+        return;
+    }
+    const waiters = watchlistSnapshotQueueWaiters;
+    watchlistSnapshotQueueWaiters = [];
+    waiters.forEach(resolve => resolve());
+    if (watchlistSnapshotBatchDepth > 0) {
+        return;
+    }
     scheduleWatchlistRender();
 }
 
 function scheduleWatchlistSnapshotQueue() {
+    if (watchlistSnapshotBatchDepth > 0) return;
     if (watchlistSnapshotFlushHandle) return;
     if (typeof window.requestIdleCallback === 'function') {
         watchlistSnapshotFlushHandle = window.requestIdleCallback(flushWatchlistSnapshotQueue, { timeout: 240 });
         return;
     }
     watchlistSnapshotFlushHandle = window.setTimeout(() => flushWatchlistSnapshotQueue(), 48);
+}
+
+function waitForWatchlistSnapshotQueue() {
+    if (!watchlistSnapshotQueue.size && !watchlistSnapshotFlushHandle) return Promise.resolve();
+    return new Promise(resolve => watchlistSnapshotQueueWaiters.push(resolve));
+}
+
+function finishWatchlistSnapshotBatch() {
+    watchlistSnapshotBatchDepth = Math.max(0, watchlistSnapshotBatchDepth - 1);
+    if (watchlistSnapshotBatchDepth === 0 && watchlistSnapshotQueue.size) scheduleWatchlistSnapshotQueue();
 }
 
 function queueWatchlistSignalSnapshot(code, full) {
@@ -865,11 +921,17 @@ function syncWatchlistSignalSnapshot(code, full) {
     applyWatchlistDecisionSnapshot(code, decision, last.date, full);
 }
 
-function refreshWatchlistSignalSnapshots() {
-    getSupportedWatchlistTargets().forEach(target => {
-        const full = state.rawData[target.secid];
-        syncWatchlistSignalSnapshotFast(target.code, full);
-    });
+async function refreshWatchlistSignalSnapshots() {
+    watchlistSnapshotBatchDepth++;
+    try {
+        getSupportedWatchlistTargets().forEach(target => {
+            const full = state.rawData[target.secid];
+            syncWatchlistSignalSnapshotFast(target.code, full);
+        });
+    } finally {
+        finishWatchlistSnapshotBatch();
+    }
+    await waitForWatchlistSnapshotQueue();
     scheduleWatchlistRender();
 }
 
@@ -1013,49 +1075,86 @@ function debounceWatchlistUpdate() {
 
 async function updateAllWatchlistData(options = {}) {
     if (!state.watchlist || !state.watchlist.length) return [];
+    if (watchlistDataRefreshInFlight) return watchlistDataRefreshInFlight;
+
     const stocks = getSupportedWatchlistTargets().filter(stock => stock.secid !== state.id);
-    const results = await pLimit(stocks, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (stock) => {
-        const secid = stock.secid;
+    const batchStrategy = state.strategy;
+    const batchWatchlistKey = getSupportedWatchlistTargets().map(stock => stock.secid).sort().join(',');
+    const task = (async () => {
+        watchlistSnapshotBatchDepth++;
+        if (typeof beginLiveOverlayCacheBatch === 'function') beginLiveOverlayCacheBatch();
+        let results = [];
         try {
-            const data = await syncData(secid);
-            if (data && data.length >= 30 && isValidPrice(data[data.length - 1].close, secid)) {
-                setRawData(secid, data);
-                await dbSet(secid, data);
-                syncWatchlistSignalSnapshotFast(stock.code, data);
-                return { code: stock.code, success: true };
-            } else {
-                setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '数据不足', strategy: state.strategy, date: data?.[data.length - 1]?.date || '' });
-                return { code: stock.code, success: false, reason: '数据不足' };
-            }
-        } catch (e) {
-            const cached = await dbGet(secid);
-            const cachedData = normalizeConfirmedHistoryData(cached?.data, secid);
-            if (cachedData && cachedData.length >= 30) {
-                setRawData(secid, cachedData);
-                syncWatchlistSignalSnapshotFast(stock.code, cachedData);
-                return { code: stock.code, success: true, source: 'cache' };
-            } else {
-                setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '同步失败', strategy: state.strategy, date: '' });
-                return { code: stock.code, success: false, reason: e.message };
-            }
+            results = await pLimit(stocks, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (stock) => {
+                const secid = stock.secid;
+                try {
+                    const data = await syncData(secid);
+                    if (data && data.length >= 30 && isValidPrice(data[data.length - 1].close, secid)) {
+                        setRawData(secid, data);
+                        syncWatchlistSignalSnapshotFast(stock.code, state.rawData[secid] || data);
+                        return { code: stock.code, success: true };
+                    }
+                    setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '数据不足', strategy: batchStrategy, date: data?.[data.length - 1]?.date || '' });
+                    return { code: stock.code, success: false, reason: '数据不足' };
+                } catch (e) {
+                    const cached = await dbGet(secid);
+                    const cachedData = normalizeConfirmedHistoryData(cached?.data, secid);
+                    if (cachedData && cachedData.length >= 30) {
+                        setRawData(secid, cachedData);
+                        syncWatchlistSignalSnapshotFast(stock.code, state.rawData[secid] || cachedData);
+                        return { code: stock.code, success: true, source: 'cache' };
+                    }
+                    setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '同步失败', strategy: batchStrategy, date: '' });
+                    return { code: stock.code, success: false, reason: e.message };
+                }
+            });
+        } finally {
+            finishWatchlistSnapshotBatch();
+            if (typeof endLiveOverlayCacheBatch === 'function') endLiveOverlayCacheBatch();
         }
-    });
-    const shouldMarkRefresh = results.some(r => r.success);
-    const refreshTxn = shouldMarkRefresh
-        ? beginRefreshTransaction('leftList', { source: 'watchlist-data', successCount: results.filter(r => r.success).length })
-        : null;
-    if (options.renderNow) {
-        renderWatchlist();
-        if (shouldMarkRefresh) markLeftListRefreshForActiveTab(refreshTxn, { area: 'stock-list' });
-    } else {
-        scheduleWatchlistRender({ markRefresh: shouldMarkRefresh, refreshTxn });
+        await waitForWatchlistSnapshotQueue();
+
+        const currentWatchlistKey = getSupportedWatchlistTargets().map(stock => stock.secid).sort().join(',');
+        const isCurrentBatch = state.strategy === batchStrategy && currentWatchlistKey === batchWatchlistKey;
+        if (!isCurrentBatch) return results;
+
+        const successCount = results.filter(result => result?.success).length;
+        const shouldMarkRefresh = successCount > 0;
+        const refreshTxn = shouldMarkRefresh
+            ? beginRefreshTransaction('leftList', {
+                source: 'watchlist-data',
+                expectedCount: stocks.length,
+                successCount,
+                appliedCount: successCount,
+                status: successCount === stocks.length ? 'full' : 'partial'
+            })
+            : null;
+        if (options.renderNow) {
+            renderWatchlist();
+            if (shouldMarkRefresh) {
+                markLeftListRefreshForActiveTab(refreshTxn, {
+                    area: 'stock-list',
+                    expectedCount: stocks.length,
+                    appliedCount: successCount,
+                    status: successCount === stocks.length ? 'full' : 'partial'
+                });
+            }
+        } else {
+            scheduleWatchlistRender({ markRefresh: shouldMarkRefresh, refreshTxn });
+        }
+        return results;
+    })();
+
+    watchlistDataRefreshInFlight = task;
+    try {
+        return await task;
+    } finally {
+        if (watchlistDataRefreshInFlight === task) watchlistDataRefreshInFlight = null;
     }
-    return results;
 }
 
 let _sidebarRefreshFailCount = 0;
-async function refreshSidebarRealtime() {
-    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
+function getSidebarRealtimeTargetIds() {
     let ids = [];
     if (state.tab === 'index' || state.mode === 'index') {
         ids = [...INDEX_IDS];
@@ -1064,45 +1163,141 @@ async function refreshSidebarRealtime() {
         const activeTarget = getActiveSecurityTarget();
         if (state.id && activeTarget && isSupportedWatchlistSecurity(activeTarget)) ids.push(state.id);
     }
-    ids = Array.from(new Set(ids));
+    return Array.from(new Set(ids));
+}
+
+function getSidebarRealtimeArea() {
+    if (state.tab === 'stock' || state.mode === 'stock') return 'stock-list';
+    if (state.tab === 'index' || state.mode === 'index') return 'index-list';
+    return '';
+}
+
+function isCurrentSidebarRealtimeBatch(area, ids) {
+    const currentIds = getSidebarRealtimeTargetIds();
+    return getSidebarRealtimeArea() === area &&
+        currentIds.slice().sort().join(',') === ids.slice().sort().join(',');
+}
+
+function shouldSkipScheduledActiveRefresh(id) {
+    if (!id || !state.rawData?.[id]?.length) return false;
+    const batchAt = Number(state.realtimeBatchAt?.[id]) || 0;
+    if (!batchAt || Date.now() - batchAt >= SYS_CONFIG.THROTTLE_MS) return false;
+    const lastHistoryCheckAt = Number(state.activeHistoryRefreshAt?.[id]) || 0;
+    const historyCheckInterval = SYS_CONFIG.THROTTLE_MS * 6;
+    if (Date.now() - lastHistoryCheckAt >= historyCheckInterval) {
+        if (!state.activeHistoryRefreshAt) state.activeHistoryRefreshAt = {};
+        state.activeHistoryRefreshAt[id] = Date.now();
+        return false;
+    }
+    return true;
+}
+
+function refreshSidebarRealtime() {
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
+    if (sidebarRealtimeInFlight) return sidebarRealtimeInFlight;
+
+    const ids = getSidebarRealtimeTargetIds();
     if (!ids.length) return;
-    const prices = await batchGetRealtimePrices(ids);
-    if (!Object.keys(prices).length) {
-        _sidebarRefreshFailCount++;
-        if (_sidebarRefreshFailCount >= 2) {
-            showToast('\u884c\u60c5\u8fde\u63a5\u5f02\u5e38\uff0c\u4fa7\u8fb9\u680f\u4ef7\u683c\u53ef\u80fd\u5ef6\u8fdf', 'warn', 4000);
+
+    const area = getSidebarRealtimeArea();
+    const batchId = ++sidebarRealtimeBatchSeq;
+    const task = (async () => {
+        const now = Date.now();
+        const requestIds = ids.filter(id => {
+            const limiter = requestManager.limiters.get(id);
+            return !limiter?.isFetching && now - Number(limiter?.lastCall || 0) >= SYS_CONFIG.THROTTLE_MS;
+        });
+        if (!requestIds.length) return { status: 'deferred', batchId, expectedCount: ids.length, receivedCount: 0, appliedCount: 0 };
+        const prices = await batchGetRealtimePrices(requestIds);
+        if (!isCurrentSidebarRealtimeBatch(area, ids)) return { status: 'stale', batchId };
+
+        const receivedIds = ids.filter(id => Object.prototype.hasOwnProperty.call(prices, id));
+        if (!receivedIds.length) {
+            _sidebarRefreshFailCount++;
+            if (_sidebarRefreshFailCount >= 2) {
+                showToast('\u884c\u60c5\u8fde\u63a5\u5f02\u5e38\uff0c\u4fa7\u8fb9\u680f\u4ef7\u683c\u53ef\u80fd\u5ef6\u8fdf', 'warn', 4000);
+            }
+            return { status: 'failed', batchId, expectedCount: ids.length, receivedCount: 0, appliedCount: 0 };
         }
-        return;
-    }
-    _sidebarRefreshFailCount = 0;
-    const batchFetchedAt = Date.now();
-    Object.keys(prices).forEach(id => {
-        const limiter = requestManager.limiters.get(id) || { lastCall: 0, isFetching: false };
-        requestManager.limiters.set(id, { ...limiter, lastCall: batchFetchedAt, isFetching: false });
-    });
-    let changed = false;
-    let activeOverlayChanged = false;
-    for (const [id, rtBar] of Object.entries(prices)) {
-        const series = state.rawData[id];
-        if (!series || !series.length) continue;
-        const lastBar = series[series.length - 1];
-        if (!lastBar || !isValidPrice(rtBar.close, id)) continue;
-        if (rtBar.date < lastBar.date) continue;
-        const applyResult = applyRealtimeQuoteForSeries(id, series, rtBar);
-        if (id === state.id && (applyResult === 'overlay' || applyResult === 'cached-overlay')) activeOverlayChanged = true;
-        changed = true;
-    }
-    if (changed) {
-        const leftTxn = beginRefreshTransaction('leftList', { source: 'realtime-batch', count: Object.keys(prices).length });
-        if (state.tab === 'index' || state.mode === 'index') refreshIndexListQuotes();
-        if (state.tab === 'stock' || state.mode === 'stock') refreshWatchlistQuotes();
-        markLeftListRefreshForActiveTab(leftTxn, { area: state.tab === 'stock' || state.mode === 'stock' ? 'stock-list' : 'index-list' });
+        _sidebarRefreshFailCount = 0;
+
+        const batchFetchedAt = Date.now();
+        receivedIds.forEach(id => {
+            const limiter = requestManager.limiters.get(id) || { lastCall: 0, isFetching: false };
+            requestManager.limiters.set(id, { ...limiter, lastCall: batchFetchedAt, isFetching: false });
+        });
+
+        const appliedIds = [];
+        let activeOverlayChanged = false;
+        if (typeof beginLiveOverlayCacheBatch === 'function') beginLiveOverlayCacheBatch();
+        try {
+            for (const id of ids) {
+                const rtBar = prices[id];
+                const series = state.rawData[id];
+                if (!rtBar || !series || !series.length) continue;
+                const lastBar = series[series.length - 1];
+                if (!lastBar || !isValidPrice(rtBar.close, id)) continue;
+                if (rtBar.date < lastBar.date) continue;
+                const applyResult = applyRealtimeQuoteForSeries(id, series, rtBar);
+                if (!applyResult) continue;
+                appliedIds.push(id);
+                if (id === state.id && (applyResult === 'overlay' || applyResult === 'cached-overlay')) activeOverlayChanged = true;
+            }
+        } finally {
+            if (typeof endLiveOverlayCacheBatch === 'function') endLiveOverlayCacheBatch();
+        }
+
+        if (!appliedIds.length) {
+            return { status: 'failed', batchId, expectedCount: ids.length, receivedCount: receivedIds.length, appliedCount: 0 };
+        }
+
+        const status = appliedIds.length === ids.length ? 'full' : 'partial';
+        const missingIds = ids.filter(id => !appliedIds.includes(id));
+        const leftTxn = beginRefreshTransaction('leftList', {
+            source: 'realtime-batch',
+            batchId,
+            expectedCount: ids.length,
+            receivedCount: receivedIds.length,
+            appliedCount: appliedIds.length,
+            status
+        });
+        if (area === 'index-list') refreshIndexListQuotes();
+        if (area === 'stock-list') refreshWatchlistQuotes();
+        markLeftListRefreshForActiveTab(leftTxn, {
+            area,
+            batchId,
+            expectedCount: ids.length,
+            receivedCount: receivedIds.length,
+            appliedCount: appliedIds.length,
+            missingIds,
+            status
+        });
+        if (activeOverlayChanged) {
+            const activeId = state.id;
+            if (!state.realtimeBatchAt) state.realtimeBatchAt = {};
+            state.realtimeBatchAt[activeId] = batchFetchedAt;
+        }
         if (activeOverlayChanged && !state.isFrozen) {
-            const rightTxn = beginRefreshTransaction('rightPanel', { source: 'realtime-batch', id: state.id });
-            applyActiveDataRefresh(state.id);
-            markRefreshTime(rightTxn, { path: 'active-overlay' });
+            const activeId = state.id;
+            const applyActiveRefresh = () => {
+                if (activeId !== state.id || state.isFrozen) return;
+                if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
+                    window.setTimeout(applyActiveRefresh, 120);
+                    return;
+                }
+                const rightTxn = beginRefreshTransaction('rightPanel', { source: 'realtime-batch', id: activeId });
+                applyActiveDataRefresh(activeId);
+                markRefreshTime(rightTxn, { path: 'active-overlay' });
+            };
+            applyActiveRefresh();
         }
-    }
+        return { status, batchId, expectedCount: ids.length, receivedCount: receivedIds.length, appliedCount: appliedIds.length };
+    })();
+
+    sidebarRealtimeInFlight = task;
+    return task.finally(() => {
+        if (sidebarRealtimeInFlight === task) sidebarRealtimeInFlight = null;
+    });
 }
 
 async function runSidebarFullSync() {
@@ -1113,6 +1308,10 @@ async function runSidebarFullSync() {
     if (document.hidden) return null;
     if (!isMarketOpen()) return null;
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return null;
+    // 先让同一时间片的左侧批量行情完成，再开始历史补数，避免两条链路同时提交同一批标的。
+    if (sidebarRealtimeInFlight) {
+        try { await sidebarRealtimeInFlight; } catch (error) {}
+    }
 
     sidebarFullSyncRuntime.inFlight = true;
     sidebarFullSyncRuntime.startedAt = Date.now();
@@ -1122,12 +1321,19 @@ async function runSidebarFullSync() {
         if (state.tab === 'index' || state.mode === 'index') {
             const ids = INDEX_IDS.filter(id => id !== state.id);
             let failCnt = 0;
-            await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (id) => {
-                try {
-                    const data = await syncData(id);
-                    if (data && data.length >= 30) { setRawData(id, data); await dbSet(id, data); }
-                } catch(e) { failCnt++; }
-            });
+            if (typeof beginLiveOverlayCacheBatch === 'function') beginLiveOverlayCacheBatch();
+            try {
+                await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (id) => {
+                    try {
+                        const data = await syncData(id);
+                        if (data && data.length >= 30) {
+                            setRawData(id, data);
+                        }
+                    } catch(e) { failCnt++; }
+                });
+            } finally {
+                if (typeof endLiveOverlayCacheBatch === 'function') endLiveOverlayCacheBatch();
+            }
             if (failCnt >= 2) showToast('\u90e8\u5206\u6307\u6570\u5386\u53f2\u6570\u636e\u540c\u6b65\u5931\u8d25', 'warn', 4000);
             const leftTxn = failCnt < ids.length ? beginRefreshTransaction('leftList', { source: 'sidebar-full-sync', area: 'index-list' }) : null;
             renderIndexList();
@@ -1178,6 +1384,7 @@ async function _selectIndexImpl(id) {
     const perfTrace = PERF.start('selectIndex', { id });
     if (!getIndexConfig(id)) return;
     const selectionSeq = ++globalSelectionSeq;
+    const interactionToken = beginChartInteractionBlock();
     const config = getIndexConfig(id);
 
     applyActiveSelectionState({ tab: 'index', mode: 'index', id, stockId: null });
@@ -1204,7 +1411,10 @@ async function _selectIndexImpl(id) {
         renderIndexList();
         PERF.mark(perfTrace, 'renderIndexList');
     } finally {
-        if (selectionSeq === globalSelectionSeq) hideLoading();
+        if (selectionSeq === globalSelectionSeq) {
+            hideLoading();
+            releaseChartInteractionAfterPaint(interactionToken);
+        }
         PERF.end(perfTrace, { selected: state.id, selectionSeq });
     }
 }
@@ -1229,6 +1439,7 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
     const targetSecid = target.secid;
     await addToWatchlist(safeCode, safeName, target);
     if (selectionSeq !== globalSelectionSeq) return;
+    const interactionToken = beginChartInteractionBlock();
 
     applyActiveSelectionState({ tab: 'stock', mode: 'stock', id: targetSecid, stockId: safeCode });
     setWatchlistEmptyState(false);
@@ -1267,6 +1478,7 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
             hideLoading();
             renderWatchlist();
             debounceWatchlistUpdate();
+            releaseChartInteractionAfterPaint(interactionToken);
         }
         PERF.end(perfTrace, { selected: state.stockId, selectionSeq });
     }
@@ -1279,10 +1491,9 @@ function updateLeftMarketContext(date) {
     const market = getMarketContext(date);
     const panelClass = market.cls === 'bull' ? 'panel-bull' : (market.cls === 'bear' ? 'panel-bear' : 'panel-info');
     const textClass = market.cls === 'bull' ? 'text-bull' : (market.cls === 'bear' ? 'text-bear' : 'text-main');
-    const gateText = market.increaseCaps
-        ? (market.increaseCaps.ordinary <= 0 ? '关闭' : `${market.increaseCaps.ordinary}% / ${market.increaseCaps.independent}%`)
-        : '开放';
-
+    // 这张卡只做环境浏览：个股仓位早已不看核心宽基，指数上限也只在真正被截断的那天才有意义。
+    // 因此不再用大字号常驻展示上限数字，避免被读成一条针对当前标的的仓位建议；
+    // 实际生效的上限仍由右侧结论面板在当天说明。
     const detailHtml = market.trends.map(t => `
         <div class="market-core-state">
             <span class="n">${t.name}</span>
@@ -1292,15 +1503,11 @@ function updateLeftMarketContext(date) {
 
     container.innerHTML = `
         <div class="stock-header market-gate-header">
-            <div class="title-wrap"><span>核心建仓门禁</span></div>
+            <div class="title-wrap"><span>核心宽基环境</span></div>
         </div>
         <div class="action-panel market-gate-panel ${panelClass}">
             <div class="action-line">
                 <div class="action-name ${textClass}">${escapeHTML(market.label)}</div>
-                <div class="action-cap">
-                    <span>门禁状态</span>
-                    <strong class="text-main mono">${escapeHTML(gateText)}</strong>
-                </div>
             </div>
             <div class="action-sub text-dim">
                 ${escapeHTML(market.reason)}
@@ -1333,12 +1540,15 @@ function scrollActiveMobileNavItemIntoView(container) {
 }
 
 function renderActiveLeftListAfterDataApply(txn = null, patch = {}) {
-    const refreshTxn = txn && typeof txn === 'object' ? txn : beginRefreshTransaction('leftList', { source: 'active-data' });
+    const shouldCommitRefresh = patch.commitRefresh === true || !getRefreshSnapshot('leftList');
+    const refreshTxn = shouldCommitRefresh
+        ? (txn && typeof txn === 'object' ? txn : beginRefreshTransaction('leftList', { source: 'active-data' }))
+        : null;
     if (state.mode === 'index') {
         renderIndexList();
-        markLeftListRefreshForActiveTab(refreshTxn, { area: 'index-list', ...patch });
+        if (shouldCommitRefresh) markLeftListRefreshForActiveTab(refreshTxn, { area: 'index-list', ...patch });
     } else if (state.mode === 'stock' && typeof scheduleWatchlistRender === 'function') {
-        scheduleWatchlistRender({ markRefresh: true, refreshTxn });
+        scheduleWatchlistRender({ markRefresh: shouldCommitRefresh, refreshTxn });
     }
 }
 
@@ -1349,7 +1559,7 @@ function renderIndexList() {
     const html = INDEX_IDS.map(id => {
         const config = INDEX_CONFIG[id];
         const active = state.id === id && state.mode === 'index' ? 'active' : '';
-        const roleText = CORE_MARKET_INDEX_IDS.includes(id) ? '门禁核心' : '仅观察';
+        const roleText = CORE_MARKET_INDEX_IDS.includes(id) ? '核心宽基' : '仅观察';
         const roleClass = CORE_MARKET_INDEX_IDS.includes(id) ? 'core' : 'observe';
         const indexCode = (config.tencent || id).toUpperCase();
         const quoteDisplay = getLeftQuoteDisplay(id);

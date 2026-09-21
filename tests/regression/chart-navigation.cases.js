@@ -64,6 +64,45 @@ runTest('same-day cached refresh keeps the strategy panel visible without redraw
     assert.strictEqual(vm.runInContext('indicatorUpdateCount', context), 1);
 });
 
+runTest('cached refresh apply waits for chart interaction to become idle', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(renderSource, context);
+    vm.runInContext(`
+        var timeoutQueue = [];
+        window.setTimeout = function(fn) { timeoutQueue.push(fn); return timeoutQueue.length; };
+        clearTimeout = function() {};
+        var frameQueue = [];
+        requestAnimationFrame = function(fn) { frameQueue.push(fn); return frameQueue.length; };
+        var interactionActive = true;
+        isChartInteractionActive = function() { return interactionActive; };
+        var applyCount = 0;
+        applyActiveDataRefresh = function() { applyCount++; return 'same-day-light'; };
+        beginRefreshTransaction = function() { return {}; };
+        markRefreshTime = function() {};
+        state.id = 'sh';
+        state.mode = 'index';
+        scheduleCachedFetchRefreshApply('sh');
+        timeoutQueue.shift()();
+        frameQueue.shift()();
+        var deferredState = { applyCount, pendingTimers: timeoutQueue.length };
+        interactionActive = false;
+        timeoutQueue.shift()();
+        timeoutQueue.shift()();
+        frameQueue.shift()();
+        var appliedState = { applyCount, pendingTimers: timeoutQueue.length };
+    `, context);
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(deferredState)', context)), {
+        applyCount: 0,
+        pendingTimers: 1
+    });
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(appliedState)', context)), {
+        applyCount: 1,
+        pendingTimers: 0
+    });
+});
+
 runTest('realtime quote uses Tencent API quote time before chart overlay', async () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -519,6 +558,10 @@ runTest('status smoke script validates data status attributes and chart recovery
     const scriptSource = read('scripts/status-smoke.js');
     assert.ok(scriptSource.includes("const DEFAULT_PORT = 8766"), 'status smoke should default to the project smoke port');
     assert.ok(scriptSource.includes("viewport: { width: 1440, height: 900 }"), 'status smoke should force a desktop viewport');
+    assert.ok(scriptSource.includes("const summaryOutput = args.has('--summary');"), 'status smoke should expose compact output mode');
+    assert.ok(scriptSource.includes('summaryOutput ? 0 : 2'), 'status smoke summary should stay on one line');
+    assert.ok(scriptSource.includes('await page.waitForFunction(() =>'), 'status smoke should wait for readiness instead of a fixed sleep');
+    assert.ok(!scriptSource.includes('waitForTimeout(8000)'), 'status smoke should not use the old fixed eight-second wait');
     assert.ok(scriptSource.includes("const EXPECTED_VERSION = VERSION.resourceVersion;"), 'status smoke should read the expected resource version from version.json');
     assert.ok(scriptSource.includes("data-dg-display-mode"), 'status smoke must read display mode attributes');
     assert.ok(scriptSource.includes("data-dg-confirmed-status"), 'status smoke must read confirmed status attributes');
@@ -544,6 +587,8 @@ runTest('status smoke script validates data status attributes and chart recovery
 runTest('live dataflow smoke script validates realtime overlay, left tab, and drag performance', () => {
     const scriptSource = read('scripts/live-dataflow-smoke.js');
     assert.ok(scriptSource.includes('https://woodslope.github.io/dailyglance'), 'live dataflow smoke should default to the deployed GitHub Pages URL');
+    assert.ok(scriptSource.includes("const summaryOutput = args.has('--summary');"), 'live dataflow smoke should expose compact output mode');
+    assert.ok(scriptSource.includes('summaryOutput ? 0 : 2'), 'live dataflow smoke summary should stay on one line');
     assert.ok(scriptSource.includes("const EXPECTED_RESOURCE_VERSION = VERSION.resourceVersion;"), 'live dataflow smoke should read the current resource version from version.json');
     assert.ok(scriptSource.includes("const EXPECTED_APP_BUILD = VERSION.appBuild;"), 'live dataflow smoke should read the current app build from version.json');
     assert.ok(scriptSource.includes("APP_BUILD: window.__DG_BUILD__"), 'live dataflow smoke should read the deployed app build');
@@ -567,6 +612,20 @@ runTest('live dataflow smoke script validates realtime overlay, left tab, and dr
     assert.ok(!scriptSource.includes("conclusionBadge"), 'live dataflow smoke should not read a conclusion status badge');
     assert.ok(!scriptSource.includes("badgeText: text('#cardAnalysis .conclusion-status-pill')"), 'live dataflow smoke should not read conclusion badge text');
     assert.ok(!/\bfetch\s*\(/.test(scriptSource), 'live dataflow smoke should observe the app instead of calling market APIs directly');
+});
+
+runTest('efficiency checks keep regression and Pages publishing on bounded paths', () => {
+    const checkSource = read('scripts/check.js');
+    const releaseSource = read('scripts/release-pages.js');
+    assert.ok(checkSource.includes("['tests/regression.js', '--summary']"), 'check should use one summarized regression process');
+    assert.ok(checkSource.includes('TEST_GROUP: groups.join(\',\')'), 'check should pass all selected groups to one regression process');
+    assert.ok(checkSource.includes('new vm.Script'), 'syntax checks should avoid one child process per file');
+    assert.ok(releaseSource.includes("const ALLOWED_PATHS = ['index.html', 'strategy-inspector.html', 'assets', '.gitignore'];"), 'Pages release should enforce the deployment allowlist');
+    assert.ok(releaseSource.includes("const push = args.has('--push');"), 'Pages release should require an explicit push flag');
+    assert.ok(releaseSource.includes('const unknownArgs = [...args].filter'), 'Pages release should reject unknown arguments before network access');
+    assert.ok(releaseSource.includes('没有可发布的 Pages 资源改动'), 'Pages release should skip documentation-only workspaces');
+    assert.ok(releaseSource.includes("runGit(['fetch', REMOTE, TARGET_BRANCH]"), 'Pages release should refresh the remote branch before preparing a worktree');
+    assert.ok(releaseSource.includes("runGit(['worktree', 'add', '-b', branch"), 'Pages release should isolate deployment preparation in a worktree');
 });
 
 runTest('hovered historical bar uses the historical visual state without freezing', () => {
@@ -1283,6 +1342,95 @@ runTest('chart drag binding does not add a click lock handler', () => {
         'mouseup'
     ]);
     assert.strictEqual(vm.runInContext('targetHandlers.click', context), undefined);
+});
+
+runTest('pointer drag ignores the synthetic mouse event from the same gesture', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(renderSource, context);
+    vm.runInContext(`
+        state.id = 'sh';
+        state.mode = 'index';
+        state.period = 'daily';
+        state.range = 90;
+        state.rawData.sh = Array.from({ length: 200 }, function(_, i) { return { date: 'D' + i }; });
+        resetViewportToLatest(state.rawData.sh);
+        state.charts.main = {
+            data: { labels: Array.from({ length: 90 }, function(_, i) { return 'V' + i; }) },
+            scales: { x: { width: 900, left: 0, right: 900 } }
+        };
+        drawViewport = function() {};
+        safeUpdateSidebar = function() {};
+        updateFreezeBadge = function() {};
+        updateCrosshairOverlay = function() {};
+        clearStaleTooltips = function() {};
+        var canvas = { setPointerCapture() {}, closest() { return { classList: { add() {}, remove() {} } }; } };
+        startChartDragPan({ type: 'pointerdown', button: 0, clientX: 500, clientY: 100, currentTarget: canvas, pointerId: 7 });
+        startChartDragPan({ type: 'mousedown', button: 0, clientX: 500, clientY: 100, currentTarget: canvas });
+        moveChartDragPan({ type: 'mousemove', clientX: 420, clientY: 100 });
+        var stateAfterMouse = { inputKind: chartDragPan.inputKind, pointerId: chartDragPan.pointerId, currentX: chartDragPan.currentX };
+        moveChartDragPan({ type: 'pointermove', pointerId: 7, clientX: 420, clientY: 100, preventDefault() {} });
+        var stateAfterPointer = { inputKind: chartDragPan.inputKind, pointerId: chartDragPan.pointerId, currentX: chartDragPan.currentX };
+        finishChartDragPan({ type: 'pointerup', pointerId: 7, currentTarget: canvas });
+    `, context);
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(stateAfterMouse)', context)), {
+        inputKind: 'pointer',
+        pointerId: 7,
+        currentX: 500
+    });
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(stateAfterPointer)', context)), {
+        inputKind: 'pointer',
+        pointerId: 7,
+        currentX: 420
+    });
+});
+
+runTest('chart interaction stays blocked until selection rendering paints', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(renderSource, context);
+    vm.runInContext(`
+        state.id = 'sh';
+        state.mode = 'index';
+        state.period = 'daily';
+        state.range = 90;
+        state.rawData.sh = Array.from({ length: 200 }, function(_, i) { return { date: 'D' + i }; });
+        resetViewportToLatest(state.rawData.sh);
+        state.charts.main = {
+            data: { labels: Array.from({ length: 90 }, function(_, i) { return 'V' + i; }) },
+            scales: { x: { width: 900, left: 0, right: 900 } }
+        };
+        var frameQueue = [];
+        requestAnimationFrame = function(fn) { frameQueue.push(fn); return frameQueue.length; };
+        var canvas = { setPointerCapture() {}, closest() { return { classList: { add() {}, remove() {} } }; } };
+        var wheelPrevented = false;
+        var token = beginChartInteractionBlock();
+        startChartDragPan({ type: 'mousedown', button: 0, clientX: 500, clientY: 100, currentTarget: canvas });
+        handleChartWheelPan({ deltaX: -90, deltaY: 0, preventDefault() { wheelPrevented = true; } });
+        var blockedState = { blocked: isChartInteractionBlocked(), dragActive: !!chartDragPan, wheelPrevented };
+        releaseChartInteractionAfterPaint(token);
+        frameQueue.shift()();
+        startChartDragPan({ type: 'mousedown', button: 0, clientX: 500, clientY: 100, currentTarget: canvas });
+        var staleGestureState = { blocked: isChartInteractionBlocked(), dragActive: !!chartDragPan };
+        chartInteractionIgnoreInputUntil = 0;
+        startChartDragPan({ type: 'mousedown', button: 0, clientX: 500, clientY: 100, currentTarget: canvas });
+        var releasedState = { blocked: isChartInteractionBlocked(), dragActive: !!chartDragPan };
+    `, context);
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(blockedState)', context)), {
+        blocked: true,
+        dragActive: false,
+        wheelPrevented: false
+    });
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(staleGestureState)', context)), {
+        blocked: false,
+        dragActive: false
+    });
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(releasedState)', context)), {
+        blocked: false,
+        dragActive: true
+    });
 });
 
 runTest('trackpad horizontal wheel pans the main chart viewport', () => {

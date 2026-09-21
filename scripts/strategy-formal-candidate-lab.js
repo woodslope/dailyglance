@@ -14,6 +14,7 @@ const {
     buildScenarioSummaries,
     buildTemporalSummaries,
     countAffectedDecisionDays,
+    assertCandidateGoalMatchesClass,
     evaluateCandidateScreen,
     evaluateCandidateGates
 } = require('./strategy-evaluator');
@@ -53,6 +54,7 @@ const WEAK_MARKET_CONFIRMED_80_VARIANT = {
     question: '核心宽基连续偏弱期间，个股独立走强连续确认后，是否应允许生产门禁卡在50%的仓位恢复至80%？',
     type: 'decision-semantic-correction',
     candidateClass: 'semantic_correctness',
+    primaryGoal: 'semantic_correction',
     collectDecisionDetails: true,
     weakMarketConfirmed80: {
         stocksOnly: true,
@@ -110,6 +112,7 @@ const CANDIDATES = {
         question: '逐个移除波段抄底型 B9/B16/B17 修复信号，能否识别其对 30% 试探仓、首次 B 和下跌中继误判的独立贡献？',
         type: 'buy-signal-ablation',
         candidateClass: 'risk_control',
+        primaryGoal: 'drawdown_reduction',
         control: {
             id: 'retain_wave_production_control',
             label: '保留当前波段生产配置',
@@ -143,6 +146,7 @@ const CANDIDATES = {
             question: '波段抄底型的 0%→30% 试探建仓，是否应至少由两个独立 scoreGroups 的有效买入信号共同支持？',
             type: 'trial-entry-score-group-gate',
             candidateClass: 'risk_control',
+            primaryGoal: 'drawdown_reduction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -169,6 +173,7 @@ const CANDIDATES = {
             question: '波段持仓已有明显浮盈时，放量冲高回落是否应分档止盈，并阻止旧积分和市场门禁放松在次日自动加仓？',
             type: 'wave-rejection-position-protection',
             candidateClass: 'risk_control',
+            primaryGoal: 'drawdown_reduction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -204,6 +209,7 @@ const CANDIDATES = {
             question: '保留V1原阈值不变，删除全局加仓确认，只在真实冲高回落事件内做分档止盈、短期再入保护和分步恢复，能否避免V1的全局误伤？',
             type: 'wave-rejection-event-local-guard',
             candidateClass: 'risk_control',
+            primaryGoal: 'drawdown_reduction',
             failedEvidence: 'V1仅触发23个冲高回落事件，但全局无新信号加仓门禁阻止737日、再入锁阻止309日，导致收益保护失败。',
             removedMechanisms: ['global_add_requires_recent_signal', 'strict_full_score_reentry_unlock'],
             preservedNumericParameters: {
@@ -251,6 +257,7 @@ const CANDIDATES = {
             question: '波段首次建仓后两日内，若价格冲击下降均线或近期结构压力并出现爆量长上影、盘中盈利大幅回吐，是否应提前认定新仓失败？',
             type: 'wave-fresh-entry-pressure-failure',
             candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -288,6 +295,7 @@ const CANDIDATES = {
             question: '波段已有持仓进入完整多头结构后，单独L10顶背离是否应从强制清仓改为预警减仓，让趋势接管后续持仓？',
             type: 'wave-l10-trend-handoff-warning',
             candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -314,6 +322,7 @@ const CANDIDATES = {
             question: '波段30%持仓在抬升中的MA20附近，因单独L3或有限幅度的买点价格硬失效准备归零时，是否应保留30%单日观察？',
             type: 'wave-ma20-trend-defense',
             candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -348,6 +357,7 @@ const CANDIDATES = {
             question: '保留单独L10清仓后，完整多头首次收复风险日高点时，是否应局部解除冷静期并重新建立最多30%试探仓？',
             type: 'wave-l10-high-reclaim-reentry',
             candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -374,6 +384,7 @@ const CANDIDATES = {
             question: '波段30%试探仓因买入信号价格硬失效清仓后，若很快出现新的修复火花并完成右侧价格确认，是否应允许一次30%重新建仓？',
             type: 'wave-failed-trial-reentry',
             candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -410,6 +421,7 @@ const CANDIDATES = {
             question: '删除“过去10日任一修复信号即可追认”的宽泛条件后，只在修复信号与B3/B15同日共振时建立30%，能否抓住修复转趋势主升并减少错误右侧开仓？',
             type: 'wave-same-day-repair-confirmation-entry',
             candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
             failedEvidence: 'V1使用过去10日任一修复信号配合B3/B15，新增448个B，5日成本后平均收益为负、失败率56.70%，整体收益下降且回撤增加。',
             removedMechanisms: ['stale_repair_signal_within_10_days', 'right_confirmation_without_same_day_repair'],
             preservedNumericParameters: {
@@ -445,6 +457,7 @@ const CANDIDATES = {
             question: '波段个股已有20%或30%仓位并进入完整多头结构后，是否应在风险链和市场门禁均允许时恢复到50%，改善主升阶段长期低仓？',
             type: 'wave-trend-position-recovery',
             candidateClass: 'performance',
+            primaryGoal: 'return_improvement',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -476,6 +489,7 @@ const CANDIDATES = {
             question: '已有波段仓位在W1风险背景下形成20日新高并保持完整多头结构时，是否应允许一次50%趋势恢复，解决真正右侧主升而不放宽普通均线反弹？',
             type: 'wave-independent-trend-recovery',
             candidateClass: 'performance',
+            primaryGoal: 'return_improvement',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -506,6 +520,7 @@ const CANDIDATES = {
             question: '波段交易在10日内以不高于入场价退出后，是否应短期阻止旧证据重复建仓，直到出现新独立信号或B8+B17强确认？',
             type: 'wave-failed-short-trade-reentry-lock',
             candidateClass: 'efficiency',
+            primaryGoal: 'turnover_reduction',
             control: {
                 id: 'retain_wave_production_control',
                 label: '保留当前波段生产配置',
@@ -527,6 +542,41 @@ const CANDIDATES = {
                 riskBudget: '快筛要求换手不增加且收益回退不超过0.25个百分点、回撤恶化不超过0.25个百分点；正式准入要求换手至少减少10%。',
                 restartCondition: '若短交易或换手没有下降，或收益/回撤越过efficiency保护线则冻结；不在同快照延长锁定期或增加标的过滤。'
             }]
+        }, {
+            id: 'wave_support_reclaim_signal_v1',
+            question: '波段个股回踩已确认支撑（箱体下沿、日线已确认摆动低点、周线已确认低点、周线双底第二底）并当日收复企稳时，是否应新增一个3分计分买点B22，修正当前只有回踩均线才计分导致的漏买？',
+            type: 'wave-support-reclaim-signal',
+            candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
+            control: {
+                id: 'retain_wave_production_control',
+                label: '保留当前波段生产配置',
+                collectDecisionDetails: true
+            },
+            ablations: [{
+                id: 'wave_support_reclaim_signal_v1',
+                label: '新增B22回踩已确认支撑收复（3分，并入B5/B6/B11/B16组）',
+                collectDecisionDetails: true,
+                waveSupportReclaimSignal: {
+                    stocksOnly: true,
+                    signal: 'B22',
+                    score: 3,
+                    scoreGroup: ['B5', 'B6', 'B11', 'B16'],
+                    touchToleranceAtr: 0.5,
+                    breakToleranceAtr: 1,
+                    movingAverageClearanceAtr: 0.5,
+                    movingAveragePeriod: 20,
+                    pivotLookbackDays: 120,
+                    pivotDays: 2,
+                    weeklyLookbackWeeks: 52,
+                    weeklyPivotDays: 1
+                },
+                objective: '只修正波段抄底型的漏买时机：生产的回踩类计分买点全部锚定MA20（B6/B11）或弱定义的周线最低价（B16），一次教科书式的回踩已确认支撑并当日收复没有任何计分买点，windowScore为0。B22把治理层已在使用的四来源支撑模型提升到信号层，让支撑不只能授权别人建仓，也能自己提出建仓依据；不改治理清单、阈值、仓位算法或离场链。',
+                category: 'signal_timing',
+                allowedBsImpact: '允许波段抄底型个股在回踩已确认支撑收复当日新增计分，从而新增或提前0%→30%的首次B并可能提升已有持仓档位；B22必须出现在当日原始信号中以便右侧面板归因。B22与B5/B6/B11/B16同组去重，单独3分低于4分建仓门槛，不能独自放行建仓。指数与其他三套策略必须零漂移。',
+                riskBudget: '按 signal_timing 车道：平均收益回退1个百分点、平均最大回撤恶化0.5个百分点、换手增幅10%仅作报告参考线，实际值必须透明列出并由用户取舍；硬边界为指数零漂移、无B22归因不得新增B、不绕过强离场与风险门禁、不泄漏到其他三套策略。',
+                restartCondition: '若出现无B22归因的新增B、指数漂移或作用域越界则冻结；不在同快照调整ATR倍数、回看天数或支撑来源数量，也不在本轮附带修正B16的弱支撑定义或新增3分共振试探路径。'
+            }]
         }]
     },
     '突破追涨型': {
@@ -534,6 +584,7 @@ const CANDIDATES = {
         question: '完整样本下突破追涨保持最低回撤与较高胜率，本轮保持基线，不为少量压力样本收紧参与条件。',
         type: 'baseline-retained',
         candidateClass: 'control',
+        primaryGoal: 'baseline_hold',
         alternatives: [{ ...WEAK_MARKET_CONFIRMED_80_CANDIDATE }]
     },
     '综合全能型': {
@@ -541,6 +592,7 @@ const CANDIDATES = {
         question: '逐组并逐个移除综合全能型当前已纳入的买入信号，能否识别重复贡献、过度交易或缺少独立价值的信号？',
         type: 'buy-signal-ablation',
         candidateClass: 'efficiency',
+        primaryGoal: 'turnover_reduction',
         ablations: [
             { id: 'drop_trend_group', label: '移除趋势确认组', removeBuySignals: ['B1', 'B10', 'B15'] },
             { id: 'drop_macd_group', label: '移除 MACD 动量组', removeBuySignals: ['B2', 'B12'] },
@@ -747,6 +799,7 @@ function runCandidate(context, symbol, strategy, prepared, candidate, controlDec
         waveTrendPositionRecovery: candidate.waveTrendPositionRecovery || null,
         waveIndependentTrendRecovery: candidate.waveIndependentTrendRecovery || null,
         waveFailedShortTradeReentryLock: candidate.waveFailedShortTradeReentryLock || null,
+        waveSupportReclaimSignal: candidate.waveSupportReclaimSignal || null,
         controlDecisionRows
     };
     return JSON.parse(vm.runInContext(`
@@ -761,6 +814,18 @@ function runCandidate(context, symbol, strategy, prepared, candidate, controlDec
                     .filter(group => group.length > 0);
             }
             STRATEGIES[__symbol.strategy] = nextStrategy;
+            const supportReclaimRule = __symbol.waveSupportReclaimSignal;
+            if (supportReclaimRule) {
+                const signal = supportReclaimRule.signal;
+                const group = supportReclaimRule.scoreGroup || [];
+                nextStrategy.buySignals = [...(baseStrategy.buySignals || []), signal];
+                nextStrategy.scoreGroups = (baseStrategy.scoreGroups || [])
+                    .map(item => (group.length && group.every(member => item.includes(member)) ? [...item, signal] : item));
+                nextStrategy.signalWeights = {
+                    ...(baseStrategy.signalWeights || {}),
+                    [signal]: Number(supportReclaimRule.score) || 3
+                };
+            }
             if (!setActiveStrategy(__symbol.strategy)) throw new Error('unknown formal strategy: ' + __symbol.strategy);
             state.mode = __symbol.mode;
             state.id = __symbol.id;
@@ -850,6 +915,15 @@ function runCandidate(context, symbol, strategy, prepared, candidate, controlDec
                 waveIndependentTrendRecoveryMarketBlocked: 0,
                 waveIndependentTrendRecoveryBsDrift: 0,
                 waveIndependentTrendRecoveryIndexDrift: 0
+                ,waveSupportReclaimDetected: 0,
+                waveSupportReclaimBoxSource: 0,
+                waveSupportReclaimPivotSource: 0,
+                waveSupportReclaimWeeklySource: 0,
+                waveSupportReclaimWeeklyBottomSource: 0,
+                waveSupportReclaimMultiSource: 0,
+                waveSupportReclaimOverlapMa20Signal: 0,
+                waveSupportReclaimIndexDrift: 0,
+                waveSupportReclaimInvalidB: 0
             };
             const full = state.rawData[__symbol.id];
             const baseGetSignalMeta = getSignalMeta;
@@ -2268,6 +2342,95 @@ function runCandidate(context, symbol, strategy, prepared, candidate, controlDec
                     full[index]._decision = decision;
                     candidatePrevPos = decision.position;
                 }
+            } else if (supportReclaimRule) {
+                derivedIndicatorCache.clear();
+                const policy = STRATEGY.waveRegimePolicy || {};
+                const probeRepair = policy.multiTimeframeBottomProbe?.weeklyRepair || {};
+                const signal = supportReclaimRule.signal;
+                const maPeriod = Math.max(1, Number(supportReclaimRule.movingAveragePeriod) || 20);
+                const inScope = supportReclaimRule.stocksOnly !== false ? __symbol.mode === 'stock' : true;
+                const detectSupportReclaim = index => {
+                    const item = full[index] || {};
+                    const close = Number(item.close), open = Number(item.open);
+                    const low = Number(item.low), high = Number(item.high);
+                    if (![close, open, low, high].every(Number.isFinite)) return null;
+                    if (!(close > open)) return null;
+                    const range = high - low;
+                    const body = Math.abs(close - open);
+                    const lowerShadow = Math.min(close, open) - low;
+                    if (!(range > 0 && (lowerShadow >= body * 0.5 || close >= low * 1.01))) return null;
+                    const atr14 = Number(getWaveAtr14At(index, full));
+                    if (!(atr14 > 0)) return null;
+                    const ma20 = Number(state.indicators?.ma?.[maPeriod]?.[index]);
+                    if (!Number.isFinite(ma20)) return null;
+                    const box = getWaveBoxContext(index, full, policy);
+                    const pivot = findConfirmedPivotLow(full, index,
+                        Math.max(10, Number(supportReclaimRule.pivotLookbackDays) || 120),
+                        Math.max(1, Number(supportReclaimRule.pivotDays) || 2));
+                    const weeks = getCalendarWeeksUntil(full, index);
+                    const weeklyPivot = weeks.length
+                        ? findConfirmedPivotLow(weeks, weeks.length - 1,
+                            Math.max(4, Number(supportReclaimRule.weeklyLookbackWeeks) || 52),
+                            Math.max(1, Number(supportReclaimRule.weeklyPivotDays) || 1))
+                        : null;
+                    const weeklyBottom = getWeeklyDoubleBottomContext(full, index, weeks, probeRepair);
+                    const touch = atr14 * Math.max(0, Number(supportReclaimRule.touchToleranceAtr) || 0.5);
+                    const breakRoom = atr14 * Math.max(0, Number(supportReclaimRule.breakToleranceAtr) || 1);
+                    const clearance = atr14 * Math.max(0, Number(supportReclaimRule.movingAverageClearanceAtr) || 0.5);
+                    const matched = [
+                        { key: 'box', value: Number(box?.support) },
+                        { key: 'pivot', value: Number(pivot?.value) },
+                        { key: 'weekly', value: Number(weeklyPivot?.value) },
+                        { key: 'weeklyBottom', value: Number(weeklyBottom?.details?.secondBottomValue) }
+                    ].filter(source => Number.isFinite(source.value) && source.value > 0
+                        && source.value <= ma20 - clearance
+                        && low <= source.value + touch
+                        && low >= source.value - breakRoom
+                        && close >= source.value);
+                    if (!matched.length) return null;
+                    return { sources: matched.map(source => source.key), level: Math.max(...matched.map(source => source.value)) };
+                };
+                const windowLookback = Math.max(1, Number(STRATEGY.windowDays) || 10);
+                let pathDivergedEver = false;
+                let prevPos = 0;
+                for (let index = 0; index < full.length; index++) {
+                    full[index]._strategy = state.strategy;
+                    const detected = inScope && index >= 60 ? detectSupportReclaim(index) : null;
+                    if (detected) {
+                        full[index]._signals = [...(full[index]._signals || []), signal];
+                        full[index]._supportReclaim = detected;
+                        diagnostics.waveSupportReclaimDetected++;
+                        if (detected.sources.includes('box')) diagnostics.waveSupportReclaimBoxSource++;
+                        if (detected.sources.includes('pivot')) diagnostics.waveSupportReclaimPivotSource++;
+                        if (detected.sources.includes('weekly')) diagnostics.waveSupportReclaimWeeklySource++;
+                        if (detected.sources.includes('weeklyBottom')) diagnostics.waveSupportReclaimWeeklyBottomSource++;
+                        if (detected.sources.length >= 2) diagnostics.waveSupportReclaimMultiSource++;
+                        if ((full[index]._signals || []).some(item => item === 'B6' || item === 'B11')) {
+                            diagnostics.waveSupportReclaimOverlapMa20Signal++;
+                        }
+                        if (__symbol.mode !== 'stock') diagnostics.waveSupportReclaimIndexDrift++;
+                    }
+                    const computed = computeDecisionWithMeta(index, prevPos);
+                    full[index]._decision = computed.decision;
+                    full[index]._candidateMeta = computed.meta;
+                    const control = __symbol.controlDecisionRows?.[index];
+                    if (computed.decision?.bsMark === 'B' && control && control.bsMark !== 'B') {
+                        let attributed = false;
+                        let nearestSignalGap = null;
+                        for (let day = index; day >= 0; day--) {
+                            if ((full[day]?._signals || []).includes(signal)) { nearestSignalGap = index - day; break; }
+                        }
+                        if (Number.isFinite(nearestSignalGap) && nearestSignalGap < windowLookback) attributed = true;
+                        // 仓位路径一旦因B22分叉，后续冷静期与首次B落在不同交易日都是同一机制的下游结果，不算凭空新增。
+                        const pathDiverged = Number(control.prevAdv) !== Number(computed.decision.prevAdv) || pathDivergedEver;
+                        if (!attributed && !pathDiverged) {
+                            diagnostics.waveSupportReclaimInvalidB++;
+                            full[index]._supportReclaimUnattributedB = { nearestSignalGap, windowLookback };
+                        }
+                    }
+                    if (control && Number(control.position) !== Number(computed.decision.position)) pathDivergedEver = true;
+                    prevPos = computed.decision.position;
+                }
             } else {
                 derivedIndicatorCache.clear();
                 let prevPos = 0;
@@ -2316,6 +2479,8 @@ function runCandidate(context, symbol, strategy, prepared, candidate, controlDec
                     waveTrendPositionRecovery: row._decision?.waveTrendPositionRecovery || null,
                     waveIndependentTrendRecovery: row._decision?.waveIndependentTrendRecovery || null,
                     waveFailedShortTradeReentryLock: row._decision?.waveFailedShortTradeReentryLock || null,
+                    waveSupportReclaimSignal: row._supportReclaim || null,
+                    waveSupportReclaimUnattributedB: row._supportReclaimUnattributedB || false,
                     prevAdv: row._decision?.prevAdv || 0,
                     trialEntryGate: row._decision?.trialEntryGate || null,
                     simpleAction: row._decision?.simpleAction || '',
@@ -2474,7 +2639,7 @@ function summarizeNested(rows, key, id) {
         .map(row => ({ ...row, performance: row[key][id], bs: { b: 0, s: 0 } })));
 }
 
-function buildVariantResult(variantRows, controlRows, candidateClass = 'performance') {
+function buildVariantResult(variantRows, controlRows, candidateClass = 'performance', primaryGoal = null) {
     const summaryControl = summarizeRows(controlRows);
     const summaryVariant = summarizeRows(variantRows);
     const cohorts = {};
@@ -2524,12 +2689,14 @@ function buildVariantResult(variantRows, controlRows, candidateClass = 'performa
     result.evaluation = screenMode
         ? evaluateCandidateScreen({
             candidateClass,
+            primaryGoal,
             policy: VALIDATION_POLICY,
             overallDelta: result.delta,
             affectedDecisionDays: result.affectedDecisions.total
         })
         : evaluateCandidateGates({
             candidateClass,
+            primaryGoal,
             policy: VALIDATION_POLICY,
             overallDelta: result.delta,
             temporalDeltas: Object.values(result.temporal).map(item => item.delta),
@@ -3289,7 +3456,16 @@ function main() {
                 waveIndependentTrendRecoveryApplied: 0,
                 waveIndependentTrendRecoveryMarketBlocked: 0,
                 waveIndependentTrendRecoveryBsDrift: 0,
-                waveIndependentTrendRecoveryIndexDrift: 0
+                waveIndependentTrendRecoveryIndexDrift: 0,
+                waveSupportReclaimDetected: 0,
+                waveSupportReclaimBoxSource: 0,
+                waveSupportReclaimPivotSource: 0,
+                waveSupportReclaimWeeklySource: 0,
+                waveSupportReclaimWeeklyBottomSource: 0,
+                waveSupportReclaimMultiSource: 0,
+                waveSupportReclaimOverlapMa20Signal: 0,
+                waveSupportReclaimIndexDrift: 0,
+                waveSupportReclaimInvalidB: 0
             };
         }
     }
@@ -3341,6 +3517,8 @@ function main() {
     for (const strategy of strategies) {
         const candidate = candidateByStrategy[strategy];
         const candidateClass = candidate.candidateClass || 'performance';
+        const primaryGoal = candidate.primaryGoal || null;
+        assertCandidateGoalMatchesClass(candidateClass, primaryGoal);
         const controlId = candidate.control?.id || (candidate.ablations ? 'retain_production_control' : candidateVariantsByStrategy[strategy][0].id);
         const controlRows = variantRowsByStrategy[strategy][controlId];
         const summaryBaseline = summarizeRows(controlRows);
@@ -3350,6 +3528,7 @@ function main() {
             question: candidate.question,
             type: candidate.type,
             candidateClass,
+            primaryGoal,
             revisionOf: candidate.revisionOf || null,
             revisionMode: candidate.revisionMode || null,
             failedEvidence: candidate.failedEvidence || '',
@@ -3382,7 +3561,8 @@ function main() {
                 ...withScreenResult(buildVariantResult(
                     variantRows,
                     controlRows,
-                    candidateClass
+                    candidateClass,
+                    primaryGoal
                 ))
             };
         } else if (candidate.ablations) {
@@ -3399,7 +3579,7 @@ function main() {
                     hash: stableHash({ candidateId: candidate.id, variant, signalVersion: runtime.signalVersion, evaluationPolicyHash }),
                     signalOccurrences: signalOccurrencesByStrategy[strategy][variant.id],
                     candidateDiagnostics: diagnosticsByStrategy[strategy][variant.id],
-                    ...withScreenResult(buildVariantResult(variantRowsByStrategy[strategy][variant.id], controlRows, candidateClass))
+                    ...withScreenResult(buildVariantResult(variantRowsByStrategy[strategy][variant.id], controlRows, candidateClass, primaryGoal))
                 };
             }
             experiments[strategy] = { candidate: candidateSummary, baseline: summaryBaseline, ablations };
@@ -3544,13 +3724,59 @@ function main() {
                 }
                 experiments[strategy].waveFailedShortTradeReentryLockPreflight = preflight;
             }
+            const waveSupportReclaimVariant = candidate.ablations?.find(item => item.waveSupportReclaimSignal);
+            if (waveSupportReclaimVariant && (!requestedVariant || waveSupportReclaimVariant.id === requestedVariant)) {
+                const diagnostics = diagnosticsByStrategy[strategy][waveSupportReclaimVariant.id];
+                const preflight = buildWaveCandidateEventSamples(
+                    controlRows,
+                    variantRowsByStrategy[strategy][waveSupportReclaimVariant.id],
+                    'waveSupportReclaimSignal'
+                );
+                preflight.detected = Number(diagnostics.waveSupportReclaimDetected || 0);
+                preflight.multiSource = Number(diagnostics.waveSupportReclaimMultiSource || 0);
+                preflight.overlapMa20Signal = Number(diagnostics.waveSupportReclaimOverlapMa20Signal || 0);
+                preflight.sources = {
+                    box: Number(diagnostics.waveSupportReclaimBoxSource || 0),
+                    pivot: Number(diagnostics.waveSupportReclaimPivotSource || 0),
+                    weekly: Number(diagnostics.waveSupportReclaimWeeklySource || 0),
+                    weeklyBottom: Number(diagnostics.waveSupportReclaimWeeklyBottomSource || 0)
+                };
+                preflight.unattributedSamples = (variantRowsByStrategy[strategy][waveSupportReclaimVariant.id] || [])
+                    .flatMap(symbol => (symbol.decisionRows || [])
+                        .filter(row => row.waveSupportReclaimUnattributedB)
+                        .map(row => ({
+                            id: symbol.id,
+                            date: row.date,
+                            rawSignals: row.rawSignals || [],
+                            windowBuySignals: row.windowBuySignals || [],
+                            windowScore: Number(row.windowScore) || 0,
+                            position: Number(row.position) || 0,
+                            attribution: row.waveSupportReclaimUnattributedB
+                        })))
+                    .slice(0, 10);
+                if (preflight.indexDriftDays > 0
+                    || Number(diagnostics.waveSupportReclaimIndexDrift || 0) > 0
+                    || Number(diagnostics.waveSupportReclaimInvalidB || 0) > 0) {
+                    throw new Error('波段回踩支撑收复候选越过了“仅个股日线新增B22计分、新增B必须由B22归因、指数零漂移”的边界：'
+                        + JSON.stringify({
+                            indexDriftDays: preflight.indexDriftDays,
+                            signalIndexDrift: Number(diagnostics.waveSupportReclaimIndexDrift || 0),
+                            invalidB: Number(diagnostics.waveSupportReclaimInvalidB || 0),
+                            detected: preflight.detected,
+                            changedDays: preflight.changedDays,
+                            bsDriftDays: preflight.bsDriftDays,
+                            unattributedSamples: preflight.unattributedSamples
+                        }));
+                }
+                experiments[strategy].waveSupportReclaimPreflight = preflight;
+            }
         } else {
             const variant = candidateVariantsByStrategy[strategy][0];
             experiments[strategy] = {
                 candidate: candidateSummary,
                 candidateDiagnostics: diagnosticsByStrategy[strategy][variant.id],
                 baseline: summaryBaseline,
-                ...withScreenResult(buildVariantResult(variantRowsByStrategy[strategy][variant.id], controlRows, candidateClass))
+                ...withScreenResult(buildVariantResult(variantRowsByStrategy[strategy][variant.id], controlRows, candidateClass, primaryGoal))
             };
         }
     }

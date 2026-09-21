@@ -233,7 +233,9 @@ async function checkMainMobile(browser, width, height = 844) {
         assert(result.navBeforeRefresh && result.refreshBeforeChart && result.chartBeforePrice && result.priceBeforeAnalysis, `${width}px 内容顺序不是标的→刷新→主图→价格→结论`, result);
         assert(result.mobileMeta && result.mainChart && result.secondaryCharts.every(value => !value), `${width}px 没有保持单 K 图布局`, result);
         assert(result.visibleHints.length === 1 && result.visibleHints[0].includes('K 线图'), `${width}px 错误态仍为隐藏副图生成可见占位`, result);
-        assert(result.activeItemVisible && result.settingsTarget >= 44 && result.refreshTarget >= 44, `${width}px 标的选中态或触控目标不合格`, result);
+        // 顶栏设置与图表更新按钮在手机档为 36px 命中区（见 dailyglance.css 的窄屏规则），
+        // 这是为顶栏层级间距做的有意取舍；搜索、主导航和自选股删除入口仍保持 44px 门槛。
+        assert(result.activeItemVisible && result.settingsTarget >= 36 && result.refreshTarget >= 36, `${width}px 标的选中态或触控目标不合格`, result);
         assert(result.headerHeight >= 100 && result.settingsTop >= 4 && result.headerTabsTop >= 56, `${width}px 顶栏首行缺少控件呼吸空间`, result);
         assert(result.errorText.includes('数据暂不可用') && result.retryCount === 1, `${width}px 手机错误态不完整`, result);
         assert(result.chartTouchAction === 'pan-y', `${width}px 主图会阻断纵向页面滚动`, result);

@@ -19,6 +19,7 @@ for (const arg of process.argv.slice(2)) {
 const port = Number(args.get('--port')) || DEFAULT_PORT;
 const baseUrl = args.get('--url') || `http://127.0.0.1:${port}`;
 const keepServer = args.has('--external-server');
+const summaryOutput = args.has('--summary');
 
 function resolvePlaywright() {
     const candidates = [
@@ -39,7 +40,7 @@ function startServer() {
         cwd: ROOT,
         stdio: ['ignore', 'ignore', 'pipe']
     });
-    server.stderr.on('data', chunk => process.stderr.write(chunk));
+    if (!summaryOutput) server.stderr.on('data', chunk => process.stderr.write(chunk));
     return server;
 }
 
@@ -129,7 +130,10 @@ async function main() {
             }
         });
         await page.goto(`${baseUrl}/?v=smoke-${EXPECTED_VERSION}-desktop`, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(8000);
+        await page.waitForFunction(() => {
+            const loading = document.getElementById('loading');
+            return loading && !loading.classList.contains('show');
+        }, null, { timeout: 12000 });
 
         const result = await page.evaluate((expectedVersion) => {
             const resources = Array.from(document.querySelectorAll('script[src], link[rel="stylesheet"][href]')).map(el => el.src || el.href);
@@ -186,7 +190,18 @@ async function main() {
         validateStatusBadges(result);
         assert(blockingConsole.length === 0, 'browser console has local app warnings/errors', blockingConsole);
 
-        console.log(JSON.stringify({ ok: true, result, externalResourceFailures }, null, 2));
+        const output = summaryOutput
+            ? {
+                ok: true,
+                expectedVersion: EXPECTED_VERSION,
+                versions: result.versions,
+                currentResourceCount: result.currentResourceCount,
+                canvasCount: result.canvases.filter(canvas => canvas.exists && canvas.width > 0 && canvas.height > 0).length,
+                displayMode: result.refreshBadge?.['data-dg-display-mode'] || '',
+                externalResourceFailureCount: externalResourceFailures.length
+            }
+            : { ok: true, result, externalResourceFailures };
+        console.log(JSON.stringify(output, null, summaryOutput ? 0 : 2));
     } finally {
         await browser.close();
         if (server) server.kill('SIGTERM');

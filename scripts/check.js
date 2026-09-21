@@ -3,10 +3,11 @@
 const { execFileSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
+const { REGRESSION_GROUPS, groupsForFile } = require('./lib/routing');
 
 const ROOT = path.resolve(__dirname, '..');
 const NODE = process.execPath;
-const REGRESSION_GROUPS = ['data-cache', 'strategy-decision', 'presentation-state', 'chart-navigation', 'watchlist-lifecycle'];
 const results = { passed: [], warnings: [], failed: [] };
 let exitCode = 0;
 
@@ -117,57 +118,49 @@ function findJSFiles(dir) {
     return files;
 }
 
-function groupsForFile(file) {
-    if (file === 'tests/regression.js') return REGRESSION_GROUPS;
-    const match = file.match(/^tests\/regression\/([\w-]+)(?:\.cases)?\.js$/);
-    if (match && REGRESSION_GROUPS.includes(match[1])) return [match[1]];
-    if (file.startsWith('assets/js/00-')) return ['strategy-decision'];
-    if (file.startsWith('assets/js/01-')) return ['presentation-state'];
-    if (file.startsWith('assets/js/02-') || file.includes('data-contract')) return ['data-cache'];
-    if (file.startsWith('assets/js/03-') || file.startsWith('scripts/strategy-')) return ['strategy-decision'];
-    if (file.startsWith('assets/js/04-')) return ['chart-navigation', 'presentation-state'];
-    if (file.startsWith('assets/js/05-')) return ['chart-navigation', 'watchlist-lifecycle'];
-    if (file.startsWith('assets/js/07-')) return ['chart-navigation', 'watchlist-lifecycle'];
-    if (file === 'index.html' || file === 'strategy-inspector.html' || file.startsWith('assets/js/strategy-inspector.js') || file.startsWith('assets/js/06-') || file.startsWith('assets/css/')) return ['presentation-state'];
-    if (file === 'scripts/status-smoke.js' || file === 'scripts/live-dataflow-smoke.js' || file === 'scripts/performance-budget.js' || file === 'scripts/stability-governance.js' || file === 'scripts/ui-governance-smoke.js') return ['chart-navigation', 'presentation-state'];
-    return [];
-}
-
 function runSyntax(files) {
     label('1. 语法检查');
     if (!files.length) return warn('本次没有改动 JavaScript 文件');
     let failures = 0;
+    const failureDetails = [];
     for (const file of files) {
-        const result = runCmd(NODE, ['--check', file]);
-        if (!result.ok) {
+        try {
+            new vm.Script(fs.readFileSync(file, 'utf8'), { filename: file });
+        } catch (error) {
             failures++;
-            process.stdout.write(`    ❌ ${path.relative(ROOT, file)}\n`);
+            failureDetails.push(`${path.relative(ROOT, file)}: ${error.message || error}`);
         }
     }
-    if (failures) fail(`${failures}/${files.length} 个文件语法错误`);
+    if (failures) fail(`${failures}/${files.length} 个文件语法错误：${failureDetails.slice(0, 3).join('; ')}`);
     else ok(`${files.length} 个文件通过`);
 }
 
 function runRegression(groups) {
     label('2. 定向回归');
     if (!groups.length) return warn('本次改动未映射到产品回归分组');
-    for (const group of groups) {
-        const result = spawnSync(NODE, ['tests/regression.js'], {
-            cwd: ROOT,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env, TEST_GROUP: group }
-        });
-        const output = [(result.stdout || ''), (result.stderr || '')].join('\n');
-        const failed = output.split(/\r?\n/).filter(line => line.startsWith('not ok'));
-        const passed = output.split(/\r?\n/).filter(line => line.startsWith('ok -'));
-        if (result.error) fail(`${group} 无法启动：${result.error.message || result.error}`);
-        else if (result.status !== 0 || failed.length || !passed.length) {
-            const detail = failed.length ? failed.join('; ') : output.trim().split(/\r?\n/).slice(-5).join(' | ');
-            fail(`${group} 回归失败：${detail || '没有执行测试'}`);
-        } else {
-            ok(`${group}：${passed.length} 项通过`);
-        }
+    const result = spawnSync(NODE, ['tests/regression.js', '--summary'], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, TEST_GROUP: groups.join(','), TEST_SUMMARY: '1' }
+    });
+    const stdout = result.stdout || '';
+    const stderr = result.stderr || '';
+    const summaryLine = stdout.split(/\r?\n/).find(line => line.startsWith('REGRESSION_SUMMARY '));
+    let summary = null;
+    if (summaryLine) {
+        try { summary = JSON.parse(summaryLine.slice('REGRESSION_SUMMARY '.length)); } catch (error) {}
+    }
+    const failureLines = stderr.split(/\r?\n/).filter(line => line.startsWith('REGRESSION_FAILURE '));
+    const labelText = groups.length === 1 ? groups[0] : groups.join('+');
+    if (result.error) fail(`${labelText} 无法启动：${result.error.message || result.error}`);
+    else if (result.status !== 0 || !summary || summary.failed || summary.passed !== summary.executed) {
+        const detail = failureLines.length
+            ? failureLines.slice(0, 3).join('; ')
+            : stdout.trim().split(/\r?\n/).slice(-5).join(' | ');
+        fail(`${labelText} 回归失败：${detail || '没有执行测试'}`);
+    } else {
+        ok(`${labelText}：${summary.passed} 项通过（单进程）`);
     }
 }
 
@@ -185,14 +178,12 @@ function runFullMaintenanceChecks() {
     const missing = required.filter(file => !fs.existsSync(path.join(ROOT, file)));
     if (missing.length) fail(`缺少入口文档：${missing.join(', ')}`);
     else ok('核心入口文档完整');
-    const archivedDir = path.join(ROOT, 'scripts', '_archived');
-    if (fs.existsSync(archivedDir)) ok('归档脚本目录存在');
-    else warn('归档脚本目录不存在');
 }
 
 function main() {
     const { mode, group, files: requestedFiles } = parseMode(process.argv.slice(2));
     const selectedFiles = mode === 'files' ? resolveSelectedFiles(requestedFiles) : [];
+    const changed = mode === 'changed' ? changedFiles() : [];
     const files = mode === 'full'
         ? [
             ...findJSFiles(path.join(ROOT, 'assets', 'js')),
@@ -202,7 +193,7 @@ function main() {
         : mode === 'files'
             ? selectedFiles.filter(file => file.relative.endsWith('.js')).map(file => file.absolute)
             : mode === 'changed'
-                ? changedFiles().filter(file => file.endsWith('.js')).map(file => path.join(ROOT, file)).filter(fs.existsSync)
+                ? changed.filter(file => file.endsWith('.js')).map(file => path.join(ROOT, file)).filter(fs.existsSync)
                 : [];
     const groups = mode === 'full'
         ? REGRESSION_GROUPS
@@ -210,7 +201,7 @@ function main() {
             ? [group]
             : mode === 'files'
                 ? [...new Set(selectedFiles.flatMap(file => groupsForFile(file.relative)))]
-                : [...new Set(changedFiles().flatMap(groupsForFile))];
+                : [...new Set(changed.flatMap(groupsForFile))];
 
     const scopeLabel = mode === 'group'
         ? `group:${group}`
@@ -218,9 +209,21 @@ function main() {
             ? `files:${selectedFiles.map(file => file.relative).join(',')}`
             : mode;
     label(`检查范围：${scopeLabel}`);
-    const version = runCmd(NODE, ['scripts/sync-version.js', '--check']);
-    if (version.ok) ok('版本来源一致');
-    else fail(`版本来源不一致：${version.stdout.trim() || version.message}`);
+    const versionRelevant = mode !== 'files' || selectedFiles.some(file => {
+        return file.relative === 'version.json'
+            || file.relative === 'index.html'
+            || file.relative === 'strategy-inspector.html'
+            || file.relative === 'assets/js/00-strategy-config.js'
+            || file.relative.startsWith('assets/js/')
+            || file.relative.startsWith('assets/css/');
+    });
+    if (versionRelevant) {
+        const version = runCmd(NODE, ['scripts/sync-version.js', '--check']);
+        if (version.ok) ok('版本来源一致');
+        else fail(`版本来源不一致：${version.stdout.trim() || version.message}`);
+    } else {
+        ok('版本来源检查跳过（未涉及生产资源）');
+    }
     runSyntax(files);
     runRegression(groups);
     if (mode === 'full') runFullMaintenanceChecks();

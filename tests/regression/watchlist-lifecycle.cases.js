@@ -674,7 +674,7 @@ runTest('sidebar realtime batch includes active symbol and refreshes active pane
         setRawData('cy', cyRows);
         setLockIdx(state.rawData.sh.length - 1);
     `, context);
-    await vm.runInContext('refreshSidebarRealtime()', context);
+    const realtimeBatchResult = await vm.runInContext('refreshSidebarRealtime()', context);
     const result = JSON.parse(vm.runInContext(`JSON.stringify({
         batchIds,
         activeApplyCount,
@@ -686,7 +686,10 @@ runTest('sidebar realtime batch includes active symbol and refreshes active pane
         sidebarRebuildCount,
         indexQuoteRefreshCount,
         markRefreshCount,
-        throttledActive: requestManager.limiters.get('sh')?.lastCall > 0
+        throttledActive: requestManager.limiters.get('sh')?.lastCall > 0,
+        batchStatus: ${JSON.stringify(realtimeBatchResult.status)},
+        expectedCount: state.refreshSnapshots.leftList?.meta?.expectedCount || 0,
+        appliedCount: state.refreshSnapshots.leftList?.meta?.appliedCount || 0
     })`, context));
     assert.deepStrictEqual(result, {
         batchIds: ['sh', 'sz', 'hs300', 'zz500', 'zz1000', 'cy', 'kc50', 'bz50'],
@@ -699,7 +702,57 @@ runTest('sidebar realtime batch includes active symbol and refreshes active pane
         sidebarRebuildCount: 1,
         indexQuoteRefreshCount: 1,
         markRefreshCount: 1,
-        throttledActive: true
+        throttledActive: true,
+        batchStatus: 'partial',
+        expectedCount: 8,
+        appliedCount: 2
+    });
+});
+
+runTest('sidebar realtime batch discards results after the visible list changes', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    const fixedClockDataSource = dataSource
+        .replace(/function getBJDate\(\) \{ return new Date\(new Date\(\)\.toLocaleString\("en-US", \{timeZone: "Asia\/Shanghai"\}\)\); \}/, "function getBJDate() { return new Date('2026-06-30T10:30:00+08:00'); }");
+    vm.runInContext(fixedClockDataSource, context);
+    vm.runInContext('function markIndicatorsDirty() { state.indicatorKey = ""; }', context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var resolveRealtimeBatch;
+        var realtimeRequestCount = 0;
+        batchGetRealtimePrices = function() {
+            realtimeRequestCount++;
+            return new Promise(function(resolve) { resolveRealtimeBatch = resolve; });
+        };
+        canRequestMarketData = function() { return true; };
+        state.tab = 'index';
+        state.mode = 'index';
+        state.id = 'sh';
+        state.rawData.sh = [{ date: '2026-06-29', open: 130, high: 132, low: 129, close: 130, vol: 1000, amt: 10000 }];
+        var staleBatchPromise = refreshSidebarRealtime();
+        var reusedBatchPromise = refreshSidebarRealtime();
+        state.tab = 'stock';
+        state.mode = 'stock';
+        state.id = null;
+        state.stockId = null;
+        state.watchlist = [];
+        resolveRealtimeBatch({
+            sh: { date: '2026-06-30', open: 131, high: 136, low: 130, close: 135, prevClose: 130, vol: 3000, amt: 30000, quoteTime: '2026-06-30 10:30:00', quoteDateSource: 'api' }
+        });
+    `, context);
+    const result = await vm.runInContext(`Promise.all([staleBatchPromise, reusedBatchPromise]).then(function(results) {
+        return {
+            statuses: results.map(function(item) { return item.status; }),
+            realtimeRequestCount,
+            leftSnapshot: state.refreshSnapshots.leftList,
+            liveQuote: state.liveQuotes.sh || null
+        };
+    })`, context);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(result)), {
+        statuses: ['stale', 'stale'],
+        realtimeRequestCount: 1,
+        leftSnapshot: null,
+        liveQuote: null
     });
 });
 
@@ -1005,6 +1058,41 @@ runTest('startup selects default index before background hydration rerenders ind
     assert.ok(selectIndex < firstRealtimeIndex, events.join(' > '));
 });
 
+runTest('after-close startup confirms watchlist history after cache preload', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var events = [];
+        var timers = [];
+        setTimeout = function(fn) { timers.push(fn); return timers.length; };
+        requestIdleCallback = function(fn) {
+            timers.push(function() { return fn({ didTimeout: false, timeRemaining: function() { return 20; } }); });
+            return timers.length;
+        };
+        state.mode = 'stock';
+        state.tab = 'stock';
+        state.watchlist = [{ code: '600519', name: '贵州茅台', secid: '1.600519' }];
+        document.hidden = false;
+        isMarketOpen = function() { return false; };
+        preloadCacheOnly = async function() { events.push('preload'); };
+        updateAllWatchlistData = async function() { events.push('watchlist-history'); };
+        refreshWatchlistSignalSnapshots = async function() { events.push('snapshots'); };
+        ensureMarketTemperatureData = async function() { events.push('ensure'); };
+        async function flushTimers() {
+            while (timers.length) {
+                var fn = timers.shift();
+                await fn();
+            }
+        }
+    `, context);
+    await vm.runInContext('scheduleStartupBackgroundHydration(); flushTimers()', context);
+    const events = JSON.parse(vm.runInContext('JSON.stringify(events)', context));
+    assert.deepStrictEqual(events.slice(0, 2), ['preload', 'watchlist-history']);
+    assert.strictEqual(events.includes('snapshots'), false);
+});
+
 runTest('refresh schedulers start only once', () => {
     const context = makeBrowserContext();
     vm.runInContext(configSource, context);
@@ -1023,6 +1111,54 @@ runTest('refresh schedulers start only once', () => {
         JSON.stringify(schedulerCalls);
     `, context));
     assert.deepStrictEqual(result, { intervals: 2, timeouts: 1, visibility: 1, fullSync: 1 });
+});
+
+runTest('active chart scheduler reuses a fresh sidebar batch but keeps periodic history checks', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    const result = JSON.parse(vm.runInContext(`
+        state.rawData.sh = [{ date: '2026-06-29', open: 100, high: 101, low: 99, close: 100, vol: 1, amt: 1 }];
+        state.realtimeBatchAt.sh = Date.now();
+        state.activeHistoryRefreshAt.sh = Date.now();
+        var skipped = shouldSkipScheduledActiveRefresh('sh');
+        state.activeHistoryRefreshAt.sh = Date.now() - SYS_CONFIG.THROTTLE_MS * 6;
+        var periodicCheck = shouldSkipScheduledActiveRefresh('sh');
+        JSON.stringify({ skipped, periodicCheck });
+    `, context));
+    assert.deepStrictEqual(result, { skipped: true, periodicCheck: false });
+});
+
+runTest('sidebar full history sync waits for the current realtime batch', async () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    const result = JSON.parse(await vm.runInContext(`
+        (async function() {
+            var releaseRealtime;
+            var realtimeBatch = new Promise(function(resolve) { releaseRealtime = resolve; });
+            sidebarRealtimeInFlight = realtimeBatch;
+            state.tab = 'index';
+            state.mode = 'index';
+            state.id = 'sh';
+            isMarketOpen = function() { return true; };
+            canRequestMarketData = function() { return true; };
+            var syncCalls = 0;
+            syncData = async function() { syncCalls++; return []; };
+            setRawData = function() {};
+            renderIndexList = function() {};
+            markLeftListRefreshForActiveTab = function() {};
+            var fullSync = runSidebarFullSync();
+            await Promise.resolve();
+            var callsWhileRealtimeIsPending = syncCalls;
+            releaseRealtime();
+            await fullSync;
+            return JSON.stringify({ callsWhileRealtimeIsPending, syncCalls });
+        })()
+    `, context));
+    assert.deepStrictEqual(result, { callsWhileRealtimeIsPending: 0, syncCalls: 7 });
 });
 
 runTest('sidebar full history sync never overlaps a still-running cycle', async () => {
@@ -2233,6 +2369,73 @@ runTest('watchlist live overlay computes a temporary strategy badge from display
     assert.strictEqual(result.navStatus?.rawAction, result.latestDecision.simpleAction);
     assert.ok(!result.html.includes('>同步</span>'), 'live overlay display data should not stay in perpetual sync state');
     assert.ok(result.html.includes('1523.00'), 'watchlist price should still use the live quote');
+});
+
+runTest('watchlist snapshot work waits for the history batch to finish', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var idleScheduleCount = 0;
+        requestIdleCallback = function() { idleScheduleCount++; return idleScheduleCount; };
+        state.strategy = '稳健趋势型';
+        state.watchlist = [{ code: '600519', name: '贵州茅台', secid: '1.600519' }];
+        state.rawData['1.600519'] = [{ date: '2026-07-01', open: 1, high: 1, low: 1, close: 1, vol: 1, amt: 1 }];
+        watchlistSnapshotBatchDepth = 1;
+        queueWatchlistSignalSnapshot('600519', state.rawData['1.600519']);
+        var duringBatch = { idleScheduleCount, queued: watchlistSnapshotQueue.size };
+        finishWatchlistSnapshotBatch();
+        var afterBatch = { idleScheduleCount, queued: watchlistSnapshotQueue.size };
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ duringBatch, afterBatch })', context));
+    assert.deepStrictEqual(result.duringBatch, { idleScheduleCount: 0, queued: 1 });
+    assert.deepStrictEqual(result.afterBatch, { idleScheduleCount: 1, queued: 1 });
+});
+
+runTest('watchlist snapshot timeout is still sliced into bounded work', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var clock = 0;
+        Date.now = function() { clock += 5; return clock; };
+        var processedCodes = [];
+        var idleScheduleCount = 0;
+        requestIdleCallback = function() { idleScheduleCount++; return idleScheduleCount; };
+        syncWatchlistSignalSnapshot = function(code) { processedCodes.push(code); };
+        watchlistSnapshotQueue.set('a', []);
+        watchlistSnapshotQueue.set('b', []);
+        watchlistSnapshotQueue.set('c', []);
+        flushWatchlistSnapshotQueue({ didTimeout: true, timeRemaining: function() { return 100; } });
+        var result = { processedCodes, queued: watchlistSnapshotQueue.size, idleScheduleCount };
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(result)', context));
+    assert.ok(result.processedCodes.length < 3, JSON.stringify(result));
+    assert.ok(result.queued > 0, JSON.stringify(result));
+    assert.strictEqual(result.idleScheduleCount, 1);
+});
+
+runTest('watchlist rendering waits until native drag finishes', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var rafCallback = null;
+        var renderCount = 0;
+        requestAnimationFrame = function(fn) { rafCallback = fn; return 1; };
+        renderWatchlist = function() { renderCount++; };
+        state.mode = 'stock';
+        watchlistDragCode = '600519';
+        scheduleWatchlistRender();
+        rafCallback();
+        var duringDrag = renderCount;
+        finishWatchlistDrag();
+        rafCallback();
+        var afterDrag = renderCount;
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify({ duringDrag, afterDrag })', context));
+    assert.deepStrictEqual(result, { duringDrag: 0, afterDrag: 1 });
 });
 
 runTest('sidebar analysis panel never becomes blank when analysis html is temporarily empty', () => {

@@ -15,7 +15,8 @@
 开发迭代期默认只读最小入口：
 
 1. `AGENTS.md`
-2. 与任务直接相关的源码或测试
+2. 定位改动范围时先跑 `node scripts/map.js`（实时从活代码生成模块地图；`--signals` 查信号 `B/L/W` 位置，`--exports/--functions <file>` 下钻大文件，`--route <file...>` 查回归分组），再按需打开源码，避免通读巨型文件
+3. 与任务直接相关的源码或测试
 
 以下信息按需补读，不作为每次开发的默认上下文：
 
@@ -51,7 +52,7 @@
 
 ## 变更影响矩阵
 
-先按实际改动文件定位验证范围，不按整个工作区的文件数量扩大任务。以下命令均为最低检查；只有跨越多个边界或收到明确发布指令时才升级。
+先按实际改动文件定位验证范围，不按整个工作区的文件数量扩大任务。以下命令均为最低检查；只有跨越多个边界或收到明确发布指令时才升级。文件到回归分组的映射以 `scripts/lib/routing.js` 为唯一权威源（`check.js` 与 `map.js` 共用），下表是其人读镜像；不确定分组时用 `node scripts/map.js --route <file>` 查，不手工推断。
 
 | 改动范围 | 典型文件 | 最低检查 |
 | --- | --- | --- |
@@ -61,7 +62,7 @@
 | 数据与缓存 | `assets/js/02-data.js`、`assets/js/02-observation-data.js`、`docs/data/` | `node scripts/check.js --files=...`，对应 `data-cache` |
 | 策略决策 | `assets/js/03-calculations.js`、`docs/strategy/`、策略脚本和策略用例 | `node scripts/check.js --group=strategy-decision`，必要时补专项验证 |
 | 仅文档或协作规则 | `AGENTS.md`、`README.md`、`CURRENT_STATUS.md`、`docs/` | `git diff --check` 和 Markdown 结构/链接检查 |
-| 跨层或正式发布 | 同时触及两类及以上，或明确要求发布 | 先跑各自定向检查；发布时再读 `STABILITY_CHECKLIST.md` 执行完整回归和 smoke |
+| 跨层或正式发布 | 同时触及两类及以上，或明确要求发布 | 先跑各自定向检查；发布时按实际影响追加检查，只有跨模块影响或明确要求时才做完整回归和 smoke |
 
 `node scripts/check.js --changed` 只适合改动边界已经清晰的工作区；当工作区混有研究、界面和文档修改时，优先使用 `--files` 或 `--group`，避免把无关改动自动带入验证。
 

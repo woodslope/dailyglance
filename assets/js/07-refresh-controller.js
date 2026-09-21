@@ -10,7 +10,6 @@ function scheduleIdleTask(fn, timeout = 300) {
 function scheduleStartupBackgroundHydration() {
     scheduleIdleTask(async () => {
         await preloadCacheOnly();
-        await ensureMarketTemperatureData();
         if (state.mode === 'index') {
             renderIndexList();
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
@@ -20,8 +19,33 @@ function scheduleStartupBackgroundHydration() {
             markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
         }
+
+        // 盘后先确认自选股历史，再计算策略快照，避免旧缓存让左侧长期停在“同步”。
+        // 复用现有批量同步和状态口径，不新增可见状态，也不改变盘中刷新频率。
+        if (!document.hidden && !isMarketOpen() && typeof updateAllWatchlistData === 'function') {
+            await updateAllWatchlistData();
+        } else if (typeof refreshWatchlistSignalSnapshots === 'function') {
+            await refreshWatchlistSignalSnapshots();
+        }
     }, 600);
-    scheduleIdleTask(() => refreshWatchlistSignalSnapshots(), 900);
+
+    // 首屏先保持可交互；核心宽基的陈旧缓存补数放到更晚的空闲窗口，
+    // 仍会在后台完成，不与首次打开和第一次拖动争抢主线程。
+    registerRefreshTimeout(() => {
+        scheduleIdleTask(async () => {
+            if (document.hidden) return;
+            await ensureMarketTemperatureData();
+            if (state.mode === 'index') {
+                renderIndexList();
+                if (isMarketOpen()) await refreshSidebarRealtime();
+            } else if (state.mode === 'stock' || state.tab === 'stock') {
+                const leftTxn = beginRefreshTransaction('leftList', { source: 'delayed-startup-hydration', area: 'stock-list' });
+                renderWatchlist();
+                markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
+                if (isMarketOpen()) await refreshSidebarRealtime();
+            }
+        }, 1200);
+    }, 1800);
 }
 
 const refreshSchedulerRuntime = {
@@ -89,8 +113,8 @@ function startRefreshSchedulers() {
     registerRefreshTimeout(() => {
         registerRefreshInterval(() => {
             if (document.hidden || !isMarketOpen()) return;
-            if (state.mode === 'index') cachedFetch(state.id);
-            else if (state.mode === 'stock' && state.id) cachedFetch(state.id);
+            if (state.mode === 'index' && !shouldSkipScheduledActiveRefresh(state.id)) cachedFetch(state.id);
+            else if (state.mode === 'stock' && state.id && !shouldSkipScheduledActiveRefresh(state.id)) cachedFetch(state.id);
         }, SYS_CONFIG.THROTTLE_MS);
     }, SYS_CONFIG.THROTTLE_MS / 2);
 

@@ -36,6 +36,32 @@ node scripts/stability-governance.js --url=http://127.0.0.1:8000 --profile=lifec
 
 `performance-budget.js` 覆盖冷启动、标的切换、策略切换、历史拖动、返回最新和后台刷新竞争，并报告请求数、资源大小、长任务与主机负载。两个脚本的 `--summary` 都只隐去逐次跟踪明细，不改变门禁。性能样本少于 20 次时只用最大值作小样本门禁，不声称 p95 结论；报告中 `measurementEnvironment.valid=false` 表示同机负载已污染样本，必须在负载回落后重测，不得归因为产品回归。`stability-governance.js` 覆盖存储降级、启动终止错误、页面生命周期和长时运行；长时运行默认桌面端 60 分钟、手机精简版 30 分钟，使用 `--profile=soak --viewport=desktop|mobile` 单独执行。这些是本地定向治理工具，不替代发布流程。
 
+### 快速导航与检查
+
+`map.js` 只读，从活代码即时生成模块地图，用于定位改动范围、避免通读巨型文件（不写文件、不改逻辑）：
+
+```bash
+node scripts/map.js                              # 模块职责 + 行数 + 全局句柄
+node scripts/map.js --signals                    # 信号 B/L/W → 文件:行号
+node scripts/map.js --functions assets/js/03-calculations.js   # 大文件顶层函数 → 行号
+node scripts/map.js --route assets/js/03-calculations.js       # 改动文件 → 回归分组
+```
+
+`check.js` 会把多个回归分组合并到一个 Node 进程，并在成功时只输出摘要；失败时保留失败用例。文件到分组的映射以 `scripts/lib/routing.js` 为唯一权威源（`check.js` 与 `map.js` 共用）。常用命令：
+
+```bash
+node scripts/check.js --files=assets/js/03-calculations.js,tests/regression/strategy-decision.cases.js
+node scripts/check.js --group=strategy-decision
+node scripts/status-smoke.js --summary
+```
+
+Pages 发布使用固定允许列表（`index.html`、`strategy-inspector.html`、`assets/`、`.gitignore`）。脚本默认只准备并提交隔离 worktree，只有显式增加 `--push` 才推送 `origin/main`：
+
+```bash
+node scripts/release-pages.js
+node scripts/release-pages.js --push --cleanup
+```
+
 ## 文档地图
 
 README 只做项目总览、入口索引和目录/发布边界，不承载策略细则、数据契约或历史记录。

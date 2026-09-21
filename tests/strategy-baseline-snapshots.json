@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "generatedAt": "2026-08-13T04:45:00.000Z",
   "source": "DailyGlance production strategy chain over local strategy-cache fixtures",
-  "signalVersion": "v4.2.33",
+  "signalVersion": "v4.2.38",
   "note": "These snapshots pin observable production decisions for fixed cached samples. Update intentionally only when production strategy behavior changes.",
   "samples": [
     {

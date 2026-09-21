@@ -137,10 +137,17 @@ function normalizeSecurityTarget(input = {}) {
 }
 function isFundSecurity(input) {
     if (!input) return false;
-    if (typeof input === 'object') return normalizeSecurityTarget(input).type === 'fund';
+    if (typeof input === 'object') {
+        const target = normalizeSecurityTarget(input);
+        if (target.type === 'fund') return true;
+        // 搜索结果/测试上下文可能没有携带类型字段，但交易所 ETF 代码本身足以确定三位价格精度。
+        return /^(?:5\d{5}|1[568]\d{4})$/.test(target.code);
+    }
     const text = String(input || '').trim();
     const matched = state?.watchlist?.find(item => item.secid === text || item.code === text);
-    return matched ? normalizeSecurityTarget(matched).type === 'fund' : false;
+    if (matched) return isFundSecurity(matched);
+    const code = text.includes('.') ? text.split('.')[1] : text;
+    return /^(?:5\d{5}|1[568]\d{4})$/.test(code);
 }
 function getSecurityPricePrecision(input) {
     return isFundSecurity(input) ? 3 : 2;
@@ -328,13 +335,19 @@ function getMergedLiveDailyData(id) {
     const confirmed = state.rawData[id] || [];
     const liveBar = state.liveBars?.[id];
     if (!liveBar) return confirmed;
+    if (state.liveDailyData?.[id]) return state.liveDailyData[id];
     if (!confirmed.length) return [liveBar];
     const last = confirmed[confirmed.length - 1];
-    if (!last || liveBar.date < last.date) return confirmed;
-    if (liveBar.date === last.date) {
-        return confirmed.slice(0, -1).concat(liveBar);
+    if (!last || liveBar.date < last.date) {
+        state.liveDailyData[id] = confirmed;
+        return state.liveDailyData[id];
     }
-    return confirmed.concat(liveBar);
+    if (liveBar.date === last.date) {
+        state.liveDailyData[id] = confirmed.slice(0, -1).concat(liveBar);
+        return state.liveDailyData[id];
+    }
+    state.liveDailyData[id] = confirmed.concat(liveBar);
+    return state.liveDailyData[id];
 }
 
 function getMergedLiveWeeklyData(id) {
@@ -381,22 +394,71 @@ function getLiveOverlayCacheKey(id) {
     return `${SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY}:${id}`;
 }
 
+let liveOverlayCacheBatchDepth = 0;
+let liveOverlayCacheBatchHydrated = false;
+let liveOverlayCacheBatchDirty = false;
+let liveOverlayCacheBatchDeletedIds = new Set();
+
 function hydrateLiveOverlayCacheState() {
     if (!state.liveOverlayCache) state.liveOverlayCache = {};
+    if (liveOverlayCacheBatchDepth > 0 && liveOverlayCacheBatchHydrated) return state.liveOverlayCache;
     try {
         const raw = localStorage.getItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY);
         state.liveOverlayCache = raw ? JSON.parse(raw) || {} : {};
     } catch (error) {
         state.liveOverlayCache = {};
     }
+    if (liveOverlayCacheBatchDepth > 0) liveOverlayCacheBatchHydrated = true;
     return state.liveOverlayCache;
 }
 
-function persistLiveOverlayCacheState() {
+function persistLiveOverlayCacheStateNow() {
     if (!state.liveOverlayCache) state.liveOverlayCache = {};
     try {
-        localStorage.setItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY, JSON.stringify(state.liveOverlayCache));
+        // 合并同源页面在本批次期间写入的更新，避免批量行情覆盖其他页面的标的。
+        let latest = {};
+        const raw = localStorage.getItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY);
+        if (raw) latest = JSON.parse(raw) || {};
+        const merged = { ...latest };
+        liveOverlayCacheBatchDeletedIds.forEach(id => delete merged[id]);
+        Object.entries(state.liveOverlayCache).forEach(([id, entry]) => {
+            if (liveOverlayCacheBatchDeletedIds.has(id)) return;
+            const latestAt = Number(merged[id]?.cachedAt) || 0;
+            const localAt = Number(entry?.cachedAt) || 0;
+            if (!merged[id] || localAt >= latestAt) merged[id] = entry;
+        });
+        state.liveOverlayCache = merged;
+        localStorage.setItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY, JSON.stringify(merged));
+        if (liveOverlayCacheBatchDepth === 0) liveOverlayCacheBatchDeletedIds = new Set();
     } catch (error) {}
+}
+
+function persistLiveOverlayCacheState() {
+    if (liveOverlayCacheBatchDepth > 0) {
+        liveOverlayCacheBatchDirty = true;
+        return;
+    }
+    persistLiveOverlayCacheStateNow();
+}
+
+function beginLiveOverlayCacheBatch() {
+    if (liveOverlayCacheBatchDepth === 0) {
+        liveOverlayCacheBatchDirty = false;
+        liveOverlayCacheBatchDeletedIds = new Set();
+        liveOverlayCacheBatchHydrated = false;
+        hydrateLiveOverlayCacheState();
+    }
+    liveOverlayCacheBatchDepth += 1;
+}
+
+function endLiveOverlayCacheBatch() {
+    if (liveOverlayCacheBatchDepth <= 0) return;
+    liveOverlayCacheBatchDepth -= 1;
+    if (liveOverlayCacheBatchDepth > 0) return;
+    if (liveOverlayCacheBatchDirty) persistLiveOverlayCacheStateNow();
+    liveOverlayCacheBatchDirty = false;
+    liveOverlayCacheBatchHydrated = false;
+    liveOverlayCacheBatchDeletedIds = new Set();
 }
 
 function normalizeLiveOverlayCacheBar(id, bar) {
@@ -422,7 +484,8 @@ function getLiveOverlayCacheEntry(id) {
     const entry = store[id];
     if (!entry || !entry.bar) return null;
     const cachedAt = Number(entry.cachedAt) || 0;
-    const cacheAgeMs = Number.isFinite(Number(entry.cacheAgeMs)) ? Number(entry.cacheAgeMs) : (cachedAt ? Date.now() - cachedAt : Infinity);
+    // cacheAgeMs 只是写入时的快照，恢复时必须以 cachedAt 重新计算，避免盘中缓存重载后短暂显示为新鲜。
+    const cacheAgeMs = cachedAt ? Math.max(0, Date.now() - cachedAt) : Infinity;
     const bar = normalizeLiveOverlayCacheBar(id, entry.bar);
     if (!bar || !cachedAt) {
         if (entry) {
@@ -447,10 +510,11 @@ function setLiveOverlayCache(id, bar, meta = {}) {
     hydrateLiveOverlayCacheState();
     state.liveOverlayCache[id] = {
         cachedAt: Number(meta.cachedAt) || Date.now(),
-        cacheAgeMs: Number.isFinite(Number(meta.cacheAgeMs)) ? Number(meta.cacheAgeMs) : 0,
+        cacheAgeMs: Number.isFinite(Number(meta.cacheAgeMs)) ? Math.max(0, Number(meta.cacheAgeMs)) : 0,
         source: meta.source || 'api',
         bar: normalizedBar
     };
+    liveOverlayCacheBatchDeletedIds.delete(id);
     persistLiveOverlayCacheState();
     return true;
 }
@@ -459,6 +523,7 @@ function clearLiveOverlayCache(id) {
     hydrateLiveOverlayCacheState();
     if (state.liveOverlayCache && state.liveOverlayCache[id]) {
         delete state.liveOverlayCache[id];
+        liveOverlayCacheBatchDeletedIds.add(id);
         persistLiveOverlayCacheState();
     }
 }
@@ -534,6 +599,7 @@ function setLiveQuote(id, bar, quality = 'quote-only', reason = '', meta = {}) {
 function setLiveBar(id, bar, source = 'api', meta = {}) {
     if (!id || !bar || !isValidPrice(bar.close, id)) return false;
     if (!state.liveBars) state.liveBars = {};
+    if (!state.liveDailyData) state.liveDailyData = {};
     if (!state.liveWeeklyData) state.liveWeeklyData = {};
     const isCachedLive = source === 'cache' || !!meta.isCachedLive;
     const cachedAt = Number(meta.cachedAt) || (isCachedLive ? Date.now() : 0);
@@ -551,6 +617,7 @@ function setLiveBar(id, bar, source = 'api', meta = {}) {
         _cachedAt: cachedAt,
         _cacheAgeMs: cacheAgeMs
     };
+    delete state.liveDailyData[id];
     delete state.liveWeeklyData[id];
     setDisplayStatus(id, {
         mode: displayMode,
@@ -570,8 +637,10 @@ function setLiveBar(id, bar, source = 'api', meta = {}) {
 
 function clearLiveBar(id) {
     if (!state.liveBars) state.liveBars = {};
+    if (!state.liveDailyData) state.liveDailyData = {};
     if (!state.liveWeeklyData) state.liveWeeklyData = {};
     delete state.liveBars[id];
+    delete state.liveDailyData[id];
     delete state.liveWeeklyData[id];
 }
 
@@ -727,6 +796,9 @@ function findDateIndex(data, date, id = '') {
     }
     if (res === -1) res = data.length - 1; 
     dateIndexCache.set(cacheKey, res); 
+    // hover/切换日期会产生大量短生命周期 key，限制上限避免长时间盘中运行持续增长。
+    const maxEntries = Math.max(128, Number(SYS_CONFIG.RENDER_CACHE_SIZE || 50) * 4);
+    while (dateIndexCache.size > maxEntries) dateIndexCache.delete(dateIndexCache.keys().next().value);
     return res;
 }
 
@@ -795,6 +867,15 @@ function setRawData(id, data) {
     data = normalizeConfirmedHistoryData(data, id);
     const prevData = state.rawData[id];
     const mutation = prevData ? getDataMutationMeta(prevData, data) : { mode: 'full', startIdx: 0 };
+
+    // 盘中轮询经常会拿到同一份确认历史。保留原数组和派生缓存，
+    // 避免每只标的重复重建周线、清理渲染缓存并触发主线程长任务。
+    if (prevData && data && mutation.mode === 'unchanged') {
+        // 即使确认历史未变，盘后仍需清理已经被确认覆盖的同日临时 K 线。
+        clearConfirmedLiveBar(id, prevData);
+        return { changed: false, mutation };
+    }
+
     if (mutation.mode !== 'full' && prevData && data) {
         const preserveUntil = mutation.mode === 'unchanged'
             ? Math.min(prevData.length, data.length)
@@ -808,6 +889,8 @@ function setRawData(id, data) {
         }
     }
     state.rawData[id] = data;
+    if (!state.liveDailyData) state.liveDailyData = {};
+    delete state.liveDailyData[id];
     if (data) state.weeklyData[id] = convertDailyToWeekly(data); else state.weeklyData[id] = null;
     clearConfirmedLiveBar(id, data);
     if (data?.length) {
@@ -843,6 +926,7 @@ function setRawData(id, data) {
     } else {
         clearDerivedCaches();
     }
+    return { changed: true, mutation };
 }
 
 function barsEqual(a, b) {
@@ -884,16 +968,39 @@ function getDataMutationMeta(prevData, nextData) {
 
 // 外部环境与板块趋势观察数据已拆到 02-observation-data.js；核心历史、缓存与实时行情继续留在本文件。
 
+function createRealtimeFetchSkipped(reason) {
+    return { __dgRealtimeFetch: 'skipped', reason: reason || 'throttled' };
+}
+
+function isRealtimeFetchSkipped(result) {
+    return !!result && result.__dgRealtimeFetch === 'skipped';
+}
+
+let realtimeRequestSeq = 0;
+function createRealtimeRequestToken(kind) {
+    realtimeRequestSeq += 1;
+    return `${kind || 'realtime'}:${Date.now()}:${realtimeRequestSeq}`;
+}
+
 const requestManager = {
     limiters: new Map(),
     async fetchRealtimeWithThrottle(id) {
-        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return null;
+        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return createRealtimeFetchSkipped('not-leader');
         const now = Date.now(), s = this.limiters.get(id) || { lastCall: 0, isFetching: false };
-        if (s.isFetching) return null; if (now - s.lastCall < SYS_CONFIG.THROTTLE_MS) return null;
-        s.isFetching = true; this.limiters.set(id, s);
+        if (s.isFetching) return createRealtimeFetchSkipped('in-flight');
+        if (now - s.lastCall < SYS_CONFIG.THROTTLE_MS) return createRealtimeFetchSkipped('throttled');
+        const requestToken = createRealtimeRequestToken('single');
+        s.isFetching = requestToken; this.limiters.set(id, s);
         try { const rt = await getRealtimePriceJSONP(id); return rt; }
         catch (e) { return null; }
-        finally { s.lastCall = Date.now(); s.isFetching = false; this.limiters.set(id, s); }
+        finally {
+            const current = this.limiters.get(id) || s;
+            if (current.isFetching === requestToken) {
+                current.lastCall = Date.now();
+                current.isFetching = false;
+                this.limiters.set(id, current);
+            }
+        }
     }
 };
 
@@ -1099,14 +1206,30 @@ function batchGetRealtimePrices(ids) {
     return new Promise(resolve => {
         if (!ids || !ids.length) return resolve({});
         if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return resolve({});
+        const requestToken = createRealtimeRequestToken('batch');
+        const now = Date.now();
+        const requestIds = ids.filter(id => {
+            const limiter = requestManager.limiters.get(id);
+            if (limiter?.isFetching || now - Number(limiter?.lastCall || 0) < SYS_CONFIG.THROTTLE_MS) return false;
+            requestManager.limiters.set(id, { ...(limiter || { lastCall: 0 }), isFetching: requestToken });
+            return true;
+        });
+        if (!requestIds.length) return resolve({});
+        const releaseBatchRequest = () => {
+            requestIds.forEach(id => {
+                const limiter = requestManager.limiters.get(id);
+                if (!limiter || limiter.isFetching !== requestToken) return;
+                requestManager.limiters.set(id, { ...limiter, isFetching: false });
+            });
+        };
         const symToId = {}, symbols = [];
-        for (const id of ids) { const sym = resolveTencentSymbol(id); symToId[sym] = id; symbols.push(sym); }
+        for (const id of requestIds) { const sym = resolveTencentSymbol(id); symToId[sym] = id; symbols.push(sym); }
         const script = document.createElement('script');
         script.src = `https://qt.gtimg.cn/q=${symbols.join(',')}`;
         script.charset = 'GBK';
         let cl = false;
         const cleanup = () => { if (cl) return; cl = true; clearTimeout(timer); if (script.parentNode) script.remove(); };
-        const timer = setTimeout(() => { cleanup(); resolve({}); }, 5000);
+        const timer = setTimeout(() => { releaseBatchRequest(); cleanup(); resolve({}); }, 5000);
         const results = {};
         script.onload = () => {
             cleanup();
@@ -1125,9 +1248,10 @@ function batchGetRealtimePrices(ids) {
                     delete window[varName];
                 }
             }
+            releaseBatchRequest();
             resolve(results);
         };
-        script.onerror = () => { cleanup(); resolve({}); };
+        script.onerror = () => { releaseBatchRequest(); cleanup(); resolve({}); };
         document.head.appendChild(script);
     });
 }
@@ -1171,6 +1295,9 @@ function shouldSkipHistoryRefresh(id, cached) {
     const lastDate = cached[cached.length - 1]?.date || '';
     if (lastDate && lastDate < getLastTradingDate()) return false;
     if (meta.lastDate && meta.lastDate !== lastDate) return false;
+    // 盘中确认历史只到上一交易日；实时价由独立报价链路更新。
+    // 首次成功校验后，当前交易日内不再每 30 秒重复下载整份历史，收盘后日期变化会自动解除此条件。
+    if (isMarketOpen() && lastDate === getLastTradingDate() && meta.lastSuccessAt) return true;
     if (meta.lastSuccessAt && now - meta.lastSuccessAt < SYS_CONFIG.HISTORY_FRESH_MS) return true;
     if (meta.lastAttemptAt && now - meta.lastAttemptAt < SYS_CONFIG.HISTORY_REFRESH_COOLDOWN_MS) return true;
     return false;
@@ -1181,6 +1308,16 @@ async function syncDataIncremental(id) {
         const cached = await dbGet(id); 
         const cachedData = normalizeConfirmedHistoryData(cached?.data, id);
         if(!cachedData || !cachedData.length) return await syncDataWithHistory(id); 
+        if (Number(cached?.updated) > 0) {
+            const meta = getHistoryRefreshMeta(id);
+            if (!meta.lastSuccessAt || Number(cached.updated) > meta.lastSuccessAt) {
+                setHistoryRefreshMeta(id, {
+                    lastSuccessAt: Number(cached.updated),
+                    lastAttemptAt: Number(cached.updated),
+                    lastDate: cachedData[cachedData.length - 1]?.date || ''
+                });
+            }
+        }
         if (shouldSkipHistoryRefresh(id, cachedData)) return cachedData;
         
         setHistoryRefreshMeta(id, { lastAttemptAt: Date.now(), lastDate: cachedData[cachedData.length - 1]?.date || '' });
@@ -1200,23 +1337,43 @@ async function syncDataIncremental(id) {
     } catch(e) { return await getCachedData(id) || null; } 
 }
 
-async function syncData(id) { 
+const syncDataInFlight = new Map();
+
+function clearSyncDataInFlight(id, task) {
+    if (syncDataInFlight.get(id) === task) syncDataInFlight.delete(id);
+}
+
+async function syncData(id) {
+    if (!id) return null;
+    if (syncDataInFlight.has(id)) return syncDataInFlight.get(id);
+    const task = performSyncData(id).finally(() => clearSyncDataInFlight(id, task));
+    syncDataInFlight.set(id, task);
+    return task;
+}
+
+async function performSyncData(id) {
     let cached = await getCachedData(id);
     const hasEnough = cached && cached.length >= 30; 
     const cachedLastDate = cached && cached.length ? (cached[cached.length - 1]?.date || '') : '';
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
-        if (hasEnough) tryApplyCachedLiveOverlay(id, cached);
+        // 当前页面未持有行情租约时，保留已经展示的盘中状态；只有没有现有 overlay 时才恢复缓存。
+        if (hasEnough && !state.liveBars?.[id]) tryApplyCachedLiveOverlay(id, cached);
         return hasEnough ? cached : null;
     }
     
     if(isMarketOpen()) { 
         if(hasEnough) { 
             const incremental = await syncDataIncremental(id); 
-            if(incremental && incremental.length > 0) { await dbSet(id, incremental); cached = incremental; }
-            const rt = await requestManager.fetchRealtimeWithThrottle(id); 
-            if (rt) applyRealtimeQuoteForSeries(id, cached, rt);
-            else tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);
-            if (!state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
+            if (incremental && incremental.length > 0) {
+                const mutation = getDataMutationMeta(cached, incremental);
+                if (mutation.mode !== 'unchanged') await dbSet(id, incremental);
+                cached = incremental;
+            }
+            const rt = await requestManager.fetchRealtimeWithThrottle(id);
+            const realtimeSkipped = isRealtimeFetchSkipped(rt);
+            if (rt && !realtimeSkipped) applyRealtimeQuoteForSeries(id, cached, rt);
+            else if (!realtimeSkipped) tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);
+            if (!realtimeSkipped && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
                 setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
             }
             return cached; 
@@ -1227,9 +1384,10 @@ async function syncData(id) {
             setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastDate: data[data.length - 1]?.date || '' });
             await dbSet(id, data);
             const rt = await requestManager.fetchRealtimeWithThrottle(id);
-            if (rt) applyRealtimeQuoteForSeries(id, data, rt);
-            else tryApplyCachedLiveOverlay(id, data);
-            if (!state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
+            const realtimeSkipped = isRealtimeFetchSkipped(rt);
+            if (rt && !realtimeSkipped) applyRealtimeQuoteForSeries(id, data, rt);
+            else if (!realtimeSkipped) tryApplyCachedLiveOverlay(id, data);
+            if (!realtimeSkipped && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
                 setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
             }
             return data;
@@ -1240,7 +1398,8 @@ async function syncData(id) {
         if(hasEnough) { 
             const incremental = await syncDataIncremental(id); 
             if(incremental && incremental.length > 0) {
-                await dbSet(id, incremental);
+                const mutation = getDataMutationMeta(cached, incremental);
+                if (mutation.mode !== 'unchanged') await dbSet(id, incremental);
                 if (!isConfirmedSeriesFreshEnough(incremental)) tryApplyCachedLiveOverlay(id, incremental);
                 return incremental;
             }
@@ -1444,7 +1603,19 @@ function dbSet(id, data) {
         }
     });
 }
-async function getCachedData(id) { const c = await dbGet(id); return (c && c.data) ? normalizeConfirmedHistoryData(c.data, id) : null; }
+async function getCachedData(id) {
+    const c = await dbGet(id);
+    const data = (c && c.data) ? normalizeConfirmedHistoryData(c.data, id) : null;
+    if (data?.length && Number(c?.updated) > 0) {
+        // 页面重开后恢复历史刷新元数据，避免盘中重复下载整份确认历史。
+        setHistoryRefreshMeta(id, {
+            lastSuccessAt: Math.max(0, Number(c.updated)),
+            lastAttemptAt: Math.max(0, Number(c.updated)),
+            lastDate: data[data.length - 1]?.date || ''
+        });
+    }
+    return data;
+}
 
 function getRenderedSidebarDate() {
     var cPriceEl = document.getElementById('cardPrice');
@@ -1499,6 +1670,15 @@ function scheduleCachedFetchRefreshApply(id) {
         requestAnimationFrame(() => {
             if (applyId !== state.id) {
                 PERF.end(perfTrace, { status: 'skipped' });
+                return;
+            }
+            if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
+                cachedFetchRefreshApplyTimer = window.setTimeout(() => {
+                    cachedFetchRefreshApplyTimer = 0;
+                    if (applyId !== state.id) return;
+                    scheduleCachedFetchRefreshApply(applyId);
+                }, 120);
+                PERF.end(perfTrace, { status: 'deferred-interaction' });
                 return;
             }
             const rightTxn = beginRefreshTransaction('rightPanel', { source: 'cached-fetch-refresh-apply', id: applyId });
@@ -1604,6 +1784,7 @@ async function clearAllCache() {
     state.liveBars = {};
     state.liveQuotes = {};
     state.liveWeeklyData = {};
+    state.liveDailyData = {};
     state.liveOverlayCache = {};
     try { localStorage.removeItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY); } catch(e) {}
     try { localStorage.removeItem(SECTOR_TREND_CONFIG.CACHE_KEY); } catch(e) {}
@@ -1634,7 +1815,25 @@ function buildDataRefreshResult(id, oldConfirmed, oldVisible, freshConfirmed, ne
     };
 }
 
+const cachedFetchInFlight = new Map();
+
+function getCachedFetchKey(id) {
+    return `${id}:${globalSelectionSeq}:${state.mode}:${state.period}:${state.strategy}`;
+}
+
+function clearCachedFetchInFlight(key, task) {
+    if (cachedFetchInFlight.get(key) === task) cachedFetchInFlight.delete(key);
+}
+
 async function cachedFetch(id) {
+    const key = getCachedFetchKey(id);
+    if (cachedFetchInFlight.has(key)) return cachedFetchInFlight.get(key);
+    const task = performCachedFetch(id).finally(() => clearCachedFetchInFlight(key, task));
+    cachedFetchInFlight.set(key, task);
+    return task;
+}
+
+async function performCachedFetch(id) {
     const perfTrace = PERF.start('cachedFetch', { id, activeId: state.id, mode: state.mode });
     const fetchStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
     const fetchSelectionSeq = globalSelectionSeq;
@@ -1727,8 +1926,6 @@ async function cachedFetch(id) {
     if (shouldApplyFresh) {
         setRawData(id, fresh);
         PERF.mark(perfTrace, 'active-data', { source: 'fresh', points: fresh.length });
-        await dbSet(id, fresh);
-        PERF.mark(perfTrace, 'dbSet');
         if (typeof syncWatchlistSignalSnapshotFast === 'function') {
             const matched = (state.watchlist || []).find(stock => normalizeSecurityTarget(stock).secid === id);
             if (matched) syncWatchlistSignalSnapshotFast(matched.code, fresh);
@@ -1801,8 +1998,6 @@ function scheduleCachedFetchRefresh(id) {
         if (hasUpdate) {
             setRawData(id, fresh);
             PERF.mark(perfTrace, 'apply-raw');
-            await dbSet(id, fresh);
-            PERF.mark(perfTrace, 'dbSet');
         } else {
             PERF.mark(perfTrace, 'apply-live-overlay');
         }
@@ -1815,18 +2010,9 @@ function scheduleCachedFetchRefresh(id) {
             scheduleCachedFetchRefreshApply(id);
             PERF.mark(perfTrace, 'queue-active-apply');
         }
-        if (state.mode === 'index') {
-            const leftTxn = beginRefreshTransaction('leftList', { source: 'cachedFetchRefresh', id });
-            renderIndexList();
-            if (typeof markLeftListRefreshForActiveTab === 'function') markLeftListRefreshForActiveTab(leftTxn, { area: 'index-list', id });
-            PERF.mark(perfTrace, 'render-index-list');
-        }
-        if (state.mode === 'stock' && typeof scheduleWatchlistRender === 'function') {
-            scheduleWatchlistRender({
-                markRefresh: true,
-                refreshTxn: beginRefreshTransaction('leftList', { source: 'cachedFetchRefresh', id })
-            });
-        }
+        // 当前标的的后台历史补数只更新内存/右侧面板；左侧列表由批量刷新协调器统一提交，
+        // 避免单个标的先完成时把整张列表提前刷新成新旧混合状态。
+        PERF.mark(perfTrace, 'defer-left-list-commit', { id });
         PERF.end(perfTrace, { status: 'updated' });
     })().finally(() => {
         cachedFetchRefreshJobs.delete(id);
@@ -1868,7 +2054,6 @@ async function ensureMarketTemperatureData() {
             const data = await syncData(id);
             if (data && data.length >= 30) {
                 setRawData(id, data);
-                await dbSet(id, data);
             }
         } catch(e) {}
     }

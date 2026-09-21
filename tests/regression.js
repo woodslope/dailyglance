@@ -32,7 +32,11 @@ const productGuideSource = read('docs/product/PRODUCT_DECISION_GUIDE.md');
 const dataContractSource = read('docs/data/DATA_CONTRACT.md');
 const strategyBaselineSnapshotPath = path.join(root, 'tests', 'strategy-baseline-snapshots.json');
 const TEST_FILTER = process.env.TEST_FILTER ? new RegExp(process.env.TEST_FILTER) : null;
+const SUMMARY_OUTPUT = process.argv.includes('--summary') || process.env.TEST_SUMMARY === '1';
 let executedTests = 0;
+let passedTests = 0;
+let failedTests = 0;
+const failureDetails = [];
 
 function normalizeStrategyForValidation(strategy) {
     const normalized = {
@@ -155,7 +159,7 @@ function setupBaselineSnapshotContext({ includeRender = false } = {}) {
 function readScriptConstant(scriptSource, name) {
     const context = {
         require,
-        console,
+        console: makeConsoleShell(),
         process: { argv: [] },
         __dirname: path.join(root, 'scripts')
     };
@@ -167,6 +171,18 @@ function readScriptConstant(scriptSource, name) {
         context
     );
     return JSON.parse(JSON.stringify(vm.runInContext(name, context)));
+}
+
+// 每个 vm 上下文拿到独立的 console 壳：被测代码（或测试自己）覆盖 console.error 时，
+// 只影响这一个上下文，不会把 runTest 打印 `not ok` 的宿主 console.error 一起替掉，
+// 否则后续失败会变成只有退出码、没有任何输出的静默失败。
+function makeConsoleShell() {
+    const shell = {};
+    for (const key of Object.keys(console)) {
+        const value = console[key];
+        shell[key] = typeof value === 'function' ? value.bind(console) : value;
+    }
+    return shell;
 }
 
 function makeBrowserContext(extra = {}) {
@@ -194,7 +210,7 @@ function makeBrowserContext(extra = {}) {
     });
 
     const context = {
-        console,
+        console: makeConsoleShell(),
         setTimeout,
         clearTimeout,
         setInterval,
@@ -239,12 +255,29 @@ async function runTest(name, fn) {
     executedTests++;
     try {
         await fn();
-        console.log(`ok - ${name}`);
+        passedTests++;
+        if (!SUMMARY_OUTPUT) console.log(`ok - ${name}`);
     } catch (error) {
-        console.error(`not ok - ${name}`);
-        console.error(error.stack || error.message);
+        failedTests++;
+        const detail = `${name}: ${error.stack || error.message}`;
+        if (SUMMARY_OUTPUT) failureDetails.push(detail);
+        else {
+            console.error(`not ok - ${name}`);
+            console.error(error.stack || error.message);
+        }
         process.exitCode = 1;
     }
+}
+
+if (SUMMARY_OUTPUT) {
+    process.on('exit', () => {
+        process.stdout.write(`REGRESSION_SUMMARY ${JSON.stringify({
+            executed: executedTests,
+            passed: passedTests,
+            failed: failedTests
+        })}\n`);
+        for (const detail of failureDetails) process.stderr.write(`REGRESSION_FAILURE ${detail}\n`);
+    });
 }
 
 const REGRESSION_GROUPS = ["data-cache","strategy-decision","presentation-state","chart-navigation","watchlist-lifecycle"];

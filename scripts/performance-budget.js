@@ -44,7 +44,7 @@ const PERFORMANCE_BUDGETS = {
     'select-index': { traceLimit: 80, actionLimit: 800, longTaskMax: 80, observationLongTaskMax: 180 },
     'switch-strategy-first': { traceLimit: 120, actionLimit: 800, longTaskMax: 180, observationLongTaskMax: 180 },
     'switch-strategy-repeat': { traceLimit: 120, actionLimit: 800, longTaskMax: 180, observationLongTaskMax: 180 },
-    'drag-history': { actionLimit: 1200, longTaskMax: 500, observationLongTaskMax: 180 },
+    'drag-history': { actionLimit: 1200, longTaskMax: 500, observationLongTaskMax: 180, viewportUpdateMax: 35, dragFrameP95: 16.7, dragFrameMax: 33.3 },
     'restore-latest': { actionLimit: 600, longTaskWarn: 80, longTaskMax: 180, observationLongTaskMax: 180 },
     'background-refresh-during-click': { traceLimit: 100, actionLimit: 1000, longTaskMax: 100, observationLongTaskMax: 180 },
     'strategy-inspector-load': { actionLimit: 6000, longTaskMax: 700 }
@@ -165,6 +165,9 @@ function isBudgetOk(summary, budget) {
     if (budget.actionLimit != null && summary.actionDuration.gateValue != null && summary.actionDuration.gateValue > budget.actionLimit) return false;
     if (budget.longTaskMax != null && summary.longTasks.max != null && summary.longTasks.max > budget.longTaskMax) return false;
     if (budget.observationLongTaskMax != null && summary.observationLongTasks.max != null && summary.observationLongTasks.max > budget.observationLongTaskMax) return false;
+    if (budget.viewportUpdateMax != null && summary.viewportUpdates?.max != null && summary.viewportUpdates.max > budget.viewportUpdateMax) return false;
+    if (budget.dragFrameP95 != null && summary.dragFrameDuration?.p95 != null && summary.dragFrameDuration.p95 > budget.dragFrameP95) return false;
+    if (budget.dragFrameMax != null && summary.dragFrameDuration?.max != null && summary.dragFrameDuration.max > budget.dragFrameMax) return false;
     return true;
 }
 
@@ -517,6 +520,14 @@ async function measureScenario(page, name, traceLabel, action) {
     const scenarioStart = await page.evaluate(() => performance.now());
     await action();
     const actionEnd = await page.evaluate(() => performance.now());
+    const interactionMetrics = name === 'drag-history' ? await page.evaluate(() => {
+        const metrics = window.__DG_DRAG_METRICS__ || null;
+        if (window.__DG_DRAG_ORIGINAL_DRAW_VIEWPORT__) window.drawViewport = window.__DG_DRAG_ORIGINAL_DRAW_VIEWPORT__;
+        if (window.__DG_DRAG_ORIGINAL_SIDEBAR__) window.safeUpdateSidebar = window.__DG_DRAG_ORIGINAL_SIDEBAR__;
+        delete window.__DG_DRAG_ORIGINAL_DRAW_VIEWPORT;
+        delete window.__DG_DRAG_ORIGINAL_SIDEBAR__;
+        return metrics;
+    }) : null;
     await page.waitForTimeout(250);
     const observationEnd = await page.evaluate(() => performance.now());
     const scenarioEnd = actionEnd;
@@ -532,6 +543,7 @@ async function measureScenario(page, name, traceLabel, action) {
         observationLongTasks: collected.observationLongTasks,
         longTaskTraceMatches: matchLongTasksToTraces(collected.longTasks, collected.traces),
         observationLongTaskTraceMatches: matchLongTasksToTraces(collected.observationLongTasks, collected.traces),
+        interactionMetrics,
         systemLoad: buildSystemLoad(scenarioLoadBefore, readSystemLoadSnapshot())
     };
 }
@@ -544,6 +556,23 @@ async function dragHistory(page) {
     const startX = box.x + box.width * 0.72;
     const endX = startX - Math.min(220, box.width * 0.28);
     const y = box.y + box.height * 0.5;
+    await page.evaluate(() => {
+        window.__DG_DRAG_METRICS__ = { viewportUpdates: 0, sidebarUpdates: 0, frameDurations: [] };
+        window.__DG_DRAG_ORIGINAL_DRAW_VIEWPORT__ = window.drawViewport;
+        window.__DG_DRAG_ORIGINAL_SIDEBAR__ = window.safeUpdateSidebar;
+        window.drawViewport = function(...args) {
+            const startedAt = performance.now();
+            try { return window.__DG_DRAG_ORIGINAL_DRAW_VIEWPORT__.apply(this, args); }
+            finally {
+                window.__DG_DRAG_METRICS__.viewportUpdates += 1;
+                window.__DG_DRAG_METRICS__.frameDurations.push(Number((performance.now() - startedAt).toFixed(1)));
+            }
+        };
+        window.safeUpdateSidebar = function(...args) {
+            window.__DG_DRAG_METRICS__.sidebarUpdates += 1;
+            return window.__DG_DRAG_ORIGINAL_SIDEBAR__.apply(this, args);
+        };
+    });
     if (compactViewport) {
         const session = await page.context().newCDPSession(page);
         try {
@@ -782,6 +811,8 @@ function buildReport(samples, externalResourceFailures, deliberateBlockedRequest
             trace: summarize(items.map(item => item.traceTotal)),
             longTasks: summarize(items.flatMap(item => item.longTasks.map(task => task.duration))),
             observationLongTasks: summarize(items.flatMap(item => (item.observationLongTasks || []).map(task => task.duration))),
+            viewportUpdates: summarize(items.map(item => item.interactionMetrics?.viewportUpdates)),
+            dragFrameDuration: summarize(items.flatMap(item => item.interactionMetrics?.frameDurations || [])),
             systemLoad: {
                 cpuUtilizationPct: summarize(items.map(item => item.systemLoad?.cpuUtilizationPct)),
                 load1PerCpu: summarize(items.map(item => item.systemLoad?.load1PerCpu))

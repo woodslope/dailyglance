@@ -292,11 +292,34 @@ function countAffectedDecisionDays(controlRows, variantRows) {
     };
 }
 
+// 研究目标与准入类别的唯一映射。目标必须在候选注册时显式声明，
+// 由本表决定它只能进入哪个准入类别；不允许声明的目标与实际门槛互相矛盾。
+const CANDIDATE_GOAL_CLASS = Object.freeze({
+    return_improvement: 'performance',
+    drawdown_reduction: 'risk_control',
+    turnover_reduction: 'efficiency',
+    semantic_correction: 'semantic_correctness',
+    signal_timing_correction: 'signal_timing',
+    baseline_hold: 'control'
+});
+
+function assertCandidateGoalMatchesClass(candidateClass, primaryGoal) {
+    if (primaryGoal == null) return null;
+    const expected = CANDIDATE_GOAL_CLASS[primaryGoal];
+    if (!expected) throw new Error(`unknown candidate goal: ${primaryGoal}`);
+    if (expected !== candidateClass) {
+        throw new Error(`候选目标与准入类别错配：primaryGoal=${primaryGoal} 只能使用 candidateClass=${expected}，当前为 ${candidateClass}`);
+    }
+    return primaryGoal;
+}
+
 function evaluateCandidateScreen(input) {
-    const { candidateClass = 'performance', policy, overallDelta = {}, affectedDecisionDays = 0 } = input;
+    const { candidateClass = 'performance', primaryGoal = null, policy, overallDelta = {}, affectedDecisionDays = 0 } = input;
+    assertCandidateGoalMatchesClass(candidateClass, primaryGoal);
     if (candidateClass === 'control') {
         return {
             candidateClass,
+            primaryGoal,
             status: 'baseline_control',
             checks: []
         };
@@ -333,6 +356,7 @@ function evaluateCandidateScreen(input) {
     const passStatus = candidateClass === 'signal_timing' ? 'ready_for_product_review' : 'continue_full';
     return {
         candidateClass,
+        primaryGoal,
         status: affectedDecisionDays < minimumAffected ? 'insufficient_evidence' : (passes ? passStatus : 'reject'),
         checks,
         formalAdmissionRequired: candidateClass !== 'signal_timing'
@@ -340,10 +364,12 @@ function evaluateCandidateScreen(input) {
 }
 
 function evaluateCandidateGates(input) {
-    const { candidateClass = 'performance', policy, overallDelta, temporalDeltas = [], symbolDeltas = [], cohorts = {}, stressDelta = null, affectedDecisionDays = 0, completedTrades = 0 } = input;
+    const { candidateClass = 'performance', primaryGoal = null, policy, overallDelta, temporalDeltas = [], symbolDeltas = [], cohorts = {}, stressDelta = null, affectedDecisionDays = 0, completedTrades = 0 } = input;
+    assertCandidateGoalMatchesClass(candidateClass, primaryGoal);
     if (candidateClass === 'control') {
         return {
             candidateClass,
+            primaryGoal,
             status: 'baseline_control',
             checks: [{
                 id: 'baseline_zero_drift',
@@ -432,6 +458,7 @@ function evaluateCandidateGates(input) {
         : (pass && hasEvidence ? 'recommend_shadow' : (pass ? 'insufficient_evidence' : 'reject'));
     return {
         candidateClass,
+        primaryGoal,
         status,
         checks
     };
@@ -451,6 +478,8 @@ module.exports = {
     buildScenarioSummaries,
     buildTemporalSummaries,
     countAffectedDecisionDays,
+    CANDIDATE_GOAL_CLASS,
+    assertCandidateGoalMatchesClass,
     evaluateCandidateScreen,
     evaluateCandidateGates
 };

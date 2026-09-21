@@ -362,7 +362,7 @@ function main() {
     const indexData = Object.fromEntries(allSymbols.filter(symbol => symbol.mode === 'index').map(symbol => [symbol.id, symbol.rows]));
     const requiredIndexIds = ['sh', 'sz', 'hs300', 'zz500', 'zz1000', 'cy', 'kc50', 'bz50'];
     const missingIndexIds = requiredIndexIds.filter(id => !indexData[id]);
-    if (missingIndexIds.length) throw new Error(`质量复核缺少市场门禁指数缓存：${missingIndexIds.join(',')}`);
+    if (missingIndexIds.length) throw new Error(`质量复核缺少核心宽基环境指数缓存：${missingIndexIds.join(',')}`);
     const referenceId = POLICY.temporalWindows.referenceIndex;
     const referenceRows = indexData[referenceId];
     if (!referenceRows) throw new Error(`质量复核缺少时间窗口参考指数：${referenceId}`);

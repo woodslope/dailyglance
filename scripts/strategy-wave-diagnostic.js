@@ -1,0 +1,338 @@
+#!/usr/bin/env node
+
+// 波段三趋势治理的按需诊断入口：只回放生产决策链，不改变任何策略参数或阈值。
+// 默认使用固定小工作组，便于按几只个股逐轮沟通调整；报告写入 .local/strategy-reports/。
+//
+//   node scripts/strategy-wave-diagnostic.js
+//   node scripts/strategy-wave-diagnostic.js --symbols 600519,002594
+//
+// 报告只回答“买卖点位置、三趋势覆盖、防守距离、离场成因”四类问题，不做收益优势主张。
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const {
+    loadCacheSymbols,
+    createProductionContext,
+    prepareSymbolContext,
+    START_INDEX
+} = require('./strategy-formal-baseline');
+
+const ROOT = path.resolve(__dirname, '..');
+const REPORT_DIR = path.join(ROOT, '.local', 'strategy-reports');
+const OUT = path.join(REPORT_DIR, 'strategy-wave-diagnostic.md');
+const STRATEGY_NAME = '波段抄底型';
+const DEFAULT_WORKING_GROUP = ['600519', '002594', '601398', '300750'];
+const SHORT_TRADE_BARS = 2;
+const REGIME_LABELS = { down: '下跌', range: '横盘', up: '上涨', transition: '过渡', unknown: '未知' };
+
+const equalsArg = process.argv.find(arg => arg.startsWith('--symbols='));
+const flagIndex = process.argv.indexOf('--symbols');
+const rawSymbols = equalsArg
+    ? equalsArg.slice('--symbols='.length)
+    : (flagIndex >= 0 ? process.argv[flagIndex + 1] || '' : '');
+const requestedIds = rawSymbols
+    ? rawSymbols.split(',').map(item => item.trim()).filter(Boolean)
+    : DEFAULT_WORKING_GROUP;
+
+function pct(value, digits = 2) {
+    return Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : 'n/a';
+}
+
+function share(count, total, digits = 1) {
+    return total ? `${(count / total * 100).toFixed(digits)}%` : 'n/a';
+}
+
+function quantile(values, ratio) {
+    if (!values.length) return NaN;
+    const sorted = [...values].sort((left, right) => left - right);
+    return sorted[Math.floor((sorted.length - 1) * ratio)];
+}
+
+function mean(values) {
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : NaN;
+}
+
+// 回放生产链后额外读出三趋势环境、冻结防守位和波峰上下文，仅用于观察。
+function replaySymbol(context, symbol, prepared) {
+    context.__symbol = {
+        id: symbol.id,
+        mode: symbol.mode,
+        rows: symbol.rows.map(row => ({ ...row })),
+        strategy: STRATEGY_NAME,
+        rawSignals: prepared.rawSignals,
+        indicators: prepared.indicators
+    };
+    return JSON.parse(vm.runInContext(`
+        (function() {
+            if (!setActiveStrategy(__symbol.strategy)) throw new Error('unknown formal strategy: ' + __symbol.strategy);
+            state.strategy = __symbol.strategy;
+            state.mode = __symbol.mode;
+            state.id = __symbol.id;
+            state.stockId = __symbol.mode === 'stock' ? __symbol.id : null;
+            state.period = 'daily';
+            state.rawData[__symbol.id] = __symbol.rows.map((row, idx) => ({
+                ...row,
+                _signals: [...(__symbol.rawSignals[idx] || [])],
+                _signalVersion: SIGNAL_VERSION
+            }));
+            state.weeklyData[__symbol.id] = convertDailyToWeekly(state.rawData[__symbol.id]);
+            state.indicators = __symbol.indicators;
+            state.indicatorKey = '';
+            state.pendingIndicatorMutation = { mode: 'strategy-only', startIdx: 0 };
+            updateAllIndicators();
+            const full = state.rawData[__symbol.id];
+            const policy = STRATEGY.waveRegimePolicy;
+            return JSON.stringify({
+                rows: full.map((row, idx) => {
+                    const decision = row._decision || {};
+                    const wave = decision.waveContext || {};
+                    const raw = getWaveRawRegimeAt(idx, full, state.indicators, policy);
+                    return {
+                        date: row.date, high: row.high, low: row.low, close: row.close,
+                        position: decision.position || 0, prevAdv: decision.prevAdv ?? null,
+                        bsMark: decision.bsMark || null, action: decision.simpleAction || '',
+                        regime: wave.regime || 'unknown', rawRegime: raw.key,
+                        boxValid: !!(wave.box && wave.box.valid),
+                        consecutiveDays: wave.consecutiveDays ?? null, requiredDays: wave.requiredDays ?? null,
+                        hardDefense: wave.frozenHardDefense ?? null, supportSource: wave.supportSource || '',
+                        peakConfirmed: !!(decision.wavePeak && decision.wavePeak.confirmed),
+                        event: wave.mainEvent || ''
+                    };
+                })
+            });
+        })()
+    `, context)).rows;
+}
+
+function classifyTransitionCause(row) {
+    if (row.rawRegime === 'flat') {
+        return row.boxValid
+            ? `走平已确认箱体但确认天数不足（${row.consecutiveDays}/${row.requiredDays}）`
+            : '走平但箱体无效，归过渡';
+    }
+    if (row.rawRegime === 'transition') return '斜率越过阈值但均线或收盘条件未同时成立';
+    return `${REGIME_LABELS[row.rawRegime] || row.rawRegime}候选确认天数不足（${row.consecutiveDays}/${row.requiredDays}）`;
+}
+
+function classifyExit(event) {
+    const text = String(event || '');
+    if (text.includes('冻结硬防守位')) return '跌破冻结硬防守位';
+    if (text.includes('数据/硬风险')) return '数据/硬风险或结构硬失效';
+    if (text.includes('上涨环境普通转弱')) return '上涨环境分层退出';
+    if (text.includes('箱体上沿')) return '箱体上沿失败';
+    if (text.includes('既有持仓')) return '既有持仓降档';
+    return '基础链路离场（无治理专属事件）';
+}
+
+// 每段交易的位置质量：买点相对段内最低点的溢价，卖点相对段内最高点的折让。
+function collectTrades(rows) {
+    const trades = [];
+    let open = null;
+    for (let idx = START_INDEX; idx < rows.length; idx++) {
+        const row = rows[idx];
+        if (row.bsMark === 'B') {
+            open = { startIdx: idx, startDate: row.date, entry: row.close, entryRegime: row.regime, maxPosition: row.position };
+            continue;
+        }
+        if (!open) continue;
+        open.maxPosition = Math.max(open.maxPosition, row.position);
+        if (row.bsMark !== 'S') continue;
+        const segment = rows.slice(open.startIdx, idx + 1);
+        const segmentLow = Math.min(...segment.map(item => item.low));
+        const segmentHigh = Math.max(...segment.map(item => item.high));
+        trades.push({
+            ...open,
+            endDate: row.date, exit: row.close, bars: idx - open.startIdx,
+            ret: (row.close - open.entry) / open.entry,
+            entryPremium: segmentLow > 0 ? (open.entry - segmentLow) / segmentLow : NaN,
+            exitDiscount: segmentHigh > 0 ? (segmentHigh - row.close) / segmentHigh : NaN,
+            exitRegime: row.regime, exitReason: classifyExit(row.event), exitAction: row.action
+        });
+        open = null;
+    }
+    return trades;
+}
+
+function analyzeSymbol(symbol, rows) {
+    const window = rows.slice(START_INDEX);
+    const trades = collectTrades(rows);
+    const regimeDays = {};
+    const regimeHeldDays = {};
+    const transitionCauses = {};
+    const entryGaps = [];
+    const ratchetGaps = [];
+    let peakHeldDays = 0;
+    let peakReducedDays = 0;
+
+    for (const row of window) {
+        regimeDays[row.regime] = (regimeDays[row.regime] || 0) + 1;
+        if (row.position > 0) regimeHeldDays[row.regime] = (regimeHeldDays[row.regime] || 0) + 1;
+        if (row.regime === 'transition') {
+            const cause = classifyTransitionCause(row);
+            transitionCauses[cause] = (transitionCauses[cause] || 0) + 1;
+        }
+        if (row.peakConfirmed && row.prevAdv > 0) {
+            peakHeldDays += 1;
+            if (row.position < row.prevAdv) peakReducedDays += 1;
+        }
+        if (row.position > 0 && Number.isFinite(row.hardDefense) && row.close > 0) {
+            const gap = (row.close - row.hardDefense) / row.close;
+            if (row.prevAdv === 0) entryGaps.push(gap);
+            else if (row.supportSource === 'confirmed-pivot-ratchet') ratchetGaps.push(gap);
+        }
+    }
+
+    const exitReasons = {};
+    const entryRegimes = {};
+    const maxPositions = {};
+    for (const trade of trades) {
+        exitReasons[trade.exitReason] = (exitReasons[trade.exitReason] || 0) + 1;
+        entryRegimes[trade.entryRegime] = (entryRegimes[trade.entryRegime] || 0) + 1;
+        maxPositions[trade.maxPosition] = (maxPositions[trade.maxPosition] || 0) + 1;
+    }
+
+    return {
+        id: symbol.id, name: symbol.name,
+        firstDate: window[0]?.date || '', lastDate: window.at(-1)?.date || '', days: window.length,
+        regimeDays, regimeHeldDays, transitionCauses, entryGaps, ratchetGaps,
+        peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
+        shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
+    };
+}
+
+function mergeCounts(target, source) {
+    for (const [key, value] of Object.entries(source || {})) target[key] = (target[key] || 0) + value;
+    return target;
+}
+
+function renderCounts(counts, total) {
+    const entries = Object.entries(counts).sort((left, right) => right[1] - left[1]);
+    if (!entries.length) return '无样本';
+    return entries.map(([key, value]) => `${REGIME_LABELS[key] || key} ${value}（${share(value, total)}）`).join('、');
+}
+
+function renderGapLine(label, gaps) {
+    if (!gaps.length) return `- ${label}：无样本`;
+    return `- ${label}：n=${gaps.length}，中位 ${pct(quantile(gaps, 0.5))}，P10 ${pct(quantile(gaps, 0.1))}，P90 ${pct(quantile(gaps, 0.9))}`;
+}
+
+function buildReport(reports, meta) {
+    const lines = [];
+    lines.push('# 波段三趋势治理按需诊断');
+    lines.push('');
+    lines.push(`- 生成时间：${new Date().toISOString().slice(0, 19).replace('T', ' ')}`);
+    lines.push(`- 策略：${STRATEGY_NAME}（个股日线）｜工作组：${reports.map(item => `${item.id} ${item.name}`).join('、')}`);
+    lines.push(`- 回放起点索引：${START_INDEX}｜应用构建：${meta.appBuild || 'n/a'}｜信号版本：${meta.signalVersion || 'n/a'}`);
+    lines.push('- 本报告只观察生产决策链的既有输出，不改变任何参数，也不构成收益、回撤或换手优势主张。');
+    lines.push('');
+
+    const total = {
+        days: 0, regimeDays: {}, regimeHeldDays: {}, transitionCauses: {},
+        entryGaps: [], ratchetGaps: [], peakHeldDays: 0, peakReducedDays: 0,
+        trades: 0, shortTrades: 0, exitReasons: {}, entryRegimes: {}, maxPositions: {},
+        entryPremiums: [], exitDiscounts: [], rets: [], bars: []
+    };
+
+    for (const report of reports) {
+        total.days += report.days;
+        mergeCounts(total.regimeDays, report.regimeDays);
+        mergeCounts(total.regimeHeldDays, report.regimeHeldDays);
+        mergeCounts(total.transitionCauses, report.transitionCauses);
+        mergeCounts(total.exitReasons, report.exitReasons);
+        mergeCounts(total.entryRegimes, report.entryRegimes);
+        mergeCounts(total.maxPositions, report.maxPositions);
+        total.entryGaps.push(...report.entryGaps);
+        total.ratchetGaps.push(...report.ratchetGaps);
+        total.peakHeldDays += report.peakHeldDays;
+        total.peakReducedDays += report.peakReducedDays;
+        total.trades += report.trades.length;
+        total.shortTrades += report.shortTrades;
+        for (const trade of report.trades) {
+            if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
+            if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
+            total.rets.push(trade.ret);
+            total.bars.push(trade.bars);
+        }
+    }
+
+    lines.push('## 工作组合计');
+    lines.push('');
+    lines.push(`- 交易日：${total.days}｜完整交易：${total.trades} 次｜平均持有 ${mean(total.bars).toFixed(1)} 日｜${SHORT_TRADE_BARS} 日内被清 ${total.shortTrades} 次（${share(total.shortTrades, total.trades)}）`);
+    lines.push(`- 环境分布：${renderCounts(total.regimeDays, total.days)}`);
+    for (const regime of ['down', 'range', 'up', 'transition']) {
+        const days = total.regimeDays[regime] || 0;
+        const held = total.regimeHeldDays[regime] || 0;
+        lines.push(`- ${REGIME_LABELS[regime]}环境持仓覆盖率：${held}/${days} = ${share(held, days)}`);
+    }
+    lines.push(`- 买点高出段内最低点：中位 ${pct(quantile(total.entryPremiums, 0.5))}，均值 ${pct(mean(total.entryPremiums))}`);
+    lines.push(`- 卖点低于段内最高点：中位 ${pct(quantile(total.exitDiscounts, 0.5))}，均值 ${pct(mean(total.exitDiscounts))}`);
+    lines.push(`- 建仓环境分布：${renderCounts(total.entryRegimes, total.trades)}`);
+    lines.push(`- 每次交易达到的最高仓位：${renderCounts(total.maxPositions, total.trades)}`);
+    lines.push(`- 波峰确认且当日有持仓：${total.peakHeldDays} 日，其中仓位下降 ${total.peakReducedDays} 日（${share(total.peakReducedDays, total.peakHeldDays)}）`);
+    lines.push(renderGapLine('建仓日收盘到冻结硬防守位距离', total.entryGaps));
+    lines.push(renderGapLine('棘轮上移后收盘到硬防守位距离', total.ratchetGaps));
+    lines.push(`- 离场成因：${renderCounts(total.exitReasons, total.trades)}`);
+    lines.push(`- 过渡环境成因：${renderCounts(total.transitionCauses, total.regimeDays.transition || 0)}`);
+    lines.push('');
+
+    for (const report of reports) {
+        lines.push(`## ${report.id} ${report.name}`);
+        lines.push('');
+        lines.push(`- 区间：${report.firstDate} ~ ${report.lastDate}（${report.days} 个交易日）`);
+        lines.push(`- 环境分布：${renderCounts(report.regimeDays, report.days)}`);
+        for (const regime of ['down', 'range', 'up']) {
+            const days = report.regimeDays[regime] || 0;
+            const held = report.regimeHeldDays[regime] || 0;
+            lines.push(`- ${REGIME_LABELS[regime]}环境持仓覆盖率：${held}/${days} = ${share(held, days)}`);
+        }
+        const premiums = report.trades.map(trade => trade.entryPremium).filter(Number.isFinite);
+        const discounts = report.trades.map(trade => trade.exitDiscount).filter(Number.isFinite);
+        lines.push(`- 完整交易 ${report.trades.length} 次｜平均持有 ${mean(report.trades.map(trade => trade.bars)).toFixed(1)} 日｜平均单次收益 ${pct(mean(report.trades.map(trade => trade.ret)))}`);
+        lines.push(`- 买点高出段内最低 中位 ${pct(quantile(premiums, 0.5))}｜卖点低于段内最高 中位 ${pct(quantile(discounts, 0.5))}`);
+        lines.push(`- 建仓环境：${renderCounts(report.entryRegimes, report.trades.length)}`);
+        lines.push(`- 离场成因：${renderCounts(report.exitReasons, report.trades.length)}`);
+        lines.push('');
+        lines.push('| 建仓日 | 离场日 | 持有日 | 建仓环境→离场环境 | 最高仓位 | 单次收益 | 买点溢价 | 卖点折让 | 离场成因 |');
+        lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+        for (const trade of report.trades.slice(-12)) {
+            lines.push(`| ${trade.startDate} | ${trade.endDate} | ${trade.bars} | ${REGIME_LABELS[trade.entryRegime] || trade.entryRegime}→${REGIME_LABELS[trade.exitRegime] || trade.exitRegime} | ${trade.maxPosition}% | ${pct(trade.ret)} | ${pct(trade.entryPremium)} | ${pct(trade.exitDiscount)} | ${trade.exitReason} |`);
+        }
+        lines.push('');
+    }
+    return lines.join('\n');
+}
+
+function main() {
+    const { symbols, indexData } = loadCacheSymbols();
+    const known = new Map(symbols.map(symbol => [symbol.id, symbol]));
+    const unknown = requestedIds.filter(id => !known.has(id));
+    if (unknown.length) throw new Error(`unknown symbols: ${unknown.join(',')}`);
+    const targets = requestedIds.map(id => known.get(id));
+    const stockOnly = targets.filter(symbol => symbol.mode !== 'stock');
+    if (stockOnly.length) throw new Error(`波段三趋势治理只覆盖个股日线，剔除：${stockOnly.map(item => item.id).join(',')}`);
+
+    const context = createProductionContext(indexData);
+    const meta = JSON.parse(vm.runInContext('JSON.stringify({ appBuild: APP_BUILD, signalVersion: SIGNAL_VERSION })', context));
+    const reports = [];
+    for (const symbol of targets) {
+        process.stdout.write(`回放 ${symbol.id} ${symbol.name} ...\n`);
+        const prepared = prepareSymbolContext(context, symbol);
+        reports.push(analyzeSymbol(symbol, replaySymbol(context, symbol, prepared)));
+    }
+
+    fs.mkdirSync(REPORT_DIR, { recursive: true });
+    fs.writeFileSync(OUT, `${buildReport(reports, meta)}\n`, 'utf8');
+    process.stdout.write(`\n报告已写入 ${path.relative(ROOT, OUT)}\n`);
+    for (const report of reports) {
+        const premiums = report.trades.map(trade => trade.entryPremium).filter(Number.isFinite);
+        const discounts = report.trades.map(trade => trade.exitDiscount).filter(Number.isFinite);
+        process.stdout.write(`${report.id} ${report.name}：${report.trades.length} 次交易，买点溢价中位 ${pct(quantile(premiums, 0.5))}，卖点折让中位 ${pct(quantile(discounts, 0.5))}，${SHORT_TRADE_BARS} 日内被清 ${report.shortTrades} 次\n`);
+    }
+}
+
+try {
+    main();
+} catch (error) {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+}

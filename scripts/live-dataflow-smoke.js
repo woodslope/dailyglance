@@ -19,6 +19,7 @@ for (const arg of process.argv.slice(2)) {
 
 const baseUrl = (args.get('--url') || DEFAULT_URL).replace(/\/$/, '');
 const headed = args.has('--headed');
+const summaryOutput = args.has('--summary');
 
 function resolvePlaywright() {
     const candidates = [
@@ -350,7 +351,19 @@ async function main() {
         const drag = await measureDrag(page);
         validateDrag(drag);
 
-        console.log(JSON.stringify({ ok: true, snapshot, drag, externalResourceFailures }, null, 2));
+        const output = summaryOutput
+            ? {
+                ok: true,
+                expectedResourceVersion: EXPECTED_RESOURCE_VERSION,
+                expectedAppBuild: EXPECTED_APP_BUILD,
+                expectedSignalVersion: EXPECTED_SIGNAL_VERSION,
+                displayMode: snapshot.displayStatus?.mode || '',
+                activeDate: snapshot.activeLatest?.date || '',
+                drawViewportCount: drag.during?.drawViewportCount || 0,
+                externalResourceFailureCount: externalResourceFailures.length
+            }
+            : { ok: true, snapshot, drag, externalResourceFailures };
+        console.log(JSON.stringify(output, null, summaryOutput ? 0 : 2));
     } finally {
         await browser.close();
     }
