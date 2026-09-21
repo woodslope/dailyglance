@@ -1906,6 +1906,16 @@ runTest('wave fresh entry downside failure uses separate stock and index thresho
         var hardBreakDecision = computeDecisionForIndex(71, full, 50);
         var hardBreakSummary = getStockDecisionSummary(meta, hardBreakDecision);
 
+        // 首破确认缓冲已接入生产：首日破买入日最低价先降到30%挂 pending，次日再裁决。
+        // 次日仍不收复（收盘 < 0.978）→ 确认整清；次日收复（收盘 ≥ 0.978）→ 解除，交回主链。
+        full[71]._decision = { position: 30, prevAdv: 50, bsMark: null, waveRejectionProtection: hardBreakDecision.waveRejectionProtection };
+        var confirmFull = full.map(row => ({ ...row }));
+        confirmFull[72] = { date: '2026-09-11', open: 0.978, high: 0.980, low: 0.972, close: 0.975, vol: 900, _signals: [] };
+        var hardBreakConfirmDecision = computeDecisionForIndex(72, confirmFull, 30);
+        var recoverFull = full.map(row => ({ ...row }));
+        recoverFull[72] = { date: '2026-09-11', open: 0.980, high: 0.990, low: 0.978, close: 0.985, vol: 900, _signals: [] };
+        var hardBreakRecoverDecision = computeDecisionForIndex(72, recoverFull, 30);
+
         full[69]._decision = { position: 30, prevAdv: 0, bsMark: 'B' };
         full[70]._decision = { position: 30, prevAdv: 30, bsMark: null };
         full[71] = { ...full[71], close: 0.979, vol: 900 };
@@ -1933,11 +1943,18 @@ runTest('wave fresh entry downside failure uses separate stock and index thresho
     assert.strictEqual(vm.runInContext('ordinaryWickDecision.waveRejectionProtection.status', context), 'none');
     assert.strictEqual(vm.runInContext('lowVolumeDecision.position', context), 30);
     assert.strictEqual(vm.runInContext('lowVolumeDecision.waveRejectionProtection.status', context), 'none');
-    assert.strictEqual(vm.runInContext('hardBreakDecision.position', context), 0);
-    assert.strictEqual(vm.runInContext('hardBreakDecision.bsMark', context), 'S');
+    // 首破买入日最低价当日不再整清：先降到30%观察并挂 pending_hard_break，等待次日确认。
+    assert.strictEqual(vm.runInContext('hardBreakDecision.position', context), 30);
+    assert.strictEqual(vm.runInContext('hardBreakDecision.waveRejectionProtection.status', context), 'pending_hard_break');
     assert.strictEqual(vm.runInContext('hardBreakDecision.waveRejectionProtection.eventType', context), 'fresh_entry_hard_break');
-    assert.ok(vm.runInContext('hardBreakSummary.why.includes("收盘跌破") && hardBreakSummary.why.includes("买入日最低价") && hardBreakSummary.why.includes("收盘0.98")', context));
-    assert.strictEqual(vm.runInContext('hardBreakSummary.positionWhyCode', context), 'rejection-fresh-entry-hard-break');
+    // 次日收盘仍不收复买入日最低价 → 确认整清、离场S。
+    assert.strictEqual(vm.runInContext('hardBreakConfirmDecision.position', context), 0);
+    assert.strictEqual(vm.runInContext('hardBreakConfirmDecision.bsMark', context), 'S');
+    assert.strictEqual(vm.runInContext('hardBreakConfirmDecision.waveRejectionProtection.status', context), 'triggered');
+    assert.strictEqual(vm.runInContext('hardBreakConfirmDecision.waveRejectionProtection.eventType', context), 'fresh_entry_hard_break');
+    // 次日收盘收复买入日最低价 → 解除首破锁定，仓位保留，不新增S。
+    assert.strictEqual(vm.runInContext('hardBreakRecoverDecision.waveRejectionProtection.status', context), 'hard_break_recovered');
+    assert.notStrictEqual(vm.runInContext('hardBreakRecoverDecision.bsMark', context), 'S');
     assert.strictEqual(vm.runInContext('indexDecision.position', context), 0);
     assert.strictEqual(vm.runInContext('indexDecision.bsMark', context), 'S');
     assert.strictEqual(vm.runInContext('indexDecision.waveRejectionProtection.eventType', context), 'fresh_entry_downside_failure');

@@ -577,6 +577,35 @@ const CANDIDATES = {
                 riskBudget: '按 signal_timing 车道：平均收益回退1个百分点、平均最大回撤恶化0.5个百分点、换手增幅10%仅作报告参考线，实际值必须透明列出并由用户取舍；硬边界为指数零漂移、无B22归因不得新增B、不绕过强离场与风险门禁、不泄漏到其他三套策略。',
                 restartCondition: '若出现无B22归因的新增B、指数漂移或作用域越界则冻结；不在同快照调整ATR倍数、回看天数或支撑来源数量，也不在本轮附带修正B16的弱支撑定义或新增3分共振试探路径。'
             }]
+        }, {
+            id: 'wave_hard_break_confirm_delay_v1',
+            question: '波段首次建仓后两日内首次收盘跌破买入日最低价（fresh_entry_hard_break），是否应从当日整清改为先降到30%观察仓、次日收盘仍不收复买入日最低价才确认清仓？',
+            type: 'wave-hard-break-confirm-delay',
+            candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
+            control: {
+                id: 'retain_wave_production_control',
+                label: '保留当前波段生产配置',
+                collectDecisionDetails: true
+            },
+            ablations: [{
+                id: 'wave_hard_break_confirm_delay_v1',
+                label: '首破买入日最低价先降30%锁一日，次日不收复才整清',
+                collectDecisionDetails: true,
+                configPatch: {
+                    waveRejectionProtection: {
+                        freshEntryDownsideFailure: {
+                            hardBreakConfirmTradingDays: 1,
+                            hardBreakPendingPositionCap: 30
+                        }
+                    }
+                },
+                objective: '只修正首破买入日最低价的即时清仓漏卖/误卖时机：全样本诊断显示 fresh_entry_hard_break 首日整清里约有一半是次日即收复的假止损，但仍有约五分之一是真破位。候选把首破从当日归零改为降到30%观察一日，以次日收盘是否收复买入日最低价做最终裁决；不改建仓资格、不改压力/上影阈值、不改冻结硬防守位链，也不改指数与其他三套策略。',
+                category: 'signal_timing',
+                allowedBsImpact: '仅允许波段抄底型个股在首破买入日最低价当日把仓位降到30%（而非0）并锁定，次日收盘收复则解除、不收复则确认清仓S；首次B、买入积分、冻结硬防守位归零路径、指数与其他三套策略零漂移。默认 hardBreakConfirmTradingDays=0 时与生产完全一致。',
+                riskBudget: '按 signal_timing 车道：平均收益回退不超过1个百分点、平均最大回撤恶化不超过0.5个百分点、换手增幅不超过10%仅作报告参考；硬边界为指数零漂移、只影响 fresh_entry_hard_break 事件、不绕过冻结硬防守位与强离场。全样本代理显示救回组均反弹8.32%高于误留组续跌5.62%，但净收益/回撤/换手须以快筛实测为准，不以反弹代理下结论。',
+                restartCondition: '若出现指数漂移、影响到非 fresh_entry_hard_break 事件，或组合预算任一项失败则冻结；不在同快照把确认期从1日改为多日或叠加ATR缓冲。若达到 ready_for_product_review，由用户批准后按冻结定义接入生产。'
+            }]
         }]
     },
     '突破追涨型': {
@@ -806,7 +835,18 @@ function runCandidate(context, symbol, strategy, prepared, candidate, controlDec
         (function() {
             const baseStrategy = __formalBaseStrategies[__symbol.strategy];
             const removedBuySignals = new Set(__symbol.removeBuySignals || []);
-            const nextStrategy = { ...baseStrategy, ...__symbol.configPatch };
+            // configPatch 深合并：嵌套的纯对象逐层并入，避免浅合并整体替换 waveRejectionProtection 等子配置而丢失兄弟键。
+            const isPlainObject = value => value && typeof value === 'object' && !Array.isArray(value);
+            const deepMergeConfig = (base, patch) => {
+                const output = { ...base };
+                for (const key of Object.keys(patch || {})) {
+                    output[key] = isPlainObject(patch[key]) && isPlainObject(base?.[key])
+                        ? deepMergeConfig(base[key], patch[key])
+                        : patch[key];
+                }
+                return output;
+            };
+            const nextStrategy = deepMergeConfig(baseStrategy, __symbol.configPatch);
             if (removedBuySignals.size > 0) {
                 nextStrategy.buySignals = (baseStrategy.buySignals || []).filter(signal => !removedBuySignals.has(signal));
                 nextStrategy.scoreGroups = (baseStrategy.scoreGroups || [])

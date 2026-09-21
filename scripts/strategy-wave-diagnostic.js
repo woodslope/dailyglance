@@ -34,6 +34,20 @@ const requestedIds = rawSymbols
     ? rawSymbols.split(',').map(item => item.trim()).filter(Boolean)
     : DEFAULT_WORKING_GROUP;
 
+// 通用事件出口：--events 后按 status 或 eventType 过滤导出任意决策日，避免每次追因都新写一次性脚本。
+//   node scripts/strategy-wave-diagnostic.js --events                      列出全部风险事件日
+//   node scripts/strategy-wave-diagnostic.js --events fresh_entry_hard_break   只看某类事件
+//   node scripts/strategy-wave-diagnostic.js --events pending_hard_break --symbols 600519
+function readArgValue(name) {
+    const equals = process.argv.find(arg => arg.startsWith(`${name}=`));
+    if (equals) return equals.slice(name.length + 1);
+    const flag = process.argv.indexOf(name);
+    return flag >= 0 ? (process.argv[flag + 1] && !process.argv[flag + 1].startsWith('--') ? process.argv[flag + 1] : '') : null;
+}
+const eventsArg = readArgValue('--events');
+const EVENTS_MODE = eventsArg !== null;
+const eventFilter = (eventsArg || '').trim();
+
 function pct(value, digits = 2) {
     return Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : 'n/a';
 }
@@ -87,6 +101,7 @@ function replaySymbol(context, symbol, prepared) {
                     const decision = row._decision || {};
                     const wave = decision.waveContext || {};
                     const raw = getWaveRawRegimeAt(idx, full, state.indicators, policy);
+                    const rejection = decision.waveRejectionProtection || null;
                     return {
                         date: row.date, high: row.high, low: row.low, close: row.close,
                         position: decision.position || 0, prevAdv: decision.prevAdv ?? null,
@@ -96,7 +111,13 @@ function replaySymbol(context, symbol, prepared) {
                         consecutiveDays: wave.consecutiveDays ?? null, requiredDays: wave.requiredDays ?? null,
                         hardDefense: wave.frozenHardDefense ?? null, supportSource: wave.supportSource || '',
                         peakConfirmed: !!(decision.wavePeak && decision.wavePeak.confirmed),
-                        event: wave.mainEvent || ''
+                        event: wave.mainEvent || '',
+                        // 通用事件出口：读出决策链的完整风险事件对象与仓位驱动，供 --events 过滤追因。
+                        rejectionStatus: rejection?.status || 'none',
+                        rejectionEventType: rejection?.eventType || '',
+                        entrySignalLow: rejection?.entrySignalLow ?? null,
+                        entryAge: rejection?.entryAge ?? null,
+                        positionDriver: decision.positionDriver || ''
                     };
                 })
             });
@@ -302,6 +323,56 @@ function buildReport(reports, meta) {
     return lines.join('\n');
 }
 
+// 通用事件出口报告：把每个标的的风险事件日（rejectionStatus!='none'）按可选过滤词导出为一张表。
+function collectEvents(symbol, rows) {
+    const events = [];
+    for (let idx = START_INDEX; idx < rows.length; idx++) {
+        const row = rows[idx];
+        if (row.rejectionStatus === 'none') continue;
+        if (eventFilter && row.rejectionStatus !== eventFilter && row.rejectionEventType !== eventFilter) continue;
+        events.push({ id: symbol.id, name: symbol.name, ...row });
+    }
+    return events;
+}
+
+function buildEventsReport(allEvents, meta) {
+    const lines = [];
+    lines.push('# 波段风险事件按需导出');
+    lines.push('');
+    lines.push(`- 生成时间：${new Date().toISOString().slice(0, 19).replace('T', ' ')}`);
+    lines.push(`- 过滤条件：${eventFilter || '（全部风险事件）'}｜应用构建：${meta.appBuild || 'n/a'}｜信号版本：${meta.signalVersion || 'n/a'}`);
+    lines.push(`- 命中事件日：${allEvents.length}｜本报告只读出生产决策链既有事件，不改变任何参数。`);
+    lines.push('');
+    const byStatus = {};
+    const byType = {};
+    for (const event of allEvents) {
+        byStatus[event.rejectionStatus] = (byStatus[event.rejectionStatus] || 0) + 1;
+        if (event.rejectionEventType) byType[event.rejectionEventType] = (byType[event.rejectionEventType] || 0) + 1;
+    }
+    lines.push(`- 按状态：${renderCounts(byStatus, allEvents.length) || '无'}`);
+    lines.push(`- 按事件类型：${renderCounts(byType, allEvents.length) || '无'}`);
+    lines.push('');
+    lines.push('| 标的 | 日期 | 状态 | 事件类型 | 收盘 | 仓位 | 前仓 | B/S | 建仓龄 | 买入日最低 | 仓位驱动 |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const event of allEvents) {
+        lines.push(`| ${event.id} ${event.name} | ${event.date} | ${event.rejectionStatus} | ${event.rejectionEventType || '—'} | ${event.close} | ${event.position}% | ${event.prevAdv ?? '—'}% | ${event.bsMark || '—'} | ${event.entryAge ?? '—'} | ${event.entrySignalLow ?? '—'} | ${event.positionDriver || '—'} |`);
+    }
+    return lines.join('\n');
+}
+
+function runEventsMode(targets, context, meta) {
+    const allEvents = [];
+    for (const symbol of targets) {
+        process.stdout.write(`回放 ${symbol.id} ${symbol.name} ...\n`);
+        const prepared = prepareSymbolContext(context, symbol);
+        allEvents.push(...collectEvents(symbol, replaySymbol(context, symbol, prepared)));
+    }
+    const out = path.join(REPORT_DIR, 'strategy-wave-events.md');
+    fs.mkdirSync(REPORT_DIR, { recursive: true });
+    fs.writeFileSync(out, `${buildEventsReport(allEvents, meta)}\n`, 'utf8');
+    process.stdout.write(`\n事件报告已写入 ${path.relative(ROOT, out)}（命中 ${allEvents.length} 个事件日）\n`);
+}
+
 function main() {
     const { symbols, indexData } = loadCacheSymbols();
     const known = new Map(symbols.map(symbol => [symbol.id, symbol]));
@@ -313,6 +384,10 @@ function main() {
 
     const context = createProductionContext(indexData);
     const meta = JSON.parse(vm.runInContext('JSON.stringify({ appBuild: APP_BUILD, signalVersion: SIGNAL_VERSION })', context));
+    if (EVENTS_MODE) {
+        runEventsMode(targets, context, meta);
+        return;
+    }
     const reports = [];
     for (const symbol of targets) {
         process.stdout.write(`回放 ${symbol.id} ${symbol.name} ...\n`);
