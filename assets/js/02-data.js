@@ -1467,8 +1467,13 @@ async function handleUpdateData(forceFull = false) {
 }
 
 const KLINE_CACHE_VERSION = 2;
+// 决策快照落盘：与 K 线缓存共用同一 objectStore，但用独立前缀，
+// 既能被“重置本地数据”的 clear() 一并清掉，又能绕开 OHLCV 归一化。
+const DECISION_CACHE_KEY_PREFIX = 'decision_cache::';
 const NON_KLINE_CACHE_KEYS = new Set(['stock_cache', 'watchlist_list']);
-function isKlineCacheKey(id) { return !NON_KLINE_CACHE_KEYS.has(id); }
+function isDecisionCacheKey(id) { return typeof id === 'string' && id.startsWith(DECISION_CACHE_KEY_PREFIX); }
+function buildDecisionCacheKey(secid) { return `${DECISION_CACHE_KEY_PREFIX}${secid}`; }
+function isKlineCacheKey(id) { return !NON_KLINE_CACHE_KEYS.has(id) && !isDecisionCacheKey(id); }
 function buildPersistentCacheRecord(id, data) {
     return { id, data, updated: Date.now(), ...(isKlineCacheKey(id) ? { klineCacheVersion: KLINE_CACHE_VERSION } : {}) };
 }
@@ -1584,7 +1589,7 @@ function dbGet(id) {
 function dbSet(id, data) {
     return new Promise(resolve => {
         if (!DB) return resolve();
-        data = id === 'stock_cache' || id === 'watchlist_list' ? data : normalizeConfirmedHistoryData(data, id);
+        data = (id === 'stock_cache' || id === 'watchlist_list' || isDecisionCacheKey(id)) ? data : normalizeConfirmedHistoryData(data, id);
         try {
             const tx = DB.transaction(STORE, 'readwrite');
             tx.objectStore(STORE).put(buildPersistentCacheRecord(id, data));
@@ -2039,6 +2044,48 @@ async function preloadCacheOnly() {
             }
         } catch(e) {}
     }
+}
+
+// 决策快照持久化：把内存里已算好的策略决策落盘，供下次冷启动直接复用，
+// 省掉自选股多时“重算风暴”。写入的 payload 由 03-decision.js 组装并盖上版本戳，
+// 读取水合时逐一校验版本，任一不符即丢弃、照旧重算（正确性优先于命中率）。
+let _lastPersistedDecisionCacheKey = new Map();
+function persistDerivedDecisionCache(secid, payload) {
+    if (!DB || !secid || !payload || !payload.cacheKey) return;
+    // 同一标的 cacheKey 未变则不重复写盘，避免图表反复重绘触发写放大。
+    if (_lastPersistedDecisionCacheKey.get(secid) === payload.cacheKey) return;
+    _lastPersistedDecisionCacheKey.set(secid, payload.cacheKey);
+    try {
+        dbSet(buildDecisionCacheKey(secid), payload);
+    } catch (error) {}
+}
+
+async function hydrateWatchlistDecisionCache() {
+    if (!DB || typeof derivedIndicatorCache === 'undefined') return 0;
+    if (typeof isReusableDecisionCacheRecord !== 'function') return 0;
+    const targets = (typeof getSupportedWatchlistTargets === 'function')
+        ? getSupportedWatchlistTargets()
+        : (state.watchlist || []).map(stock => normalizeSecurityTarget(stock)).filter(target => isSupportedWatchlistSecurity(target));
+    let hydrated = 0;
+    for (const target of targets) {
+        const secid = target.secid;
+        if (!secid) continue;
+        try {
+            const record = await dbGet(buildDecisionCacheKey(secid));
+            const payload = record && record.data;
+            if (!isReusableDecisionCacheRecord(payload)) continue;
+            // 已在内存（本会话已算过）则不覆盖。
+            if (derivedIndicatorCache.has(payload.cacheKey)) continue;
+            derivedIndicatorCache.set(payload.cacheKey, {
+                decisionGovernanceVersion: payload.decisionGovernanceVersion,
+                indicators: payload.indicators,
+                rows: payload.rows
+            });
+            _lastPersistedDecisionCacheKey.set(secid, payload.cacheKey);
+            hydrated++;
+        } catch (error) {}
+    }
+    return hydrated;
 }
 
 function shouldEnsureMarketTemperatureData(id) {

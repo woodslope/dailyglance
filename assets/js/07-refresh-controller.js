@@ -10,6 +10,10 @@ function scheduleIdleTask(fn, timeout = 300) {
 function scheduleStartupBackgroundHydration() {
     scheduleIdleTask(async () => {
         await preloadCacheOnly();
+        // 冷启动先用落盘的决策缓存水合内存，命中后自选股快照直接复用、跳过重算。
+        if (typeof hydrateWatchlistDecisionCache === 'function') {
+            try { await hydrateWatchlistDecisionCache(); } catch (error) {}
+        }
         if (state.mode === 'index') {
             renderIndexList();
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();

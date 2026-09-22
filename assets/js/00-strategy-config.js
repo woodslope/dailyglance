@@ -1,7 +1,7 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-09-21-05';
+const APP_BUILD = '2026-09-22-01';
 const SIGNAL_VERSION = 'v4.2.42';
 const WAVE_GOVERNANCE_VERSION = 'wave-regime-v7';
 window.__DG_BUILD__ = APP_BUILD;

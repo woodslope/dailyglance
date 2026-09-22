@@ -1606,27 +1606,65 @@ function getIndicatorKey(data = getActiveData()) {
     return buildIndicatorKeyForData(state.id, state.period, state.strategy, data);
 }
 
+// 落盘决策缓存版本：payload 结构变化时 bump，让旧记录整体作废。
+const DECISION_CACHE_RECORD_VERSION = 1;
+
+// 组装可落盘的决策缓存 payload，盖上四道校验闸：
+// 记录版本、SIGNAL_VERSION、WAVE_GOVERNANCE_VERSION、strategy。
+// cacheKey 本身已含数据内容哈希，读取时按当前数据重算的 key 对不上即自然 miss。
+function buildDecisionCacheRecord(cacheKey, strategy, indicators, rows) {
+    return {
+        decisionCacheVersion: DECISION_CACHE_RECORD_VERSION,
+        signalVersion: SIGNAL_VERSION,
+        decisionGovernanceVersion: WAVE_GOVERNANCE_VERSION,
+        strategy,
+        cacheKey,
+        indicators,
+        rows
+    };
+}
+
+// 水合闸门：任一版本戳或结构不符即拒绝复用，强制照旧重算。
+// 这是跨会话持久化唯一的正确性风险点——策略逻辑升级 bump 版本后，
+// 绝不能让用户看到旧缓存算出的买卖点。
+function isReusableDecisionCacheRecord(record) {
+    if (!record || typeof record !== 'object') return false;
+    if (record.decisionCacheVersion !== DECISION_CACHE_RECORD_VERSION) return false;
+    if (record.signalVersion !== SIGNAL_VERSION) return false;
+    if (record.decisionGovernanceVersion !== WAVE_GOVERNANCE_VERSION) return false;
+    if (!record.cacheKey || typeof record.cacheKey !== 'string') return false;
+    if (!record.indicators || !record.indicators.macd || !record.indicators.rsi || !record.indicators.kdj) return false;
+    if (!Array.isArray(record.rows) || !record.rows.length) return false;
+    return true;
+}
+
 function storeDerivedIndicatorCache(id, period, strategy, data, indicators) {
     if (!id || !period || !strategy || !data?.length || !indicators?.macd || !indicators?.rsi || !indicators?.kdj) return;
     const cacheKey = buildIndicatorKeyForData(id, period, strategy, data);
     if (!cacheKey) return;
+    const entryIndicators = {
+        ma: { ...(indicators.ma || {}) },
+        macd: indicators.macd,
+        rsi: indicators.rsi,
+        kdj: indicators.kdj
+    };
+    const entryRows = data.map(item => item ? ({
+        _signals: item._signals,
+        _signalVersion: item._signalVersion,
+        _strategy: item._strategy,
+        _decision: item._decision
+    }) : null);
     derivedIndicatorCache.set(cacheKey, {
         decisionGovernanceVersion: WAVE_GOVERNANCE_VERSION,
-        indicators: {
-            ma: { ...(indicators.ma || {}) },
-            macd: indicators.macd,
-            rsi: indicators.rsi,
-            kdj: indicators.kdj
-        },
-        rows: data.map(item => item ? ({
-            _signals: item._signals,
-            _signalVersion: item._signalVersion,
-            _strategy: item._strategy,
-            _decision: item._decision
-        }) : null)
+        indicators: entryIndicators,
+        rows: entryRows
     });
     if (derivedIndicatorCache.size > SYS_CONFIG.RENDER_CACHE_SIZE) {
         derivedIndicatorCache.delete(derivedIndicatorCache.keys().next().value);
+    }
+    // 仅日线决策会用于自选股冷启动快照，落盘范围限定 daily，避免存周线图表态。
+    if (period === 'daily' && typeof persistDerivedDecisionCache === 'function') {
+        persistDerivedDecisionCache(id, buildDecisionCacheRecord(cacheKey, strategy, entryIndicators, entryRows));
     }
 }
 
