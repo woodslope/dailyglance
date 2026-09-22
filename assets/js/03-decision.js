@@ -1108,7 +1108,14 @@ function getWaveEntryDefenseContext(idx, full, waveContext, rawSignals, strategy
         localDefense = Number(defense?.localLevel) || signalLow;
         hardDefense = Number(defense?.structureLevel) || signalLow;
         supportSource = defense?.structureLevel ? 'b11-structure' : 'b11-signal-low';
-    } else if ((rawSignals.includes('B20') || Number.isInteger(recentB19Day)) && Number.isFinite(Number(waveContext?.boxSupport))) {
+    } else if ((rawSignals.includes('B20') || Number.isInteger(recentB19Day))
+        && waveContext?.boxSupport != null
+        && Number.isFinite(Number(waveContext.boxSupport))
+        && Number(waveContext.boxSupport) > 0
+        && Number(waveContext.boxSupport) < close) {
+        // 箱体无效时 boxSupport 为 null，Number(null)===0 会误通过 isFinite 检查，
+        // 导致 hardDefense 被设成 0（冻结硬防守位形同虚设，永不触发跌破清仓）。
+        // 必须显式排除 null 且要求支撑位为正且低于收盘，否则回落到默认 pivot/signalLow。
         hardDefense = Number(waveContext.boxSupport);
         supportSource = 'box-support';
     } else if (rawSignals.includes('B16')) {
