@@ -742,7 +742,14 @@ function createContext(indexData) {
     const context = makeBrowserContext();
     vm.runInContext(`${read('assets/js/00-strategy-config.js')}\n${read('assets/js/01-config-ui.js')}`, context);
     vm.runInContext(read('assets/js/02-data.js'), context);
-    vm.runInContext(read('assets/js/03-calculations.js'), context);
+    vm.runInContext([
+        'assets/js/03-calculations.js',
+        'assets/js/03-explain.js',
+        'assets/js/03-summary.js',
+        'assets/js/03-wave-regime.js',
+        'assets/js/03-wave-rejection.js',
+        'assets/js/03-decision.js'
+    ].map(read).join('\n'), context);
     vm.runInContext('globalThis.__formalBaseStrategies = JSON.parse(JSON.stringify(STRATEGIES));', context);
     context.__indexData = Object.fromEntries(Object.entries(indexData).map(([id, rows]) => [id, cloneRows(rows)]));
     vm.runInContext(`

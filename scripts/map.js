@@ -37,7 +37,7 @@ function listModuleFiles() {
 // 否则回退首行 "/* DailyGlance [N] - description ... */"。
 function extractResponsibility(lines) {
     for (const line of lines.slice(0, 8)) {
-        const m = line.match(/^\s*\/\/\s*(\[\d+\].*\S)\s*$/);
+        const m = line.match(/^\s*\/\/\s*(\[\d+[A-Z]?\].*\S)\s*$/);
         if (m && !/=====/.test(m[1])) return m[1].trim();
     }
     const banner = (lines[0] || '').match(/^\/\*\s*DailyGlance\s*(\[[^\]]*\][^.]*?)(?:\.\s|\.\s*Keep|\s*\*\/)/);

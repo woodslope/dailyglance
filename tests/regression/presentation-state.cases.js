@@ -813,6 +813,21 @@ runTest('build version is bumped consistently', () => {
     assert.ok(indexSource.indexOf('assets/js/00-strategy-config.js') < indexSource.indexOf('assets/js/01-config-ui.js'), 'production strategy config must load before UI state');
     assert.ok(indexSource.indexOf('assets/js/02-data.js') < indexSource.indexOf('assets/js/02-observation-data.js'), 'core market data must load before the observation data layer');
     assert.ok(indexSource.indexOf('assets/js/02-observation-data.js') < indexSource.indexOf('assets/js/03-calculations.js'), 'observation data must load before application calculations and lifecycle scripts');
+    // 03 核心算法层已按职责拆分为多个 03-*.js；它们必须保持切分顺序，且整体在渲染层之前加载。
+    const calcModuleOrder = [
+        'assets/js/03-calculations.js',
+        'assets/js/03-explain.js',
+        'assets/js/03-summary.js',
+        'assets/js/03-wave-regime.js',
+        'assets/js/03-wave-rejection.js',
+        'assets/js/03-decision.js'
+    ];
+    const calcModuleIndexes = calcModuleOrder.map(file => indexSource.indexOf(file));
+    assert.ok(calcModuleIndexes.every(idx => idx > 0), 'all split 03-*.js calculation modules must be present in index.html');
+    for (let i = 1; i < calcModuleIndexes.length; i++) {
+        assert.ok(calcModuleIndexes[i - 1] < calcModuleIndexes[i], `${calcModuleOrder[i]} must load after ${calcModuleOrder[i - 1]} to preserve split order`);
+    }
+    assert.ok(calcModuleIndexes[calcModuleIndexes.length - 1] < indexSource.indexOf('assets/js/04-render.js'), 'all calculation modules must load before the render layer');
     assert.ok(indexSource.indexOf('assets/js/06-settings.js') < indexSource.indexOf('assets/js/07-refresh-controller.js'), 'refresh controller must load after settings controller');
     assert.ok(strategyInspectorSource.includes('assets/js/00-strategy-config.js') && !/<script[^>]+assets\/js\/01-config-ui\.js/.test(strategyInspectorSource), 'strategy inspector must read production strategy config without initializing the main application UI');
     assert.ok(indexSource.includes(`assets/vendor/chart.umd.min.js?v=${VERSION.resourceVersion}`), 'Chart.js should load from local vendor first');

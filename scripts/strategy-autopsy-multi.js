@@ -19,7 +19,14 @@ const configSrc = [
     fs.readFileSync(path.join(ROOT, 'assets/js/01-config-ui.js'), 'utf8')
 ].join('\n');
 const dataSrc = fs.readFileSync(path.join(ROOT, 'assets/js/02-data.js'), 'utf8');
-const calcSrc = fs.readFileSync(path.join(ROOT, 'assets/js/03-calculations.js'), 'utf8');
+const calcSrc = [
+    'assets/js/03-calculations.js',
+    'assets/js/03-explain.js',
+    'assets/js/03-summary.js',
+    'assets/js/03-wave-regime.js',
+    'assets/js/03-wave-rejection.js',
+    'assets/js/03-decision.js'
+].map(f => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
 
 const elements = new Map(); const storage = new Map();
 const makeEl = () => ({ style:{},dataset:{},innerHTML:'',innerText:'',disabled:false,classList:{add(){},remove(){},contains(){return false},toggle(){}},focus(){},querySelector(){return null},querySelectorAll(){return[]},addEventListener(){},appendChild(){},remove(){} });

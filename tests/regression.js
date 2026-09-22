@@ -22,7 +22,14 @@ const uiConfigSource = read('assets/js/01-config-ui.js');
 const configSource = `${strategyConfigSource}\n${uiConfigSource}`;
 const indexSource = read('index.html');
 const strategyInspectorSource = read('strategy-inspector.html');
-const calcSource = read('assets/js/03-calculations.js');
+const calcSource = [
+    'assets/js/03-calculations.js',
+    'assets/js/03-explain.js',
+    'assets/js/03-summary.js',
+    'assets/js/03-wave-regime.js',
+    'assets/js/03-wave-rejection.js',
+    'assets/js/03-decision.js'
+].map(read).join('\n');
 const renderSource = read('assets/js/04-render.js');
 const cssSource = read('assets/css/dailyglance.css');
 const agentsSource = read('AGENTS.md');
