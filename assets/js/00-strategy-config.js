@@ -1,8 +1,8 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-09-21-04';
-const SIGNAL_VERSION = 'v4.2.41';
+const APP_BUILD = '2026-09-21-05';
+const SIGNAL_VERSION = 'v4.2.42';
 const WAVE_GOVERNANCE_VERSION = 'wave-regime-v7';
 window.__DG_BUILD__ = APP_BUILD;
 
@@ -71,7 +71,7 @@ STRATEGIES['波段抄底型'].waveRegimePolicy = {
     // 硬防守随已确认结构上移时，必须给收盘价留出的最小缓冲；缓冲不足说明防守位已进入当日噪音带，本次不上移。
     ratchet: { minimumBufferAtr: 0.5 },
     down: { entrySignals: ['B9','B16','B20'], repairSignals: ['B7','B8','B9','B16','B17','B20'], minimumRepairGroups: 2 },
-    range: { entrySignals: ['B5','B6','B7','B8','B9','B11','B16','B17','B20'], confirmationSignals: ['B5','B6','B7','B8','B9','B11','B16','B17','B20'] },
+    range: { entrySignals: ['B5','B6','B7','B8','B9','B11','B16','B17','B20'], confirmationSignals: ['B5','B6','B7','B8','B9','B11','B16','B17','B20'], defenseUsesBoxLowerEdge: true },
     up: { entrySignals: ['B6','B11'], confirmationSignals: ['B6','B11'], trendSignals: ['B4','B14'] }
 };
 
