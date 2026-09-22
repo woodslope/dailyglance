@@ -120,6 +120,7 @@ function replaySymbol(context, symbol, prepared) {
                         rejectionEventType: rejection?.eventType || '',
                         entrySignalLow: rejection?.entrySignalLow ?? null,
                         entryAge: rejection?.entryAge ?? null,
+                        recoveryCloseLevel: Number.isFinite(Number(rejection?.recoveryCloseLevel)) ? Number(rejection.recoveryCloseLevel) : null,
                         positionDriver: decision.positionDriver || ''
                     };
                 })
@@ -233,6 +234,54 @@ function analyzeSymbol(symbol, rows) {
         exitReasonsByRegime[trade.exitRegime][trade.exitReason] = (exitReasonsByRegime[trade.exitRegime][trade.exitReason] || 0) + 1;
     }
 
+    // 信号硬失效事件观察：区分“保留30%观察” vs “清仓归零”，并对清仓的检查其后是否很快收复失效位。
+    // recoveryCloseLevel 是决策链记录的“需收复价位”（失效位或风险日高点）。
+    const RECOVER_BARS = 5;
+    // 追踪每个“新信号硬失效事件”的完整结局：当天是保留30%还是清仓；
+    // 若当天保留30%，其后是否很快（≤5日）被清仓（多为锁定期被结构硬失效接管）；被清后是否很快收复。
+    const signalInvalidation = {
+        events: 0, heldDay1: 0, clearedDay1: 0,
+        heldThenClearedSoon: 0, heldThenClearedRecovered: 0,
+        clearedRecovered: 0, clearedRecoveredDays: []
+    };
+    for (let i = START_INDEX; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.rejectionEventType !== 'signal_hard_invalidation') continue;
+        const prev = rows[i - 1];
+        const isFreshEventDay = !prev || prev.rejectionEventType !== 'signal_hard_invalidation';
+        if (!isFreshEventDay) continue;
+        signalInvalidation.events += 1;
+        const target = Number.isFinite(row.recoveryCloseLevel) ? row.recoveryCloseLevel : null;
+        const recoveredWithin = () => {
+            if (target == null) return -1;
+            for (let j = i + 1; j <= Math.min(rows.length - 1, i + RECOVER_BARS); j++) {
+                if (Number(rows[j].close) >= target) return j - i;
+            }
+            return -1;
+        };
+        if (row.position <= 0) {
+            // 事件当天即清仓。
+            signalInvalidation.clearedDay1 += 1;
+            const rd = recoveredWithin();
+            if (rd >= 0) { signalInvalidation.clearedRecovered += 1; signalInvalidation.clearedRecoveredDays.push(rd); }
+            continue;
+        }
+        // 事件当天保留仓位；看其后 ≤5 日是否被清到 0（锁定期被接管清仓）。
+        signalInvalidation.heldDay1 += 1;
+        let clearedAt = -1;
+        for (let j = i + 1; j <= Math.min(rows.length - 1, i + RECOVER_BARS); j++) {
+            if (Number(rows[j].position) <= 0) { clearedAt = j; break; }
+        }
+        if (clearedAt >= 0) {
+            signalInvalidation.heldThenClearedSoon += 1;
+            if (target != null) {
+                for (let j = clearedAt + 1; j <= Math.min(rows.length - 1, clearedAt + RECOVER_BARS); j++) {
+                    if (Number(rows[j].close) >= target) { signalInvalidation.heldThenClearedRecovered += 1; break; }
+                }
+            }
+        }
+    }
+
     // 非下跌环境「跌破冻结硬防守位」离场日：收盘在箱体内的位置分布 + 当日是否只有 L3 触发。
     // 用于判断这些卖点是否发生在下沿附近（该扛/该加）而非上沿（该卖）。
     const defenseBreakNonDown = trades.filter(t =>
@@ -274,6 +323,7 @@ function analyzeSymbol(symbol, rows) {
         entryGapsByRegime, entrySourceByRegime, reentries, exitReasonsByRegime,
         defenseBreakNonDownCount: defenseBreakNonDown.length,
         defenseBreakBoxLocations, defenseBreakL3Only, defenseBreakLowerHalf,
+        signalInvalidation,
         peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
         shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
     };
@@ -311,7 +361,8 @@ function buildReport(reports, meta) {
         trades: 0, shortTrades: 0, exitReasons: {}, entryRegimes: {}, maxPositions: {},
         entryPremiums: [], exitDiscounts: [], rets: [], bars: [],
         entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: [], exitReasonsByRegime: {},
-        defenseBreakBoxLocations: [], defenseBreakNonDownCount: 0, defenseBreakL3Only: 0, defenseBreakLowerHalf: 0
+        defenseBreakBoxLocations: [], defenseBreakNonDownCount: 0, defenseBreakL3Only: 0, defenseBreakLowerHalf: 0,
+        signalInvalidation: { events: 0, heldDay1: 0, clearedDay1: 0, heldThenClearedSoon: 0, heldThenClearedRecovered: 0, clearedRecovered: 0, clearedRecoveredDays: [] }
     };
 
     for (const report of reports) {
@@ -342,6 +393,14 @@ function buildReport(reports, meta) {
         total.defenseBreakNonDownCount += report.defenseBreakNonDownCount || 0;
         total.defenseBreakL3Only += report.defenseBreakL3Only || 0;
         total.defenseBreakLowerHalf += report.defenseBreakLowerHalf || 0;
+        const si = report.signalInvalidation || {};
+        total.signalInvalidation.events += si.events || 0;
+        total.signalInvalidation.heldDay1 += si.heldDay1 || 0;
+        total.signalInvalidation.clearedDay1 += si.clearedDay1 || 0;
+        total.signalInvalidation.heldThenClearedSoon += si.heldThenClearedSoon || 0;
+        total.signalInvalidation.heldThenClearedRecovered += si.heldThenClearedRecovered || 0;
+        total.signalInvalidation.clearedRecovered += si.clearedRecovered || 0;
+        total.signalInvalidation.clearedRecoveredDays.push(...(si.clearedRecoveredDays || []));
         for (const trade of report.trades) {
             if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
             if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
@@ -406,6 +465,17 @@ function buildReport(reports, meta) {
             ? `箱体内位置 中位 ${pct(quantile(dbLoc, 0.5))}（0=下沿,1=上沿），下半区(≤0.5) ${total.defenseBreakLowerHalf}/${withBox} = ${share(total.defenseBreakLowerHalf, withBox)}`
             : '这些离场日当时箱体无效，无上下沿参照';
         lines.push(`- 非下跌环境「跌破冻结硬防守位」离场：${total.defenseBreakNonDownCount} 次｜仅 L3 触发 ${total.defenseBreakL3Only}（${share(total.defenseBreakL3Only, total.defenseBreakNonDownCount)}）｜有效箱体 ${withBox} 次：${locText}`);
+    }
+    // 信号硬失效事件：保留30% vs 清仓，以及清仓后是否很快收复需收复价位（判断是否被洗）。
+    const si = total.signalInvalidation;
+    if (si.events) {
+        lines.push(`- 信号硬失效事件（新事件，n=${si.events}）：当天保留30% ${si.heldDay1}（${share(si.heldDay1, si.events)}）、当天即清仓 ${si.clearedDay1}（${share(si.clearedDay1, si.events)}）`);
+        if (si.clearedDay1) {
+            lines.push(`  - 当天清仓者，≤5 日收复需收复价位：${si.clearedRecovered}/${si.clearedDay1} = ${share(si.clearedRecovered, si.clearedDay1)}`);
+        }
+        if (si.heldDay1) {
+            lines.push(`  - 当天保留者，≤5 日内被清到 0：${si.heldThenClearedSoon}/${si.heldDay1} = ${share(si.heldThenClearedSoon, si.heldDay1)}；其中被清后又≤5 日收复 ${si.heldThenClearedRecovered}（这些是“先留后清又收复”的被洗嫌疑）`);
+        }
     }
     lines.push('');
 
