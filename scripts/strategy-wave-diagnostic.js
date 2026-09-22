@@ -111,6 +111,7 @@ function replaySymbol(context, symbol, prepared) {
                         boxSupport: Number.isFinite(Number(wave.boxSupport)) ? Number(wave.boxSupport) : null,
                         boxPressure: Number.isFinite(Number(wave.boxPressure)) ? Number(wave.boxPressure) : null,
                         exitSignalsToday: (row._signals || []).filter(s => (STRATEGY.exitSignals || []).includes(s)),
+                        warningSignalsToday: (row._signals || []).filter(s => (STRATEGY.warningSignals || []).includes(s)),
                         consecutiveDays: wave.consecutiveDays ?? null, requiredDays: wave.requiredDays ?? null,
                         hardDefense: wave.frozenHardDefense ?? null, supportSource: wave.supportSource || '',
                         peakConfirmed: !!(decision.wavePeak && decision.wavePeak.confirmed),
@@ -234,6 +235,21 @@ function analyzeSymbol(symbol, rows) {
         exitReasonsByRegime[trade.exitRegime][trade.exitReason] = (exitReasonsByRegime[trade.exitRegime][trade.exitReason] || 0) + 1;
     }
 
+    // W1「偏离均线过大」预警观察：W1 期间的持仓分布、上涨环境中 W1 是否伴随“持有但被卡在低档/无法加仓”。
+    // W1 = 收盘偏离 MA60 超过 25%（过热预警），会把仓位压到 ≤30% 并阻断多条建仓/加仓资格。
+    const w1 = { days: 0, daysUp: 0, heldUpDays: 0, upW1PosCounts: {}, upNoW1PosCounts: {} };
+    for (const row of window) {
+        const hasW1 = (row.warningSignalsToday || []).includes('W1');
+        if (hasW1) {
+            w1.days += 1;
+            if (row.regime === 'up') { w1.daysUp += 1; if (row.position > 0) w1.heldUpDays += 1; }
+        }
+        if (row.regime === 'up') {
+            const bucket = hasW1 ? w1.upW1PosCounts : w1.upNoW1PosCounts;
+            bucket[row.position] = (bucket[row.position] || 0) + 1;
+        }
+    }
+
     // 信号硬失效事件观察：区分“保留30%观察” vs “清仓归零”，并对清仓的检查其后是否很快收复失效位。
     // recoveryCloseLevel 是决策链记录的“需收复价位”（失效位或风险日高点）。
     const RECOVER_BARS = 5;
@@ -337,7 +353,7 @@ function analyzeSymbol(symbol, rows) {
         entryGapsByRegime, entrySourceByRegime, reentries, exitReasonsByRegime,
         defenseBreakNonDownCount: defenseBreakNonDown.length,
         defenseBreakBoxLocations, defenseBreakL3Only, defenseBreakLowerHalf,
-        signalInvalidation,
+        signalInvalidation, w1,
         peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
         shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
     };
@@ -376,7 +392,8 @@ function buildReport(reports, meta) {
         entryPremiums: [], exitDiscounts: [], rets: [], bars: [],
         entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: [], exitReasonsByRegime: {},
         defenseBreakBoxLocations: [], defenseBreakNonDownCount: 0, defenseBreakL3Only: 0, defenseBreakLowerHalf: 0,
-        signalInvalidation: { events: 0, heldDay1: 0, clearedDay1: 0, heldThenClearedSoon: 0, heldThenClearedRecovered: 0, clearedByTrueBreak: 0, clearedByCollateral: 0, clearedByOther: 0, clearedRecovered: 0, clearedRecoveredDays: [] }
+        signalInvalidation: { events: 0, heldDay1: 0, clearedDay1: 0, heldThenClearedSoon: 0, heldThenClearedRecovered: 0, clearedByTrueBreak: 0, clearedByCollateral: 0, clearedByOther: 0, clearedRecovered: 0, clearedRecoveredDays: [] },
+        w1: { days: 0, daysUp: 0, heldUpDays: 0, upW1PosCounts: {}, upNoW1PosCounts: {} }
     };
 
     for (const report of reports) {
@@ -418,6 +435,12 @@ function buildReport(reports, meta) {
         total.signalInvalidation.clearedByOther += si.clearedByOther || 0;
         total.signalInvalidation.clearedRecovered += si.clearedRecovered || 0;
         total.signalInvalidation.clearedRecoveredDays.push(...(si.clearedRecoveredDays || []));
+        const w = report.w1 || {};
+        total.w1.days += w.days || 0;
+        total.w1.daysUp += w.daysUp || 0;
+        total.w1.heldUpDays += w.heldUpDays || 0;
+        mergeCounts(total.w1.upW1PosCounts, w.upW1PosCounts || {});
+        mergeCounts(total.w1.upNoW1PosCounts, w.upNoW1PosCounts || {});
         for (const trade of report.trades) {
             if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
             if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
@@ -494,6 +517,13 @@ function buildReport(reports, meta) {
             lines.push(`  - 当天保留者，≤5 日内被清到 0：${si.heldThenClearedSoon}/${si.heldDay1} = ${share(si.heldThenClearedSoon, si.heldDay1)}；其中被清后又≤5 日收复 ${si.heldThenClearedRecovered}（“先留后清又收复”的被洗嫌疑）`);
             lines.push(`    · 被清清仓当天的驱动：真跌破冻结防守位/箱体下沿 ${si.clearedByTrueBreak}、连坐(数据/硬风险或结构硬失效优先) ${si.clearedByCollateral}、其它 ${si.clearedByOther}`);
         }
+    }
+    // W1「偏离均线过大」预警：上涨环境里 W1 期间的持仓与仓位档位，判断“过热预警是否卡住了上涨中的加仓”。
+    const w1 = total.w1;
+    if (w1.days) {
+        lines.push(`- W1 偏离均线过大预警：${w1.days} 日｜其中上涨环境 ${w1.daysUp} 日、上涨环境W1日有持仓 ${w1.heldUpDays}（${share(w1.heldUpDays, w1.daysUp)}）`);
+        const fmtPos = counts => Object.entries(counts).sort((a, b) => Number(a[0]) - Number(b[0])).map(([p, n]) => `${p}%×${n}`).join('、') || '无';
+        lines.push(`  - 上涨环境仓位档位分布：W1日 [${fmtPos(w1.upW1PosCounts)}]｜非W1日 [${fmtPos(w1.upNoW1PosCounts)}]`);
     }
     lines.push('');
 
