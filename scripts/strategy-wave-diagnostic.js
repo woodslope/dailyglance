@@ -215,10 +215,14 @@ function analyzeSymbol(symbol, rows) {
     const exitReasons = {};
     const entryRegimes = {};
     const maxPositions = {};
+    // 按离场环境切分离场成因，用于观察非下跌环境到底靠什么卖出（是否箱体上沿 vs MACD死叉/硬防守）。
+    const exitReasonsByRegime = {};
     for (const trade of trades) {
         exitReasons[trade.exitReason] = (exitReasons[trade.exitReason] || 0) + 1;
         entryRegimes[trade.entryRegime] = (entryRegimes[trade.entryRegime] || 0) + 1;
         maxPositions[trade.maxPosition] = (maxPositions[trade.maxPosition] || 0) + 1;
+        exitReasonsByRegime[trade.exitRegime] = exitReasonsByRegime[trade.exitRegime] || {};
+        exitReasonsByRegime[trade.exitRegime][trade.exitReason] = (exitReasonsByRegime[trade.exitRegime][trade.exitReason] || 0) + 1;
     }
 
     // 卖出→很快重新买入的“来回”观察：上一笔离场日到下一笔建仓日的间隔。
@@ -249,7 +253,7 @@ function analyzeSymbol(symbol, rows) {
         id: symbol.id, name: symbol.name,
         firstDate: window[0]?.date || '', lastDate: window.at(-1)?.date || '', days: window.length,
         regimeDays, regimeHeldDays, transitionCauses, entryGaps, ratchetGaps,
-        entryGapsByRegime, entrySourceByRegime, reentries,
+        entryGapsByRegime, entrySourceByRegime, reentries, exitReasonsByRegime,
         peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
         shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
     };
@@ -286,7 +290,7 @@ function buildReport(reports, meta) {
         entryGaps: [], ratchetGaps: [], peakHeldDays: 0, peakReducedDays: 0,
         trades: 0, shortTrades: 0, exitReasons: {}, entryRegimes: {}, maxPositions: {},
         entryPremiums: [], exitDiscounts: [], rets: [], bars: [],
-        entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: []
+        entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: [], exitReasonsByRegime: {}
     };
 
     for (const report of reports) {
@@ -310,6 +314,9 @@ function buildReport(reports, meta) {
             total.entrySourceByRegime[regime] = mergeCounts(total.entrySourceByRegime[regime] || {}, sources);
         }
         total.reentries.push(...(report.reentries || []));
+        for (const [regime, reasons] of Object.entries(report.exitReasonsByRegime || {})) {
+            total.exitReasonsByRegime[regime] = mergeCounts(total.exitReasonsByRegime[regime] || {}, reasons);
+        }
         for (const trade of report.trades) {
             if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
             if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
@@ -358,6 +365,13 @@ function buildReport(reports, meta) {
         lines.push(`- 卖出后 ≤5 日重新买入（来回）：${reentries.length} 次｜其中重入后最高仓位与上一笔同档 ${sameTier}（${share(sameTier, reentries.length)}）｜非下跌环境离场触发 ${nonDown}（${share(nonDown, reentries.length)}）`);
         lines.push(`  - 来回的离场成因：${renderCounts(byReason, reentries.length)}`);
         lines.push(`  - 来回的离场环境：${renderCounts(byExitRegime, reentries.length)}`);
+    }
+    // 各离场环境靠什么卖出：观察非下跌环境是否主要靠 MACD死叉/硬防守（而非箱体上沿）。
+    for (const regime of ['down', 'range', 'up', 'transition']) {
+        const reasons = total.exitReasonsByRegime[regime];
+        if (!reasons) continue;
+        const count = Object.values(reasons).reduce((a, b) => a + b, 0);
+        lines.push(`- ${REGIME_LABELS[regime]}环境离场成因（n=${count}）：${renderCounts(reasons, count)}`);
     }
     lines.push('');
 
