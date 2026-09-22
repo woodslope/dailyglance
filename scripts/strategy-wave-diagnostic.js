@@ -108,6 +108,9 @@ function replaySymbol(context, symbol, prepared) {
                         bsMark: decision.bsMark || null, action: decision.simpleAction || '',
                         regime: wave.regime || 'unknown', rawRegime: raw.key,
                         boxValid: !!(wave.box && wave.box.valid),
+                        boxSupport: Number.isFinite(Number(wave.boxSupport)) ? Number(wave.boxSupport) : null,
+                        boxPressure: Number.isFinite(Number(wave.boxPressure)) ? Number(wave.boxPressure) : null,
+                        exitSignalsToday: (row._signals || []).filter(s => (STRATEGY.exitSignals || []).includes(s)),
                         consecutiveDays: wave.consecutiveDays ?? null, requiredDays: wave.requiredDays ?? null,
                         hardDefense: wave.frozenHardDefense ?? null, supportSource: wave.supportSource || '',
                         peakConfirmed: !!(decision.wavePeak && decision.wavePeak.confirmed),
@@ -161,6 +164,10 @@ function collectTrades(rows) {
         const segment = rows.slice(open.startIdx, idx + 1);
         const segmentLow = Math.min(...segment.map(item => item.low));
         const segmentHigh = Math.max(...segment.map(item => item.high));
+        // 离场日收盘在箱体内的位置：0=下沿、1=上沿。用于判断非下跌环境是否在“下沿附近”被洗掉。
+        const exitBoxLocation = Number.isFinite(row.boxSupport) && Number.isFinite(row.boxPressure) && row.boxPressure > row.boxSupport
+            ? (row.close - row.boxSupport) / (row.boxPressure - row.boxSupport)
+            : null;
         trades.push({
             ...open,
             endIdx: idx,
@@ -168,7 +175,8 @@ function collectTrades(rows) {
             ret: (row.close - open.entry) / open.entry,
             entryPremium: segmentLow > 0 ? (open.entry - segmentLow) / segmentLow : NaN,
             exitDiscount: segmentHigh > 0 ? (segmentHigh - row.close) / segmentHigh : NaN,
-            exitRegime: row.regime, exitReason: classifyExit(row.event), exitAction: row.action
+            exitRegime: row.regime, exitReason: classifyExit(row.event), exitAction: row.action,
+            exitBoxLocation, exitSignals: row.exitSignalsToday || [], exitHadBox: Number.isFinite(exitBoxLocation)
         });
         open = null;
     }
@@ -225,6 +233,16 @@ function analyzeSymbol(symbol, rows) {
         exitReasonsByRegime[trade.exitRegime][trade.exitReason] = (exitReasonsByRegime[trade.exitRegime][trade.exitReason] || 0) + 1;
     }
 
+    // 非下跌环境「跌破冻结硬防守位」离场日：收盘在箱体内的位置分布 + 当日是否只有 L3 触发。
+    // 用于判断这些卖点是否发生在下沿附近（该扛/该加）而非上沿（该卖）。
+    const defenseBreakNonDown = trades.filter(t =>
+        t.exitReason === '跌破冻结硬防守位' && t.exitRegime !== 'down');
+    const defenseBreakBoxLocations = defenseBreakNonDown
+        .map(t => t.exitBoxLocation).filter(v => Number.isFinite(v));
+    const defenseBreakL3Only = defenseBreakNonDown.filter(t =>
+        t.exitSignals.length === 1 && t.exitSignals[0] === 'L3').length;
+    const defenseBreakLowerHalf = defenseBreakBoxLocations.filter(v => v <= 0.5).length;
+
     // 卖出→很快重新买入的“来回”观察：上一笔离场日到下一笔建仓日的间隔。
     // 记录快速重入（间隔≤REENTRY_BARS）的离场成因、离场环境、以及重入后最高仓位是否回到与上一笔同档。
     const REENTRY_BARS = 5;
@@ -254,6 +272,8 @@ function analyzeSymbol(symbol, rows) {
         firstDate: window[0]?.date || '', lastDate: window.at(-1)?.date || '', days: window.length,
         regimeDays, regimeHeldDays, transitionCauses, entryGaps, ratchetGaps,
         entryGapsByRegime, entrySourceByRegime, reentries, exitReasonsByRegime,
+        defenseBreakNonDownCount: defenseBreakNonDown.length,
+        defenseBreakBoxLocations, defenseBreakL3Only, defenseBreakLowerHalf,
         peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
         shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
     };
@@ -290,7 +310,8 @@ function buildReport(reports, meta) {
         entryGaps: [], ratchetGaps: [], peakHeldDays: 0, peakReducedDays: 0,
         trades: 0, shortTrades: 0, exitReasons: {}, entryRegimes: {}, maxPositions: {},
         entryPremiums: [], exitDiscounts: [], rets: [], bars: [],
-        entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: [], exitReasonsByRegime: {}
+        entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: [], exitReasonsByRegime: {},
+        defenseBreakBoxLocations: [], defenseBreakNonDownCount: 0, defenseBreakL3Only: 0, defenseBreakLowerHalf: 0
     };
 
     for (const report of reports) {
@@ -317,6 +338,10 @@ function buildReport(reports, meta) {
         for (const [regime, reasons] of Object.entries(report.exitReasonsByRegime || {})) {
             total.exitReasonsByRegime[regime] = mergeCounts(total.exitReasonsByRegime[regime] || {}, reasons);
         }
+        total.defenseBreakBoxLocations.push(...(report.defenseBreakBoxLocations || []));
+        total.defenseBreakNonDownCount += report.defenseBreakNonDownCount || 0;
+        total.defenseBreakL3Only += report.defenseBreakL3Only || 0;
+        total.defenseBreakLowerHalf += report.defenseBreakLowerHalf || 0;
         for (const trade of report.trades) {
             if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
             if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
@@ -372,6 +397,15 @@ function buildReport(reports, meta) {
         if (!reasons) continue;
         const count = Object.values(reasons).reduce((a, b) => a + b, 0);
         lines.push(`- ${REGIME_LABELS[regime]}环境离场成因（n=${count}）：${renderCounts(reasons, count)}`);
+    }
+    // 非下跌环境「跌破冻结硬防守位」离场日在箱体内的位置：判断这些卖点是否发生在下沿附近（该扛/该加）。
+    const dbLoc = total.defenseBreakBoxLocations;
+    if (total.defenseBreakNonDownCount) {
+        const withBox = dbLoc.length;
+        const locText = withBox
+            ? `箱体内位置 中位 ${pct(quantile(dbLoc, 0.5))}（0=下沿,1=上沿），下半区(≤0.5) ${total.defenseBreakLowerHalf}/${withBox} = ${share(total.defenseBreakLowerHalf, withBox)}`
+            : '这些离场日当时箱体无效，无上下沿参照';
+        lines.push(`- 非下跌环境「跌破冻结硬防守位」离场：${total.defenseBreakNonDownCount} 次｜仅 L3 触发 ${total.defenseBreakL3Only}（${share(total.defenseBreakL3Only, total.defenseBreakNonDownCount)}）｜有效箱体 ${withBox} 次：${locText}`);
     }
     lines.push('');
 
