@@ -1,13 +1,14 @@
 # DailyGlance 当前接续状态
 
-更新时间：2026-09-22
+更新时间：2026-09-22（拆分发布 3c79db7）
 
 上一阶段完整记录：`docs/history/CURRENT_STATUS_ARCHIVE_2026-08-09.md`
 
 ## 当前状态
 
 - 开发与 Pages 发布效率治理已接入：`scripts/check.js` 将多回归分组合并为单进程并采用摘要输出，语法检查改为进程内解析；`scripts/status-smoke.js` 用加载层结束条件替代固定 8 秒等待并支持 `--summary`，`scripts/live-dataflow-smoke.js` 支持摘要输出；`scripts/release-pages.js` 固定 Pages 允许列表、隔离 worktree 和显式 `--push` 门槛。全量检查实测由约 62 秒降至约 52 秒；本地状态 smoke 当前仍受公开行情接口未返回历史数据影响，属于外部数据风险。
-- 当前 GitHub Pages 已发布提交 `56d5095`，应用构建为 `2026-09-21-02`、资源版本为 `20260921-02`，正式策略版本为 `v4.2.40`，波段治理版本 `wave-regime-v7`。Pages 构建状态 `built`，远端 `index.html` 资源版本已确认为 `20260921-02`；本次发布 smoke 因本机未安装 Playwright 浏览器未跑，主门禁为已通过的 `--full` 完整回归（303 项）。完整源码仍在本地 `codex/full-project`（提交 `da916b1`），Pages 只保存部署所需文件。
+- 当前 GitHub Pages 已发布提交 `3c79db7`，应用构建为 `2026-09-21-03`、资源版本为 `20260921-03`，正式策略版本为 `v4.2.40`，波段治理版本 `wave-regime-v7`。Pages 构建状态 `built`，远端 `index.html` 已含全部 6 个 `03-*.js` 且资源版本为 `20260921-03`，线上逐一 `curl` 六个文件均 HTTP 200；本次发布 smoke 因本机未安装 Playwright 浏览器未跑，主门禁为已通过的 `--full` 完整回归（303 项）。完整源码仍在本地 `codex/full-project`（提交 `fd0475c`），Pages 只保存部署所需文件。
+- `assets/js/03-calculations.js`（原 5423 行）已按职责纯物理拆分为 6 个 `03-*.js`，零行为差异（切割前验证 6 段拼接与原文件字节级一致，`--full` 303 项全过）：`03-calculations.js`(指标+信号判定)、`03-explain.js`(决策解释与展示文案)、`03-summary.js`(新手结论汇总)、`03-wave-regime.js`(趋势环境与波段上下文)、`03-wave-rejection.js`(建仓否决与风险事件保护)、`03-decision.js`(波段治理链与决策合成)。所有源码拼接消费方（`index.html` 6 个 script、`tests/regression.js`、`strategy-formal-baseline/candidate-lab`、`strategy-autopsy(-multi)`、`wave-b-quality-report` 逐文件哈希、`presentation-state` 加载顺序断言、`map.js` 横幅正则支持字母后缀）已同步。routing 前缀 `assets/js/03-` 自动覆盖新文件，无需改路由。
 - 波段首破买入日最低价（`fresh_entry_hard_break`）已接入可配置确认缓冲并上线：`freshEntryDownsideFailure.hardBreakConfirmTradingDays=1` 时首破当日不整清，先降到 `30%` 观察仓（`hardBreakPendingPositionCap`）并挂 `pending_hard_break` 锁定，次日收盘仍不收复买入日最低价才确认清仓（`triggered`），收复则解除（`hard_break_recovered`）。该行为是“仓位上限”而非“下限”：只有当天基础决策仍支持 ≥30% 时才真正托住 30%，基础已无支撑的破位日仍会当天清 0。全样本快筛（24 标的 / 182 受影响决策日）状态 `ready_for_product_review`：平均收益 `-0.10pp`、平均最大回撤改善 `0.22pp`、胜率 `+0.27pp`、换手 `-0.6%`、完整交易 `-12`，属“以微小收益换回撤与换手”的取舍型改动，非收益优势主张。
 - 修正效率相关的结构性问题两项：`strategy-formal-candidate-lab.js` 的 `configPatch` 改为深合并（浅合并会整体替换 `waveRejectionProtection` 等嵌套子配置而丢失兄弟键）；`strategy-wave-diagnostic.js` 新增只读 `--events` 通用事件出口（按 `status`/`eventType` 过滤导出任意风险事件日，写入 `.local/strategy-reports/strategy-wave-events.md`），以后追因不必再写一次性脚本。`getExitSeverity` 裁掉数组中永不可达的 `L7/L8`（分支逻辑与行为不变）。
 - 四个正式策略继续共用 `0% / 30% / 50% / 80%` 四档仓位和统一 `B/S` 契约；当前生产细则以 `docs/strategy/STRATEGY_DECISION_RULES.md` 为准。
