@@ -847,9 +847,20 @@ function flushWatchlistSnapshotQueue(deadline) {
     const startedAt = Date.now();
     const budgetMs = 8;
     let processed = 0;
-    const canContinue = () => processed === 0
-        || (Date.now() - startedAt < budgetMs
-            && (!deadline || deadline.didTimeout || deadline.timeRemaining() > 4));
+    // 单只快照计算不可中断，一只冷缓存标的可能吃掉 ~40ms。调度目标：
+    // 1) 繁忙帧（rIC 未超时且 timeRemaining<=4）一只都不塞，把整帧让给鼠标交互（十字光标重绘）；
+    // 2) 兜底帧（rIC didTimeout）或空闲帧才推进，且用 8ms 时间片截断，避免一次灌完整队列把某一帧撑爆；
+    // 3) 至少推进一只，防止队列饿死——配合 rIC 的 timeout:240，最迟 240ms 内必被兜底触发。
+    const canContinue = () => {
+        // 8ms 时间片：已处理过至少一只后，超片即停，剩余留到下一次调度。
+        if (processed > 0 && Date.now() - startedAt >= budgetMs) return false;
+        if (deadline) {
+            // 繁忙且未超时：让位交互，本帧不推进（processed 保持 0，稍后重新排程）。
+            return deadline.didTimeout || deadline.timeRemaining() > 4;
+        }
+        // setTimeout 退化路径无空闲信息：靠“至少一只 + 8ms 时间片”保证前进又不长阻塞。
+        return true;
+    };
     while (watchlistSnapshotQueue.size && canContinue()) {
         const [code, full] = watchlistSnapshotQueue.entries().next().value;
         watchlistSnapshotQueue.delete(code);

@@ -2487,6 +2487,64 @@ runTest('only four formal strategies are exposed and white-fat research signals 
     );
 });
 
+runTest('watchlist snapshot flush yields busy frames to interaction and drains on idle or timeout', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        var processedCodes = [];
+        // 用轻量桩替换单只快照计算，只记录被处理的标的，专注调度行为本身。
+        syncWatchlistSignalSnapshot = function(code) { processedCodes.push(code); };
+        function fillQueue(n) {
+            watchlistSnapshotQueue.clear();
+            for (var i = 0; i < n; i++) watchlistSnapshotQueue.set('c' + i, [{ date: 'd', close: 1 }]);
+        }
+
+        // 繁忙帧：rIC 未超时且几乎无空闲（timeRemaining=1）——一只都不该处理，整帧让给鼠标交互。
+        fillQueue(5);
+        var busyBefore = watchlistSnapshotQueue.size;
+        flushWatchlistSnapshotQueue({ didTimeout: false, timeRemaining: function() { return 1; } });
+        var processedOnBusy = processedCodes.length;
+        var remainingAfterBusy = watchlistSnapshotQueue.size;
+
+        // 空闲帧：空闲充足，应把队列排空。
+        processedCodes = [];
+        flushWatchlistSnapshotQueue({ didTimeout: false, timeRemaining: function() { return 50; } });
+        var processedOnIdle = processedCodes.length;
+        var remainingAfterIdle = watchlistSnapshotQueue.size;
+
+        // 兜底帧：rIC 已超时（didTimeout=true），即便无空闲也必须推进，避免队列饿死。
+        processedCodes = [];
+        fillQueue(3);
+        flushWatchlistSnapshotQueue({ didTimeout: true, timeRemaining: function() { return 0; } });
+        var processedOnTimeout = processedCodes.length;
+
+        // 退化路径：无 deadline（setTimeout 分支）也至少推进一只。
+        processedCodes = [];
+        fillQueue(4);
+        flushWatchlistSnapshotQueue();
+        var processedNoDeadline = processedCodes.length;
+
+        var result = {
+            busyBefore: busyBefore,
+            processedOnBusy: processedOnBusy,
+            remainingAfterBusy: remainingAfterBusy,
+            processedOnIdle: processedOnIdle,
+            remainingAfterIdle: remainingAfterIdle,
+            processedOnTimeout: processedOnTimeout,
+            processedNoDeadlineAtLeastOne: processedNoDeadline >= 1
+        };
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(result)', context));
+    assert.strictEqual(result.busyBefore, 5);
+    assert.strictEqual(result.processedOnBusy, 0, 'busy frame must not steal time from mouse interaction');
+    assert.strictEqual(result.remainingAfterBusy, 5, 'queue is preserved for a later idle/timeout frame');
+    assert.strictEqual(result.processedOnIdle, 5, 'idle frame drains the queue');
+    assert.strictEqual(result.remainingAfterIdle, 0);
+    assert.strictEqual(result.processedOnTimeout, 3, 'timeout fallback must advance even with no idle time');
+    assert.strictEqual(result.processedNoDeadlineAtLeastOne, true, 'setTimeout fallback never starves the queue');
+});
+
 // [Archived] Baipang candidate research frozen. White-fat test cases removed:
 //   "white-fat candidate research uses an isolated position and B/S chain"
 //   "white-fat candidate research detects half-breakout pullback confirmation and key-level failure"
