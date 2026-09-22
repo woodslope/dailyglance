@@ -242,6 +242,7 @@ function analyzeSymbol(symbol, rows) {
     const signalInvalidation = {
         events: 0, heldDay1: 0, clearedDay1: 0,
         heldThenClearedSoon: 0, heldThenClearedRecovered: 0,
+        clearedByTrueBreak: 0, clearedByCollateral: 0, clearedByOther: 0,
         clearedRecovered: 0, clearedRecoveredDays: []
     };
     for (let i = START_INDEX; i < rows.length; i++) {
@@ -274,6 +275,19 @@ function analyzeSymbol(symbol, rows) {
         }
         if (clearedAt >= 0) {
             signalInvalidation.heldThenClearedSoon += 1;
+            // 区分清仓当天的驱动：是“收盘真跌破冻结硬防守位/箱体下沿”（合理），
+            // 还是“数据/硬风险或结构硬失效优先”的连坐清仓（结构可能仍在，可修嫌疑）。
+            const driver = rows[clearedAt].positionDriver || '';
+            const clearClose = Number(rows[clearedAt].close);
+            const clearHardDef = Number(rows[clearedAt].hardDefense);
+            const brokeFrozen = Number.isFinite(clearClose) && Number.isFinite(clearHardDef) && clearClose < clearHardDef;
+            if (driver.includes('跌破冻结硬防守位') || driver.includes('跌破箱体下沿') || brokeFrozen) {
+                signalInvalidation.clearedByTrueBreak += 1;
+            } else if (driver.includes('数据/硬风险或结构硬失效优先')) {
+                signalInvalidation.clearedByCollateral += 1;
+            } else {
+                signalInvalidation.clearedByOther += 1;
+            }
             if (target != null) {
                 for (let j = clearedAt + 1; j <= Math.min(rows.length - 1, clearedAt + RECOVER_BARS); j++) {
                     if (Number(rows[j].close) >= target) { signalInvalidation.heldThenClearedRecovered += 1; break; }
@@ -362,7 +376,7 @@ function buildReport(reports, meta) {
         entryPremiums: [], exitDiscounts: [], rets: [], bars: [],
         entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: [], exitReasonsByRegime: {},
         defenseBreakBoxLocations: [], defenseBreakNonDownCount: 0, defenseBreakL3Only: 0, defenseBreakLowerHalf: 0,
-        signalInvalidation: { events: 0, heldDay1: 0, clearedDay1: 0, heldThenClearedSoon: 0, heldThenClearedRecovered: 0, clearedRecovered: 0, clearedRecoveredDays: [] }
+        signalInvalidation: { events: 0, heldDay1: 0, clearedDay1: 0, heldThenClearedSoon: 0, heldThenClearedRecovered: 0, clearedByTrueBreak: 0, clearedByCollateral: 0, clearedByOther: 0, clearedRecovered: 0, clearedRecoveredDays: [] }
     };
 
     for (const report of reports) {
@@ -399,6 +413,9 @@ function buildReport(reports, meta) {
         total.signalInvalidation.clearedDay1 += si.clearedDay1 || 0;
         total.signalInvalidation.heldThenClearedSoon += si.heldThenClearedSoon || 0;
         total.signalInvalidation.heldThenClearedRecovered += si.heldThenClearedRecovered || 0;
+        total.signalInvalidation.clearedByTrueBreak += si.clearedByTrueBreak || 0;
+        total.signalInvalidation.clearedByCollateral += si.clearedByCollateral || 0;
+        total.signalInvalidation.clearedByOther += si.clearedByOther || 0;
         total.signalInvalidation.clearedRecovered += si.clearedRecovered || 0;
         total.signalInvalidation.clearedRecoveredDays.push(...(si.clearedRecoveredDays || []));
         for (const trade of report.trades) {
@@ -474,7 +491,8 @@ function buildReport(reports, meta) {
             lines.push(`  - 当天清仓者，≤5 日收复需收复价位：${si.clearedRecovered}/${si.clearedDay1} = ${share(si.clearedRecovered, si.clearedDay1)}`);
         }
         if (si.heldDay1) {
-            lines.push(`  - 当天保留者，≤5 日内被清到 0：${si.heldThenClearedSoon}/${si.heldDay1} = ${share(si.heldThenClearedSoon, si.heldDay1)}；其中被清后又≤5 日收复 ${si.heldThenClearedRecovered}（这些是“先留后清又收复”的被洗嫌疑）`);
+            lines.push(`  - 当天保留者，≤5 日内被清到 0：${si.heldThenClearedSoon}/${si.heldDay1} = ${share(si.heldThenClearedSoon, si.heldDay1)}；其中被清后又≤5 日收复 ${si.heldThenClearedRecovered}（“先留后清又收复”的被洗嫌疑）`);
+            lines.push(`    · 被清清仓当天的驱动：真跌破冻结防守位/箱体下沿 ${si.clearedByTrueBreak}、连坐(数据/硬风险或结构硬失效优先) ${si.clearedByCollateral}、其它 ${si.clearedByOther}`);
         }
     }
     lines.push('');
