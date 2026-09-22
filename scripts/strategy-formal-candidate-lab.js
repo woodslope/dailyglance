@@ -606,6 +606,34 @@ const CANDIDATES = {
                 riskBudget: '按 signal_timing 车道：平均收益回退不超过1个百分点、平均最大回撤恶化不超过0.5个百分点、换手增幅不超过10%仅作报告参考；硬边界为指数零漂移、只影响 fresh_entry_hard_break 事件、不绕过冻结硬防守位与强离场。全样本代理显示救回组均反弹8.32%高于误留组续跌5.62%，但净收益/回撤/换手须以快筛实测为准，不以反弹代理下结论。',
                 restartCondition: '若出现指数漂移、影响到非 fresh_entry_hard_break 事件，或组合预算任一项失败则冻结；不在同快照把确认期从1日改为多日或叠加ATR缓冲。若达到 ready_for_product_review，由用户批准后按冻结定义接入生产。'
             }]
+        }, {
+            id: 'wave_range_box_lower_edge_defense_v1',
+            question: '横盘环境（有效箱体）里，只要收盘仍站在箱体下沿之上，是否应停止因近端冻结硬防守位被收盘跌破而清仓，改为跌破箱体下沿才失效？',
+            type: 'wave-range-box-lower-edge-defense',
+            candidateClass: 'signal_timing',
+            primaryGoal: 'signal_timing_correction',
+            control: {
+                id: 'retain_wave_production_control',
+                label: '保留当前波段生产配置',
+                collectDecisionDetails: true
+            },
+            ablations: [{
+                id: 'wave_range_box_lower_edge_defense_v1',
+                label: '横盘有效箱体：下沿之上不清仓，跌破箱体下沿才失效',
+                collectDecisionDetails: true,
+                configPatch: {
+                    waveRegimePolicy: {
+                        range: {
+                            defenseUsesBoxLowerEdge: true
+                        }
+                    }
+                },
+                objective: '只修正横盘环境的误清时机：诊断显示非下跌环境「跌破冻结硬防守位」离场里，有效箱体样本 86% 发生在箱体下半区（收盘箱体内位置中位仅 17%），系统在本该扛住/加仓的箱体下沿附近用箱体内近端 pivot 当止损被反复洗（卖出后 ≤5 日重新买入 55 次里 83.6% 来自非下跌环境）。候选只在 regime=range 且箱体有效时，把结构失效线从近端冻结 pivot 改为箱体下沿：收盘仍≥箱体下沿则不清仓，收盘跌破箱体下沿才归零。不改建仓资格、不改上涨/下跌/过渡环境、不改指数与其他三套策略。',
+                category: 'signal_timing',
+                allowedBsImpact: '仅允许波段抄底型个股在 regime=range 且有效箱体、收盘仍在箱体下沿之上时，取消原「跌破近端冻结 pivot 当日清仓」的 S，从而减少横盘来回；收盘真正跌破箱体下沿仍照常清仓 S。下跌/上涨/过渡环境、无效箱体的横盘、首次 B、指数与其他三套策略零漂移。默认 defenseUsesBoxLowerEdge 未设时与生产完全一致。',
+                riskBudget: '按 signal_timing 车道：平均收益回退不超过1个百分点、平均最大回撤恶化不超过0.5个百分点、换手（尤其来回次数）应下降；硬边界为下跌/上涨/过渡与无效箱体横盘零漂移、指数零漂移、不绕过强离场与数据/硬风险清仓。放宽横盘止损属卖出侧实质变更，净收益/回撤须以快筛实测为准，不预设成功——可能减少来回但放过个别真跌。',
+                restartCondition: '若出现下跌/上涨/过渡或无效箱体横盘漂移、指数漂移、或平均最大回撤恶化超过 signal_timing 预算则冻结；不在同快照追加下沿容差、ATR 缓冲或下沿加仓逻辑（下沿加仓另立候选）。若达到 ready_for_product_review，由用户批准后按冻结定义接入生产。'
+            }]
         }]
     },
     '突破追涨型': {

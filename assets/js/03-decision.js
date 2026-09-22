@@ -1292,10 +1292,20 @@ function applyWaveRegimeGovernance(idx, full, prevPos, candidate, strategy = STR
         targetPosition: position
     };
     let lifecycle = previousLifecycle && prevPos > 0 ? { ...previousLifecycle } : null;
-    const structureSupportHolds = lifecycle
+    // 横盘环境下沿防守（默认关闭）：range.defenseUsesBoxLowerEdge=true 时，只要收盘仍站在有效箱体下沿之上，
+    // 就把“结构仍在”判定改由箱体下沿决定，而非箱体内的近端冻结 pivot——横盘应扛到真正跌破箱体下沿才失效。
+    // 诊断显示非下跌环境破防守位离场 86% 发生在箱体下半区，此机制只作用于有效箱体的横盘，避免下沿被洗。
+    const rangeBoxLowerEdgeHold = policy?.range?.defenseUsesBoxLowerEdge === true
+        && waveContext.regime === 'range'
+        && waveContext.box && waveContext.box.valid === true
+        && Number.isFinite(Number(waveContext.boxSupport))
+        && Number.isFinite(close)
+        && close >= Number(waveContext.boxSupport);
+    const structureSupportHolds = (lifecycle
         && Number.isFinite(Number(lifecycle.hardDefense))
         && Number.isFinite(close)
-        && close >= Number(lifecycle.hardDefense);
+        && close >= Number(lifecycle.hardDefense))
+        || (lifecycle && rangeBoxLowerEdgeHold);
     // 信号硬失效只代表局部防守位失守；结构支撑仍在时保留30%观察，不升级为硬风险清仓。
     const eventHardRisk = recognizedEventType && ['triggered','locked','entry_blocked'].includes(eventStatus)
         && !(eventType === 'signal_hard_invalidation' && structureSupportHolds);
@@ -1346,9 +1356,21 @@ function applyWaveRegimeGovernance(idx, full, prevPos, candidate, strategy = STR
         };
     }
 
-    if (lifecycle && Number.isFinite(Number(lifecycle.hardDefense)) && close < Number(lifecycle.hardDefense)) {
+    // rangeBoxLowerEdgeHold 已在上方（结构支撑判定处）计算：横盘有效箱体内收盘仍在下沿之上时，
+    // 不因近端冻结 pivot 被跌破而清仓；启用该模式时，真正的失效线改为“收盘跌破箱体下沿”。
+    const rangeBoxLowerEdgeBreak = policy?.range?.defenseUsesBoxLowerEdge === true
+        && waveContext.regime === 'range'
+        && waveContext.box && waveContext.box.valid === true
+        && Number.isFinite(Number(waveContext.boxSupport))
+        && Number.isFinite(close)
+        && close < Number(waveContext.boxSupport);
+    const frozenDefenseBreak = lifecycle && Number.isFinite(Number(lifecycle.hardDefense))
+        && close < Number(lifecycle.hardDefense) && !rangeBoxLowerEdgeHold;
+    if (lifecycle && (frozenDefenseBreak || rangeBoxLowerEdgeBreak)) {
         position = 0;
-        governanceReason = '收盘跌破冻结硬防守位' + formatPriceLevel(Number(lifecycle.hardDefense)) + '，结构失效归零';
+        governanceReason = rangeBoxLowerEdgeBreak && !frozenDefenseBreak
+            ? '收盘跌破箱体下沿' + formatPriceLevel(Number(waveContext.boxSupport)) + '，横盘结构失效归零'
+            : '收盘跌破冻结硬防守位' + formatPriceLevel(Number(lifecycle.hardDefense)) + '，结构失效归零';
         const recoveryCloseLevel = Math.max(
             Number(lifecycle.hardDefense),
             Number.isFinite(high) ? high : Number(lifecycle.hardDefense)
