@@ -163,6 +163,7 @@ function collectTrades(rows) {
         const segmentHigh = Math.max(...segment.map(item => item.high));
         trades.push({
             ...open,
+            endIdx: idx,
             endDate: row.date, exit: row.close, bars: idx - open.startIdx,
             ret: (row.close - open.entry) / open.entry,
             entryPremium: segmentLow > 0 ? (open.entry - segmentLow) / segmentLow : NaN,
@@ -220,11 +221,35 @@ function analyzeSymbol(symbol, rows) {
         maxPositions[trade.maxPosition] = (maxPositions[trade.maxPosition] || 0) + 1;
     }
 
+    // 卖出→很快重新买入的“来回”观察：上一笔离场日到下一笔建仓日的间隔。
+    // 记录快速重入（间隔≤REENTRY_BARS）的离场成因、离场环境、以及重入后最高仓位是否回到与上一笔同档。
+    const REENTRY_BARS = 5;
+    const reentries = [];
+    for (let i = 0; i + 1 < trades.length; i++) {
+        const prev = trades[i];
+        const next = trades[i + 1];
+        const gap = next.startIdx - prev.endIdx;
+        if (gap >= 1 && gap <= REENTRY_BARS) {
+            reentries.push({
+                gap,
+                exitReason: prev.exitReason,
+                exitRegime: prev.exitRegime,
+                reentryRegime: next.entryRegime,
+                prevMaxPosition: prev.maxPosition,
+                nextMaxPosition: next.maxPosition,
+                samePositionTier: prev.maxPosition === next.maxPosition,
+                exitDate: prev.endDate,
+                reentryDate: next.startDate,
+                prevRet: prev.ret
+            });
+        }
+    }
+
     return {
         id: symbol.id, name: symbol.name,
         firstDate: window[0]?.date || '', lastDate: window.at(-1)?.date || '', days: window.length,
         regimeDays, regimeHeldDays, transitionCauses, entryGaps, ratchetGaps,
-        entryGapsByRegime, entrySourceByRegime,
+        entryGapsByRegime, entrySourceByRegime, reentries,
         peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
         shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
     };
@@ -261,7 +286,7 @@ function buildReport(reports, meta) {
         entryGaps: [], ratchetGaps: [], peakHeldDays: 0, peakReducedDays: 0,
         trades: 0, shortTrades: 0, exitReasons: {}, entryRegimes: {}, maxPositions: {},
         entryPremiums: [], exitDiscounts: [], rets: [], bars: [],
-        entryGapsByRegime: {}, entrySourceByRegime: {}
+        entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: []
     };
 
     for (const report of reports) {
@@ -284,6 +309,7 @@ function buildReport(reports, meta) {
         for (const [regime, sources] of Object.entries(report.entrySourceByRegime || {})) {
             total.entrySourceByRegime[regime] = mergeCounts(total.entrySourceByRegime[regime] || {}, sources);
         }
+        total.reentries.push(...(report.reentries || []));
         for (const trade of report.trades) {
             if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
             if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
@@ -317,6 +343,22 @@ function buildReport(reports, meta) {
     lines.push(renderGapLine('棘轮上移后收盘到硬防守位距离', total.ratchetGaps));
     lines.push(`- 离场成因：${renderCounts(total.exitReasons, total.trades)}`);
     lines.push(`- 过渡环境成因：${renderCounts(total.transitionCauses, total.regimeDays.transition || 0)}`);
+    // 卖出后很快重新买入的“来回”观察：量化用户体感的“卖出位出现后很快又买入”。
+    const reentries = total.reentries || [];
+    if (reentries.length) {
+        const sameTier = reentries.filter(item => item.samePositionTier).length;
+        const nonDown = reentries.filter(item => item.exitRegime !== 'down').length;
+        const byReason = {};
+        const byExitRegime = {};
+        for (const item of reentries) {
+            byReason[item.exitReason] = (byReason[item.exitReason] || 0) + 1;
+            byExitRegime[item.exitRegime] = (byExitRegime[item.exitRegime] || 0) + 1;
+        }
+        lines.push('');
+        lines.push(`- 卖出后 ≤5 日重新买入（来回）：${reentries.length} 次｜其中重入后最高仓位与上一笔同档 ${sameTier}（${share(sameTier, reentries.length)}）｜非下跌环境离场触发 ${nonDown}（${share(nonDown, reentries.length)}）`);
+        lines.push(`  - 来回的离场成因：${renderCounts(byReason, reentries.length)}`);
+        lines.push(`  - 来回的离场环境：${renderCounts(byExitRegime, reentries.length)}`);
+    }
     lines.push('');
 
     for (const report of reports) {
