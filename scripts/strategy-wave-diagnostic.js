@@ -112,6 +112,10 @@ function replaySymbol(context, symbol, prepared) {
                         boxPressure: Number.isFinite(Number(wave.boxPressure)) ? Number(wave.boxPressure) : null,
                         exitSignalsToday: (row._signals || []).filter(s => (STRATEGY.exitSignals || []).includes(s)),
                         warningSignalsToday: (row._signals || []).filter(s => (STRATEGY.warningSignals || []).includes(s)),
+                        buySignalsToday: (row._signals || []).filter(s => (STRATEGY.buySignals || []).includes(s)),
+                        entryRegime: wave.lifecycle?.entryRegime || '',
+                        breakoutRetested: !!wave.lifecycle?.breakoutRetested,
+                        ma20: Number.isFinite(Number(state.indicators?.ma?.[20]?.[idx])) ? Number(state.indicators.ma[20][idx]) : null,
                         consecutiveDays: wave.consecutiveDays ?? null, requiredDays: wave.requiredDays ?? null,
                         hardDefense: wave.frozenHardDefense ?? null, supportSource: wave.supportSource || '',
                         peakConfirmed: !!(decision.wavePeak && decision.wavePeak.confirmed),
@@ -170,11 +174,14 @@ function collectTrades(rows) {
         const exitBoxLocation = Number.isFinite(row.boxSupport) && Number.isFinite(row.boxPressure) && row.boxPressure > row.boxSupport
             ? (row.close - row.boxSupport) / (row.boxPressure - row.boxSupport)
             : null;
+        // 段内最大浮盈：从建仓价到段内最高价，衡量"这段行情本可以吃到多少"。
+        const maxFavorable = open.entry > 0 ? (segmentHigh - open.entry) / open.entry : NaN;
         trades.push({
             ...open,
             endIdx: idx,
             endDate: row.date, exit: row.close, bars: idx - open.startIdx,
             ret: (row.close - open.entry) / open.entry,
+            maxFavorable,
             entryPremium: segmentLow > 0 ? (open.entry - segmentLow) / segmentLow : NaN,
             exitDiscount: segmentHigh > 0 ? (segmentHigh - row.close) / segmentHigh : NaN,
             exitRegime: row.regime, exitReason: classifyExit(row.event), exitAction: row.action,
@@ -227,12 +234,62 @@ function analyzeSymbol(symbol, rows) {
     const maxPositions = {};
     // 按离场环境切分离场成因，用于观察非下跌环境到底靠什么卖出（是否箱体上沿 vs MACD死叉/硬防守）。
     const exitReasonsByRegime = {};
+    // 按“该段达到的最高仓位档位”聚合每段交易的段内最大浮盈与实际收益，
+    // 直接回答：停在 30% 的持仓段，本来（段内最高价）能吃到多少？——判定分层是“谨慎特性”还是“过严欠仓”。
+    const tierOutcome = {};
     for (const trade of trades) {
         exitReasons[trade.exitReason] = (exitReasons[trade.exitReason] || 0) + 1;
         entryRegimes[trade.entryRegime] = (entryRegimes[trade.entryRegime] || 0) + 1;
         maxPositions[trade.maxPosition] = (maxPositions[trade.maxPosition] || 0) + 1;
         exitReasonsByRegime[trade.exitRegime] = exitReasonsByRegime[trade.exitRegime] || {};
         exitReasonsByRegime[trade.exitRegime][trade.exitReason] = (exitReasonsByRegime[trade.exitRegime][trade.exitReason] || 0) + 1;
+        const tier = trade.maxPosition;
+        tierOutcome[tier] = tierOutcome[tier] || { count: 0, maxFav: [], ret: [], upEntry: 0 };
+        tierOutcome[tier].count += 1;
+        if (Number.isFinite(trade.maxFavorable)) tierOutcome[tier].maxFav.push(trade.maxFavorable);
+        if (Number.isFinite(trade.ret)) tierOutcome[tier].ret.push(trade.ret);
+        if (trade.entryRegime === 'up' || trade.entryRegime === 'range') tierOutcome[tier].upEntry += 1;
+    }
+
+    // 箱体上沿卖出观察：横盘持仓、当日最高价触及箱体上沿（≥boxPressure×0.99）时，
+    // 系统是否减仓；并看这些"触上沿"日其后 5 日收盘涨跌，判断"上沿高抛"是否真能占到便宜。
+    const boxTop = { touches: 0, reduced: 0, notReduced: 0, notReducedFwdDown: 0, notReducedFwd: [] };
+    for (let k = 0; k < window.length; k++) {
+        const row = window[k];
+        if (row.regime !== 'range' || Number(row.prevAdv) <= 0) continue;
+        if (!Number.isFinite(row.boxPressure) || row.boxPressure <= 0) continue;
+        if (!(Number(row.high) >= Number(row.boxPressure) * 0.99)) continue;
+        boxTop.touches += 1;
+        if (Number(row.position) < Number(row.prevAdv)) { boxTop.reduced += 1; continue; }
+        boxTop.notReduced += 1;
+        const fwd = window[k + 5];
+        if (fwd && Number.isFinite(Number(fwd.close)) && Number(row.close) > 0) {
+            const chg = (Number(fwd.close) - Number(row.close)) / Number(row.close);
+            boxTop.notReducedFwd.push(chg);
+            if (chg < 0) boxTop.notReducedFwdDown += 1;
+        }
+    }
+
+    // 仓位不足观察：非下跌环境（up/range）里持有 30% 且当前有加仓空间（cap≥50）却停在 30% 的日子，
+    // 拆分卡在哪把锁：当天有 B6/B11 回踩确认信号（confirm 锁之外的其它约束）vs 当天没有（confirm 锁本身）。
+    // 以及 50% 停留在 up 环境、当天有 B4/B14 却因 entryRegime≠up 卡住 80% 的“来源锁”。
+    const posLock = { held30NonDown: 0, held30WithConfirm: 0, held30NoConfirm: 0,
+                      held50Up: 0, held50WithTrendSignal: 0, held50TrendBlockedBySource: 0 };
+    for (const row of window) {
+        const nonDownUp = row.regime === 'up' || row.regime === 'range';
+        const hasConfirm = (row.buySignalsToday || []).some(s => s === 'B6' || s === 'B11');
+        const hasTrendSig = (row.buySignalsToday || []).some(s => s === 'B4' || s === 'B14');
+        if (Number(row.position) === 30 && Number(row.prevAdv) === 30 && nonDownUp) {
+            posLock.held30NonDown += 1;
+            if (hasConfirm) posLock.held30WithConfirm += 1; else posLock.held30NoConfirm += 1;
+        }
+        if (Number(row.position) === 50 && Number(row.prevAdv) === 50 && row.regime === 'up') {
+            posLock.held50Up += 1;
+            if (hasTrendSig) {
+                posLock.held50WithTrendSignal += 1;
+                if (row.entryRegime && row.entryRegime !== 'up' && !row.breakoutRetested) posLock.held50TrendBlockedBySource += 1;
+            }
+        }
     }
 
     // W1「偏离均线过大」预警观察：W1 期间的持仓分布、上涨环境中 W1 是否伴随“持有但被卡在低档/无法加仓”。
@@ -353,7 +410,7 @@ function analyzeSymbol(symbol, rows) {
         entryGapsByRegime, entrySourceByRegime, reentries, exitReasonsByRegime,
         defenseBreakNonDownCount: defenseBreakNonDown.length,
         defenseBreakBoxLocations, defenseBreakL3Only, defenseBreakLowerHalf,
-        signalInvalidation, w1,
+        signalInvalidation, w1, posLock, boxTop, tierOutcome,
         peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
         shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
     };
@@ -393,7 +450,10 @@ function buildReport(reports, meta) {
         entryGapsByRegime: {}, entrySourceByRegime: {}, reentries: [], exitReasonsByRegime: {},
         defenseBreakBoxLocations: [], defenseBreakNonDownCount: 0, defenseBreakL3Only: 0, defenseBreakLowerHalf: 0,
         signalInvalidation: { events: 0, heldDay1: 0, clearedDay1: 0, heldThenClearedSoon: 0, heldThenClearedRecovered: 0, clearedByTrueBreak: 0, clearedByCollateral: 0, clearedByOther: 0, clearedRecovered: 0, clearedRecoveredDays: [] },
-        w1: { days: 0, daysUp: 0, heldUpDays: 0, upW1PosCounts: {}, upNoW1PosCounts: {} }
+        w1: { days: 0, daysUp: 0, heldUpDays: 0, upW1PosCounts: {}, upNoW1PosCounts: {} },
+        posLock: { held30NonDown: 0, held30WithConfirm: 0, held30NoConfirm: 0, held50Up: 0, held50WithTrendSignal: 0, held50TrendBlockedBySource: 0 },
+        boxTop: { touches: 0, reduced: 0, notReduced: 0, notReducedFwdDown: 0, notReducedFwd: [] },
+        tierOutcome: {}
     };
 
     for (const report of reports) {
@@ -441,6 +501,21 @@ function buildReport(reports, meta) {
         total.w1.heldUpDays += w.heldUpDays || 0;
         mergeCounts(total.w1.upW1PosCounts, w.upW1PosCounts || {});
         mergeCounts(total.w1.upNoW1PosCounts, w.upNoW1PosCounts || {});
+        const pl = report.posLock || {};
+        for (const k of Object.keys(total.posLock)) total.posLock[k] += pl[k] || 0;
+        const bt = report.boxTop || {};
+        total.boxTop.touches += bt.touches || 0;
+        total.boxTop.reduced += bt.reduced || 0;
+        total.boxTop.notReduced += bt.notReduced || 0;
+        total.boxTop.notReducedFwdDown += bt.notReducedFwdDown || 0;
+        total.boxTop.notReducedFwd.push(...(bt.notReducedFwd || []));
+        for (const [tier, o] of Object.entries(report.tierOutcome || {})) {
+            const t = total.tierOutcome[tier] = total.tierOutcome[tier] || { count: 0, maxFav: [], ret: [], upEntry: 0 };
+            t.count += o.count || 0;
+            t.upEntry += o.upEntry || 0;
+            t.maxFav.push(...(o.maxFav || []));
+            t.ret.push(...(o.ret || []));
+        }
         for (const trade of report.trades) {
             if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
             if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
@@ -524,6 +599,32 @@ function buildReport(reports, meta) {
         lines.push(`- W1 偏离均线过大预警：${w1.days} 日｜其中上涨环境 ${w1.daysUp} 日、上涨环境W1日有持仓 ${w1.heldUpDays}（${share(w1.heldUpDays, w1.daysUp)}）`);
         const fmtPos = counts => Object.entries(counts).sort((a, b) => Number(a[0]) - Number(b[0])).map(([p, n]) => `${p}%×${n}`).join('、') || '无';
         lines.push(`  - 上涨环境仓位档位分布：W1日 [${fmtPos(w1.upW1PosCounts)}]｜非W1日 [${fmtPos(w1.upNoW1PosCounts)}]`);
+    }
+    // 仓位不足锁定分析：非下跌环境持 30% 停留日，卡在“确认锁”（无 B6/B11 回踩）还是别的；50% 停留卡在 80% 来源锁。
+    const pl = total.posLock;
+    if (pl.held30NonDown || pl.held50Up) {
+        lines.push(`- 仓位停留分析（非下跌环境）：持 30% 停留 ${pl.held30NonDown} 日｜当天有 B6/B11 回踩确认 ${pl.held30WithConfirm}（${share(pl.held30WithConfirm, pl.held30NonDown)}）、无确认 ${pl.held30NoConfirm}（${share(pl.held30NoConfirm, pl.held30NonDown)}）`);
+        lines.push(`  - 上涨持 50% 停留 ${pl.held50Up} 日｜当天有 B4/B14 趋势信号 ${pl.held50WithTrendSignal}，其中因建仓来源≠up 且未回踩箱体压力被卡在 80% 的 ${pl.held50TrendBlockedBySource}`);
+    }
+    // 箱体上沿卖出分析：横盘持仓触及箱体上沿时是否减仓；未减仓者其后 5 日涨跌，判断"上沿高抛"是否有效。
+    const bt = total.boxTop;
+    if (bt.touches) {
+        const fwd = bt.notReducedFwd;
+        const fwdText = fwd.length
+            ? `其后5日收盘 下跌 ${bt.notReducedFwdDown}/${fwd.length} = ${share(bt.notReducedFwdDown, fwd.length)}，中位涨跌 ${pct(quantile(fwd, 0.5))}`
+            : '无后续样本';
+        lines.push(`- 箱体上沿卖出：横盘持仓触及上沿 ${bt.touches} 日｜当日减仓 ${bt.reduced}（${share(bt.reduced, bt.touches)}）、未减仓 ${bt.notReduced}（${share(bt.notReduced, bt.touches)}）`);
+        lines.push(`  - 未减仓者：${fwdText}（下跌占比高说明上沿高抛本可占便宜）`);
+    }
+    // 分层档位结局：每段交易按“达到的最高仓位”分组，看段内最大浮盈 vs 实际收益。
+    // 停在 30% 的段若段内最大浮盈很高，说明分层过严、欠仓漏利（问题B）；若浮盈平平，说明谨慎无碍（特性A）。
+    const tiers = Object.keys(total.tierOutcome).map(Number).sort((a, b) => a - b);
+    if (tiers.length) {
+        lines.push('- 分层档位结局（按每段最高仓位分组）：');
+        for (const tier of tiers) {
+            const o = total.tierOutcome[tier];
+            lines.push(`  - 最高仅到 ${tier}%：${o.count} 段｜段内最大浮盈 中位 ${pct(quantile(o.maxFav, 0.5))}/均值 ${pct(mean(o.maxFav))}/P90 ${pct(quantile(o.maxFav, 0.9))}｜实际收益 中位 ${pct(quantile(o.ret, 0.5))}/均值 ${pct(mean(o.ret))}｜上涨或横盘建仓 ${o.upEntry}`);
+        }
     }
     lines.push('');
 
