@@ -5198,3 +5198,122 @@ runTest('L5 bearish engulfing is a reduce-watch exit, not a strong trend break',
 
 // L12/W5 深挖已退役，结论保留在 docs/history/strategy/。
 // Test cases removed: "L12 deep-dive script is local-cache only" and "strategy deep-dive scripts use production baseline"
+
+runTest('persisted decision cache version gate accepts current signal version and rejects stale one', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(`
+        var indicators = { ma: { 5: [], 10: [], 20: [], 60: [] }, macd: { diff: [], dea: [] }, rsi: { val: [] }, kdj: { k: [], d: [], j: [] } };
+        var rows = [{ _signals: {}, _signalVersion: SIGNAL_VERSION, _strategy: '波段抄底型', _decision: { position: 0 } }];
+        var fresh = buildDecisionCacheRecord('key-1', '波段抄底型', indicators, rows);
+        var acceptsFresh = isReusableDecisionCacheRecord(fresh);
+
+        var staleSignal = buildDecisionCacheRecord('key-1', '波段抄底型', indicators, rows);
+        staleSignal.signalVersion = 'stale-signal-version';
+        var rejectsStaleSignal = isReusableDecisionCacheRecord(staleSignal);
+
+        var staleGovernance = buildDecisionCacheRecord('key-1', '波段抄底型', indicators, rows);
+        staleGovernance.decisionGovernanceVersion = 'stale-governance';
+        var rejectsStaleGovernance = isReusableDecisionCacheRecord(staleGovernance);
+
+        var staleRecordVersion = buildDecisionCacheRecord('key-1', '波段抄底型', indicators, rows);
+        staleRecordVersion.decisionCacheVersion = 999;
+        var rejectsStaleRecordVersion = isReusableDecisionCacheRecord(staleRecordVersion);
+
+        var missingIndicators = buildDecisionCacheRecord('key-1', '波段抄底型', { ma: {} }, rows);
+        var rejectsMissingIndicators = isReusableDecisionCacheRecord(missingIndicators);
+
+        var result = {
+            stampedSignalVersion: fresh.signalVersion === SIGNAL_VERSION,
+            stampedGovernanceVersion: fresh.decisionGovernanceVersion === WAVE_GOVERNANCE_VERSION,
+            acceptsFresh: acceptsFresh,
+            rejectsStaleSignal: rejectsStaleSignal,
+            rejectsStaleGovernance: rejectsStaleGovernance,
+            rejectsStaleRecordVersion: rejectsStaleRecordVersion,
+            rejectsMissingIndicators: rejectsMissingIndicators
+        };
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(result)', context));
+    assert.deepStrictEqual(result, {
+        stampedSignalVersion: true,
+        stampedGovernanceVersion: true,
+        acceptsFresh: true,
+        rejectsStaleSignal: false,
+        rejectsStaleGovernance: false,
+        rejectsStaleRecordVersion: false,
+        rejectsMissingIndicators: false
+    });
+});
+
+runTest('hydrated decision cache reproduces the watchlist signal snapshot without recompute', () => {
+    const context = makeBrowserContext();
+    vm.runInContext(configSource, context);
+    vm.runInContext(dataSource, context);
+    vm.runInContext(calcSource, context);
+    vm.runInContext(appSourceNoInit, context);
+    vm.runInContext(`
+        setActiveStrategy('波段抄底型');
+        var rows = [];
+        for (var i = 0; i < 160; i++) {
+            var wave = Math.sin(i / 9) * 6;
+            var base = 100 + i * 0.15 + wave;
+            rows.push({
+                date: '2026-01-' + String((i % 28) + 1).padStart(2, '0'),
+                open: base - 0.4,
+                high: base + 1.1,
+                low: base - 1.2,
+                close: base,
+                vol: 12000 + (i % 7) * 130,
+                amt: 120000 + i
+            });
+        }
+        var secid = '0.000001';
+        state.watchlist = [normalizeSecurityTarget({ Code: '000001', Name: '样本股', QuoteID: secid })];
+        state.rawData[secid] = rows;
+
+        // 首次计算：填充内存缓存并产出基准决策，同时拿到可落盘 payload。
+        var firstDecision = computeWatchlistDecisionSnapshot(rows, '000001');
+        var cacheKey = buildIndicatorKeyForData(secid, 'daily', state.strategy, rows);
+        var storedEntry = derivedIndicatorCache.get(cacheKey);
+        var payload = buildDecisionCacheRecord(cacheKey, state.strategy, storedEntry.indicators, storedEntry.rows);
+        var payloadReusable = isReusableDecisionCacheRecord(payload);
+
+        // 模拟冷启动：清空内存缓存，并抹掉行上的派生字段（落盘只存 OHLCV）。
+        derivedIndicatorCache.clear();
+        var coldRows = rows.map(function(r) {
+            return { date: r.date, open: r.open, high: r.high, low: r.low, close: r.close, vol: r.vol, amt: r.amt };
+        });
+        state.rawData[secid] = coldRows;
+
+        // 用落盘 payload 水合内存缓存（等价于 hydrateWatchlistDecisionCache 的效果）。
+        derivedIndicatorCache.set(payload.cacheKey, {
+            decisionGovernanceVersion: payload.decisionGovernanceVersion,
+            indicators: payload.indicators,
+            rows: payload.rows
+        });
+
+        // 计数：命中缓存时不应再调用日线信号计算。
+        var signalCalls = 0;
+        var originalCalc = calculateDailySignals;
+        calculateDailySignals = function() { signalCalls++; return originalCalc.apply(this, arguments); };
+        var reusedDecision = computeWatchlistDecisionSnapshot(coldRows, '000001');
+        calculateDailySignals = originalCalc;
+
+        var result = {
+            payloadReusable: payloadReusable,
+            hasFirstDecision: !!firstDecision,
+            signalCallsOnReuse: signalCalls,
+            samePosition: !!reusedDecision && reusedDecision.position === firstDecision.position,
+            sameBsMark: !!reusedDecision && reusedDecision.bsMark === firstDecision.bsMark,
+            sameSimpleAction: !!reusedDecision && reusedDecision.simpleAction === firstDecision.simpleAction
+        };
+    `, context);
+    const result = JSON.parse(vm.runInContext('JSON.stringify(result)', context));
+    assert.strictEqual(result.payloadReusable, true, 'freshly built payload must pass the reuse gate');
+    assert.strictEqual(result.hasFirstDecision, true, 'baseline compute should produce a decision');
+    assert.strictEqual(result.signalCallsOnReuse, 0, 'cache hit must skip daily signal recompute');
+    assert.strictEqual(result.samePosition, true, 'reused decision position must match baseline');
+    assert.strictEqual(result.sameBsMark, true, 'reused decision B/S mark must match baseline');
+    assert.strictEqual(result.sameSimpleAction, true, 'reused decision action must match baseline');
+});
