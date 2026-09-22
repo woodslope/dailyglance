@@ -182,6 +182,9 @@ function analyzeSymbol(symbol, rows) {
     const transitionCauses = {};
     const entryGaps = [];
     const ratchetGaps = [];
+    // 按建仓环境切分冻结硬防守位距离与来源，用于观察非下跌环境防守位是否偏松。
+    const entryGapsByRegime = {};
+    const entrySourceByRegime = {};
     let peakHeldDays = 0;
     let peakReducedDays = 0;
 
@@ -198,8 +201,13 @@ function analyzeSymbol(symbol, rows) {
         }
         if (row.position > 0 && Number.isFinite(row.hardDefense) && row.close > 0) {
             const gap = (row.close - row.hardDefense) / row.close;
-            if (row.prevAdv === 0) entryGaps.push(gap);
-            else if (row.supportSource === 'confirmed-pivot-ratchet') ratchetGaps.push(gap);
+            if (row.prevAdv === 0) {
+                entryGaps.push(gap);
+                (entryGapsByRegime[row.regime] = entryGapsByRegime[row.regime] || []).push(gap);
+                const source = row.supportSource || '(未知来源)';
+                entrySourceByRegime[row.regime] = entrySourceByRegime[row.regime] || {};
+                entrySourceByRegime[row.regime][source] = (entrySourceByRegime[row.regime][source] || 0) + 1;
+            } else if (row.supportSource === 'confirmed-pivot-ratchet') ratchetGaps.push(gap);
         }
     }
 
@@ -216,6 +224,7 @@ function analyzeSymbol(symbol, rows) {
         id: symbol.id, name: symbol.name,
         firstDate: window[0]?.date || '', lastDate: window.at(-1)?.date || '', days: window.length,
         regimeDays, regimeHeldDays, transitionCauses, entryGaps, ratchetGaps,
+        entryGapsByRegime, entrySourceByRegime,
         peakHeldDays, peakReducedDays, trades, exitReasons, entryRegimes, maxPositions,
         shortTrades: trades.filter(trade => trade.bars <= SHORT_TRADE_BARS).length
     };
@@ -251,7 +260,8 @@ function buildReport(reports, meta) {
         days: 0, regimeDays: {}, regimeHeldDays: {}, transitionCauses: {},
         entryGaps: [], ratchetGaps: [], peakHeldDays: 0, peakReducedDays: 0,
         trades: 0, shortTrades: 0, exitReasons: {}, entryRegimes: {}, maxPositions: {},
-        entryPremiums: [], exitDiscounts: [], rets: [], bars: []
+        entryPremiums: [], exitDiscounts: [], rets: [], bars: [],
+        entryGapsByRegime: {}, entrySourceByRegime: {}
     };
 
     for (const report of reports) {
@@ -268,6 +278,12 @@ function buildReport(reports, meta) {
         total.peakReducedDays += report.peakReducedDays;
         total.trades += report.trades.length;
         total.shortTrades += report.shortTrades;
+        for (const [regime, gaps] of Object.entries(report.entryGapsByRegime || {})) {
+            (total.entryGapsByRegime[regime] = total.entryGapsByRegime[regime] || []).push(...gaps);
+        }
+        for (const [regime, sources] of Object.entries(report.entrySourceByRegime || {})) {
+            total.entrySourceByRegime[regime] = mergeCounts(total.entrySourceByRegime[regime] || {}, sources);
+        }
         for (const trade of report.trades) {
             if (Number.isFinite(trade.entryPremium)) total.entryPremiums.push(trade.entryPremium);
             if (Number.isFinite(trade.exitDiscount)) total.exitDiscounts.push(trade.exitDiscount);
@@ -291,6 +307,13 @@ function buildReport(reports, meta) {
     lines.push(`- 每次交易达到的最高仓位：${renderCounts(total.maxPositions, total.trades)}`);
     lines.push(`- 波峰确认且当日有持仓：${total.peakHeldDays} 日，其中仓位下降 ${total.peakReducedDays} 日（${share(total.peakReducedDays, total.peakHeldDays)}）`);
     lines.push(renderGapLine('建仓日收盘到冻结硬防守位距离', total.entryGaps));
+    for (const regime of ['down', 'range', 'up', 'transition']) {
+        const gaps = total.entryGapsByRegime[regime] || [];
+        if (!gaps.length) continue;
+        const sources = total.entrySourceByRegime[regime] || {};
+        const sourceText = Object.entries(sources).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join('、');
+        lines.push(`  - ${REGIME_LABELS[regime]}环境建仓（n=${gaps.length}）：距离中位 ${pct(quantile(gaps, 0.5))}，P90 ${pct(quantile(gaps, 0.9))}｜防守位来源：${sourceText}`);
+    }
     lines.push(renderGapLine('棘轮上移后收盘到硬防守位距离', total.ratchetGaps));
     lines.push(`- 离场成因：${renderCounts(total.exitReasons, total.trades)}`);
     lines.push(`- 过渡环境成因：${renderCounts(total.transitionCauses, total.regimeDays.transition || 0)}`);
