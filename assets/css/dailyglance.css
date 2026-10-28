@@ -389,9 +389,9 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 .stock-suggest-empty { padding: var(--space-4); text-align: center; color: var(--text-dim); font-size: var(--text-base); }
 
 .stock-header { display: flex; align-items: center; margin-bottom: var(--space-3); padding-bottom: var(--space-2); border-bottom: 1px solid var(--border-color); }
-.stock-header .title-wrap { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
-.stock-header .title-wrap span:first-child { font-size: var(--text-base); font-weight: 600; color: var(--text-dim); }
-.left-list-refresh-time { color: var(--text-dim); font-size: var(--text-xs); font-weight: 500; opacity: .72; white-space: nowrap; }
+.stock-header .title-wrap { display: flex; flex: 1 1 auto; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.stock-header .title-wrap span:first-child { flex: 0 0 auto; font-size: var(--text-base); font-weight: 600; color: var(--text-dim); white-space: nowrap; }
+.left-list-refresh-time { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font-size: var(--text-xs); font-weight: 500; opacity: .72; white-space: nowrap; }
 .stock-header + div .nav-list-item:first-child { margin-top: 0; }
 .stock-empty { padding: var(--space-6) var(--space-4); text-align: center; color: var(--text-dim); font-size: var(--text-base); line-height: 1.6; background: var(--inner-bg); border-radius: var(--radius-sm); border: 1px dashed var(--border-color); margin-top: var(--space-2); }
 

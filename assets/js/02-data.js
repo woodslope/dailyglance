@@ -2080,7 +2080,7 @@ function scheduleCachedFetchRefresh(id) {
     return job;
 }
 
-async function preloadCacheOnly() {
+async function preloadCacheOnly(options = {}) {
     const symbols = [...INDEX_IDS];
     if (state.watchlist && state.watchlist.length > 0) {
         const watchlistSymbols = state.watchlist
@@ -2089,7 +2089,8 @@ async function preloadCacheOnly() {
             .map(target => target.secid);
         symbols.push(...watchlistSymbols.filter(id => !symbols.includes(id)));
     }
-    for (const id of symbols) {
+    for (let i = 0; i < symbols.length; i++) {
+        const id = symbols[i];
         try {
             const c = await dbGet(id);
             const cachedData = normalizeConfirmedHistoryData(c?.data, id);
@@ -2097,6 +2098,11 @@ async function preloadCacheOnly() {
                 setRawData(id, cachedData);
             }
         } catch(e) {}
+        // 指数缓存先于自选股读完：此时核心宽基已就绪，让调用方立即同步左右两侧，
+        // 不必等自选股缓存全部读完。
+        if (i === INDEX_IDS.length - 1 && typeof options.onIndexesLoaded === 'function') {
+            try { options.onIndexesLoaded(); } catch (error) {}
+        }
     }
 }
 

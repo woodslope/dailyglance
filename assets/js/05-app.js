@@ -1236,7 +1236,9 @@ function refreshSidebarRealtime() {
         _sidebarRefreshFailCount = 0;
 
         const batchFetchedAt = Date.now();
-        receivedIds.forEach(id => {
+        // 只给已有历史序列、本轮能真正应用报价的标的记限流；冷启动时历史尚未补齐的标的
+        // 不能被这次“拿到但用不上”的报价锁住 30 秒，否则历史补齐后的立即刷新会被跳过。
+        receivedIds.filter(id => state.rawData[id]?.length).forEach(id => {
             const limiter = requestManager.limiters.get(id) || { lastCall: 0, isFetching: false };
             requestManager.limiters.set(id, { ...limiter, lastCall: batchFetchedAt, isFetching: false });
         });

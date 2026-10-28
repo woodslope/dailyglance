@@ -7,20 +7,36 @@ function scheduleIdleTask(fn, timeout = 300) {
     return window.setTimeout(fn, timeout);
 }
 
+// 缓存预载补齐核心宽基后，左侧环境卡已按新数据重绘；右侧推导依据也要同轮重算，
+// 避免同一屏左边写“偏弱”、右边仍是“环境未知”。只在确有待应用的指标变更时触发。
+function applyActivePanelAfterMarketPreload() {
+    if (!state.pendingIndicatorMutation || typeof scheduleCachedFetchRefreshApply !== 'function') return;
+    const activeData = typeof getActiveData === 'function' ? getActiveData() : null;
+    if (!state.id || !activeData || !activeData.length) return;
+    scheduleCachedFetchRefreshApply(state.id);
+}
+
 function scheduleStartupBackgroundHydration() {
     scheduleIdleTask(async () => {
-        await preloadCacheOnly();
+        await preloadCacheOnly({
+            onIndexesLoaded: () => {
+                if (state.mode === 'index') renderIndexList();
+                applyActivePanelAfterMarketPreload();
+            }
+        });
         // 冷启动先用落盘的决策缓存水合内存，命中后自选股快照直接复用、跳过重算。
         if (typeof hydrateWatchlistDecisionCache === 'function') {
             try { await hydrateWatchlistDecisionCache(); } catch (error) {}
         }
         if (state.mode === 'index') {
             renderIndexList();
+            applyActivePanelAfterMarketPreload();
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
         } else if (state.mode === 'stock' || state.tab === 'stock') {
             const leftTxn = beginRefreshTransaction('leftList', { source: 'startup-cache-preload', area: 'stock-list' });
             renderWatchlist();
             markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
+            applyActivePanelAfterMarketPreload();
             if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
         }
 
@@ -164,11 +180,15 @@ function startRefreshSchedulers() {
     window.__DG_REFRESH_SCHEDULERS_STARTED__ = true;
 
     refreshSchedulerRuntime.startedAt = Date.now();
-    registerRefreshInterval(() => {
+    const tickLiveClock = () => {
         if (document.hidden) return;
+        const clock = document.getElementById('liveClock');
+        if (!clock) return;
         const d = getBJDate();
-        document.getElementById('liveClock').innerText = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
-    }, 1000);
+        clock.innerText = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+    };
+    tickLiveClock();
+    registerRefreshInterval(tickLiveClock, 1000);
 
     // 30s 批量侧边栏价格刷新：1 次 JSONP 拿全部侧边栏标的实时价格
     registerRefreshInterval(() => {
