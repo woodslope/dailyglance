@@ -33,8 +33,12 @@ function clearCharts(reason = 'empty'){
         const p = el.parentElement; p.classList.add('chart-placeholder-host');
         let ph = p.querySelector('.empty-hint'); 
         if(!ph) { ph = document.createElement('div'); ph.className = 'empty-hint text-dim mono'; p.appendChild(ph); }
-        const statusText = reason === 'error' ? '加载失败' : '暂无数据';
-        ph.innerText = {'mainChart': 'K 线图', 'volumeChart': '成交量', 'macdChart': 'MACD', 'kdjChart': 'KDJ'}[id] + ' — ' + statusText;
+        const chartName = {'mainChart': 'K 线图', 'volumeChart': '成交量', 'macdChart': 'MACD', 'kdjChart': 'KDJ'}[id];
+        if (reason === 'loading') {
+            ph.innerHTML = `${chartName} — <span role="status" data-history-loading="${escapeHTML(state.id)}">正在加载确认历史…</span>`;
+        } else {
+            ph.innerText = chartName + ' — ' + (reason === 'error' ? '加载失败' : '暂无数据');
+        }
     });
 }
 
@@ -1340,7 +1344,7 @@ function renderActiveSelectionStatus(status = 'loading') {
                     <strong class="mono text-main">--</strong>
                 </div>
             </div>
-            <div class="action-sub">${detailText}</div>
+            <div class="action-sub" ${isError ? '' : `data-history-loading="${escapeHTML(state.id)}"`}>${detailText}</div>
             ${isError ? '<button type="button" class="state-retry-action" onclick="handleUpdateData()">重新加载当前数据</button>' : ''}
         </div>
     `;
@@ -1551,6 +1555,20 @@ function renderDataStatusRefreshBadge(item, id = state.id, full = getActiveData(
     `;
 }
 
+function getDataFreshnessText(id = state.id) {
+    const lastDate = state.rawData?.[id]?.slice(-1)[0]?.date || state.confirmedStatus?.[id]?.lastDate || '';
+    const check = state.historyChecks?.[id];
+    const quote = state.liveQuotes?.[id];
+    const parts = [lastDate ? `历史确认至 ${lastDate}` : '历史尚未确认'];
+    if (quote?.quoteTime) parts.push(`报价 ${quote.quoteTime}`);
+    if (check?.status === 'checking') parts.push('正在检查历史');
+    else if (check?.status === 'failed') parts.push('历史更新失败，保留可用数据');
+    else if (check?.checkedAt) parts.push(`历史检查于 ${new Date(check.checkedAt).toLocaleTimeString('en-GB', { hour12: false })}`);
+    else parts.push('本地历史，尚未联网检查');
+    if (state.quoteRefreshFailures?.[id]) parts.push('报价更新失败，保留最近报价');
+    return parts.join(' · ');
+}
+
 function updateDataStatusRefreshBadge(item = null, id = state.id, full = null) {
     const bar = document.getElementById('lastRefreshBar');
     if (!bar) return;
@@ -1563,6 +1581,16 @@ function updateDataStatusRefreshBadge(item = null, id = state.id, full = null) {
         return;
     }
     bar.style.display = 'flex';
+    let freshness = bar.querySelector('[data-refresh-freshness]');
+    if (!freshness) {
+        freshness = document.createElement('span');
+        freshness.className = 'refresh-freshness text-dim';
+        freshness.dataset.refreshFreshness = 'true';
+        bar.appendChild(freshness);
+    }
+    freshness.className = `refresh-freshness ${state.historyChecks?.[id]?.status === 'failed' || state.quoteRefreshFailures?.[id] ? 'text-warn' : 'text-dim'}`;
+    freshness.textContent = getDataFreshnessText(id);
+    freshness.title = '确认历史日期和接口报价时间，与界面显示时间不同。';
     const html = renderDataStatusRefreshBadge(currentItem, id, data).trim();
     if (existing) {
         if (existing.outerHTML !== html) existing.outerHTML = html;

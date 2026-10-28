@@ -1256,7 +1256,33 @@ function batchGetRealtimePrices(ids) {
     });
 }
 
+function setHistoryCheckState(id, status) {
+    if (!state.historyChecks) state.historyChecks = {};
+    state.historyChecks[id] = { status, checkedAt: Date.now() };
+    if (id === state.id && typeof updateDataStatusRefreshBadge === 'function') updateDataStatusRefreshBadge();
+}
+
+function updateHistoryLoadingMessage(id, message) {
+    document.querySelectorAll('[data-history-loading]').forEach(el => {
+        if (el.dataset.historyLoading === id) el.textContent = message;
+    });
+}
+
+const historySyncInFlight = new Map();
 async function syncDataWithHistory(id) {
+    if (historySyncInFlight.has(id)) return historySyncInFlight.get(id);
+    const task = performHistorySync(id).catch(error => {
+        setHistoryCheckState(id, 'failed');
+        throw error;
+    }).finally(() => {
+        if (historySyncInFlight.get(id) === task) historySyncInFlight.delete(id);
+    });
+    historySyncInFlight.set(id, task);
+    return task;
+}
+
+async function performHistorySync(id) {
+    setHistoryCheckState(id, 'checking');
     const sources = id === 'bz50'
         ? [
             { name: 'tickflow', load: fetchTickFlowKline },
@@ -1269,14 +1295,17 @@ async function syncDataWithHistory(id) {
             { name: 'tencent', load: jsonpFetchTencentKline },
             { name: 'eastmoney', load: jsonpFetchEastmoneyKline }
         ];
-    for (const source of sources) {
+    for (const [index, source] of sources.entries()) {
+        updateHistoryLoadingMessage(id, index ? `正在尝试备用来源（${index + 1}/${sources.length}）…` : '正在获取确认历史 K 线…');
         const data = normalizeConfirmedHistoryData(await source.load(id), id);
         if (data && data.length >= 30) {
             setConfirmedStatus(id, { source: source.name, status: 'fresh', lastDate: data[data.length - 1]?.date || '', syncedAt: Date.now() });
+            setHistoryCheckState(id, 'ready');
             return data;
         }
     }
     setConfirmedStatus(id, { status: 'failed', syncedAt: Date.now() });
+    setHistoryCheckState(id, 'failed');
     return null;
 }
 
@@ -1422,48 +1451,72 @@ async function performSyncData(id) {
     } 
 }
 
-async function checkCacheNeedUpdate(id) { 
-    const cached = await dbGet(id); 
-    if(!cached || !cached.data || !cached.data.length) return { needUpdate: true, reason: '无数据' }; 
-    const ld = cached.data[cached.data.length-1].date, ltd = getLastTradingDate(); 
-    if(ld < ltd) return { needUpdate: true, reason: '数据过期' }; 
-    return { needUpdate: false, reason: '已最新' }; 
-}
-
-const lastUpdateClicks = new Map(); 
-async function handleUpdateData(forceFull = false) { 
-    const btn = document.getElementById('updateDataBtn'); if(!btn) return; 
-    if(!state.id) return; 
-    
-    const now = Date.now(), lastClick = lastUpdateClicks.get(state.id) || 0;
-    if(!forceFull && now - lastClick < SYS_CONFIG.UPDATE_COOLDOWN) { await customAlert(`频繁请求限制。此标的更新需等待 ${Math.ceil((SYS_CONFIG.UPDATE_COOLDOWN-(now-lastClick))/1000)} 秒。`); return; } 
-    
-    const info = await checkCacheNeedUpdate(state.id); 
-    if(info.needUpdate) {
-        lastUpdateClicks.set(state.id, Date.now());
-        showToast(info.reason + '，正在同步...', 'info', 2000);
-    } else {
-        const confirmed = await customConfirm('数据已是最新，确认强制同步？');
-        if(!confirmed) return;
-        lastUpdateClicks.set(state.id, Date.now());
+const lastUpdateClicks = new Map();
+async function handleUpdateData(forceFull = false) {
+    const btn = document.getElementById('updateDataBtn');
+    if (!btn || btn.disabled || !state.id) return;
+    const id = state.id;
+    const selectionSeq = globalSelectionSeq;
+    const name = getIndexConfig(id)?.name || getActiveSecurityTarget()?.name || id;
+    const isCurrentSelection = () => state.id === id && globalSelectionSeq === selectionSeq;
+    const now = Date.now(), lastClick = lastUpdateClicks.get(id) || 0;
+    if (!forceFull && now - lastClick < SYS_CONFIG.UPDATE_COOLDOWN) {
+        showToast(`请 ${Math.ceil((SYS_CONFIG.UPDATE_COOLDOWN - (now - lastClick)) / 1000)} 秒后再更新。`, 'info');
+        return;
     }
-    
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
+        showToast('另一页面正在负责行情更新，当前保留已有数据。', 'info');
+        return;
+    }
+
     resetHistorySourceCircuits();
-    btn.disabled = true; btn.innerHTML = SVG_ICONS.SPIN; 
-    try { 
-        const fresh = (!forceFull && info.needUpdate) ? await syncData(state.id) : await syncDataWithHistory(state.id); 
-        if(fresh && fresh.length) { 
-            const leftTxn = beginRefreshTransaction('leftList', { source: 'manual-update', id: state.id });
-            const rightTxn = beginRefreshTransaction('rightPanel', { source: 'manual-update', id: state.id });
-            await dbSet(state.id, fresh);
-            setRawData(state.id, fresh);
-            if (typeof renderActiveLeftListAfterDataApply === 'function') renderActiveLeftListAfterDataApply(leftTxn, { id: state.id });
-            const status = applyActiveDataRefresh(state.id);
-            markRefreshTime(rightTxn, { path: status, id: state.id });
-            await customAlert(`同步成功！K线数量：${fresh.length}`); 
-        } else { await customAlert('数据同步失败！'); } 
-    } catch(e) { await customAlert('同步异常: ' + e.message); } 
-    finally { btn.disabled = false; btn.innerHTML = SVG_ICONS.UPDATE; } 
+    btn.disabled = true;
+    btn.innerHTML = SVG_ICONS.SPIN;
+    btn.setAttribute?.('aria-busy', 'true');
+    showToast(`正在更新 ${name}…`, 'info', 1800);
+    try {
+        // 手动更新明确请求历史源，不把底层的旧缓存回退当成更新成功。
+        if (syncDataInFlight.has(id)) await syncDataInFlight.get(id);
+        const previous = state.rawData[id];
+        const fresh = await syncDataWithHistory(id);
+        if (!fresh?.length) {
+            showToast(`${name} 更新失败，已保留原数据，可重新尝试。`, 'warn', 4500);
+            return;
+        }
+        await dbSet(id, fresh);
+        setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastAttemptAt: Date.now(), lastDate: fresh[fresh.length - 1].date });
+        setRawData(id, fresh);
+        if (isMarketOpen()) {
+            const quote = await requestManager.fetchRealtimeWithThrottle(id);
+            if (quote && !isRealtimeFetchSkipped(quote)) applyRealtimeQuoteForSeries(id, fresh, quote);
+        }
+        // 排序期间不重建左栏，也不让中右先显示新数据；切换标的后取消本次界面提交。
+        while (isCurrentSelection() && state.mode === 'stock' && typeof watchlistDragCode !== 'undefined' && watchlistDragCode) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+        }
+        // 返回结果只属于发起请求的标的；切换后只更新该标的缓存，不碰当前面板。
+        if (isCurrentSelection()) {
+            const leftTxn = beginRefreshTransaction('leftList', { source: 'manual-update', id });
+            const rightTxn = beginRefreshTransaction('rightPanel', { source: 'manual-update', id });
+            if (typeof renderActiveLeftListAfterDataApply === 'function') renderActiveLeftListAfterDataApply(leftTxn, { id, renderNow: true });
+            const status = applyActiveDataRefresh(id);
+            if (status !== 'no-data') markRefreshTime(rightTxn, { path: status, id });
+        }
+        const date = fresh[fresh.length - 1].date;
+        const complete = isConfirmedSeriesFreshEnough(fresh);
+        if (complete) lastUpdateClicks.set(id, Date.now());
+        const unchanged = getDataMutationMeta(previous, fresh).mode === 'unchanged';
+        const result = !complete ? `历史尚未补齐，当前确认至 ${date}。`
+            : (unchanged ? `检查完成，确认历史无变化（${date}）。` : `已更新，确认历史至 ${date}。`);
+        showToast(`${name} ${result}`, complete ? 'success' : 'warn', 4000);
+    } catch (error) {
+        setHistoryCheckState(id, 'failed');
+        showToast(`${name} 更新失败，已保留可用数据，可重新尝试。`, 'warn', 4500);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = SVG_ICONS.UPDATE;
+        btn.setAttribute?.('aria-busy', 'false');
+    }
 }
 
 const KLINE_CACHE_VERSION = 2;
@@ -1651,7 +1704,8 @@ function applyActiveDataRefresh(id) {
             drawViewport();
         }
         if (typeof updateSidebarPriceOnly === 'function') updateSidebarPriceOnly();
-        if (typeof ensureAnalysisPanelVisibleForRealtimeRefresh === 'function') ensureAnalysisPanelVisibleForRealtimeRefresh();
+        // 指标与结论同轮应用；不能只保证旧结论卡片非空。
+        safeUpdateSidebar({ interactive: true });
         if (typeof updateDataStatusRefreshBadge === 'function') updateDataStatusRefreshBadge(rd[rd.length - 1], id, rd);
         updateNavCapsuleVisuals(rd.length - 1, rd.length);
         return 'same-day-light';
@@ -2095,18 +2149,30 @@ function shouldEnsureMarketTemperatureData(id) {
 }
 
 async function ensureMarketTemperatureData() {
-    for (const id of INDEX_IDS) {
-        if (!shouldEnsureMarketTemperatureData(id)) continue;
-        try {
+    state.indexHydrationPending = true;
+    if (state.mode === 'index' && typeof renderIndexList === 'function') renderIndexList();
+    try {
+        await pLimit(INDEX_IDS.filter(shouldEnsureMarketTemperatureData), SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async id => {
             const data = await syncData(id);
-            if (data && data.length >= 30) {
-                setRawData(id, data);
+            if (data && data.length >= 30) setRawData(id, data);
+        });
+    } finally {
+        state.indexHydrationPending = false;
+        if (state.mode === 'index' && typeof renderIndexList === 'function') {
+            renderIndexList();
+            const appliedCount = INDEX_IDS.filter(id => isConfirmedSeriesFreshEnough(state.rawData[id])).length;
+            if (appliedCount) {
+                const txn = beginRefreshTransaction('leftList', { source: 'startup-history-batch', area: 'index-list' });
+                markLeftListRefreshForActiveTab(txn, {
+                    area: 'index-list', expectedCount: INDEX_IDS.length, appliedCount,
+                    status: appliedCount === INDEX_IDS.length ? 'full' : 'partial'
+                });
             }
-        } catch(e) {}
+        }
     }
     const activeData = getActiveData();
     if ((state.mode === 'index' || state.mode === 'stock') && activeData && activeData.length) {
-        updateAllIndicators();
-        safeUpdateSidebar();
+        if (state.pendingIndicatorMutation) scheduleCachedFetchRefreshApply(state.id);
+        else safeUpdateSidebar();
     }
 }

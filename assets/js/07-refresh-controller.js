@@ -78,6 +78,66 @@ function registerRefreshTimeout(fn, delay) {
     return handle;
 }
 
+// 复用 30 秒调度器检查盘后缺口；每标的每天最多补确认 3 次，至少间隔 60 秒。
+const postCloseConfirmation = { date: '', attempts: new Map(), lastAttemptAt: 0, inFlight: null };
+
+async function refreshPostCloseConfirmation() {
+    if (document.hidden || !isAfterMarketClose() || !isTradingDay(getTodayDate())) return;
+    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
+    if (postCloseConfirmation.inFlight) return postCloseConfirmation.inFlight;
+    const today = getTodayDate();
+    if (postCloseConfirmation.date !== today) {
+        postCloseConfirmation.date = today;
+        postCloseConfirmation.attempts.clear();
+        postCloseConfirmation.lastAttemptAt = 0;
+    }
+    if (Date.now() - postCloseConfirmation.lastAttemptAt < 60000) return;
+    const area = getSidebarRealtimeArea();
+    const targets = getSidebarRealtimeTargetIds();
+    const ids = targets.filter(id => !isConfirmedSeriesFreshEnough(state.rawData[id]) && (postCloseConfirmation.attempts.get(id) || 0) < 3);
+    if (!ids.length) return;
+    postCloseConfirmation.lastAttemptAt = Date.now();
+    const activeId = state.id;
+    const task = (async () => {
+        watchlistSnapshotBatchDepth++;
+        const confirmedIds = [];
+        let activeChanged = false;
+        try {
+            await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async id => {
+                if (document.hidden || !canRequestMarketData()) return;
+                postCloseConfirmation.attempts.set(id, (postCloseConfirmation.attempts.get(id) || 0) + 1);
+                const previousMode = state.displayStatus[id]?.mode;
+                const data = await syncData(id);
+                if (!data?.length) return;
+                const result = setRawData(id, data);
+                if (isConfirmedSeriesFreshEnough(data)) confirmedIds.push(id);
+                if (id === activeId && (result.changed || isConfirmedSeriesFreshEnough(data) || previousMode !== state.displayStatus[id]?.mode)) activeChanged = true;
+                if (result.changed) {
+                    const stock = (state.watchlist || []).find(item => normalizeSecurityTarget(item).secid === id);
+                    if (stock) syncWatchlistSignalSnapshotFast(stock.code, data);
+                }
+            });
+        } finally {
+            finishWatchlistSnapshotBatch();
+        }
+        await waitForWatchlistSnapshotQueue();
+        if (document.hidden || !isCurrentSidebarRealtimeBatch(area, targets)) return;
+        if (area === 'index-list') renderIndexList();
+        else if (area === 'stock-list') renderWatchlist();
+        if (confirmedIds.length) {
+            const txn = beginRefreshTransaction('leftList', { source: 'post-close-confirmation', area });
+            markLeftListRefreshForActiveTab(txn, {
+                area, expectedCount: ids.length, appliedCount: confirmedIds.length,
+                status: confirmedIds.length === ids.length ? 'full' : 'partial'
+            });
+        }
+        if (activeChanged && state.id === activeId) scheduleCachedFetchRefreshApply(activeId);
+    })();
+    postCloseConfirmation.inFlight = task;
+    try { return await task; }
+    finally { if (postCloseConfirmation.inFlight === task) postCloseConfirmation.inFlight = null; }
+}
+
 function handleRefreshVisibilityChange() {
     if (document.hidden) {
         if (typeof cancelExternalObservationTasks === 'function') cancelExternalObservationTasks('hidden');
@@ -90,7 +150,10 @@ function handleRefreshVisibilityChange() {
         ]).catch(error => console.error('[DailyGlance] external visibility refresh failed', error));
         return;
     }
-    if (!isMarketOpen()) return;
+    if (!isMarketOpen()) {
+        refreshPostCloseConfirmation().catch(error => console.error('[DailyGlance] post-close confirmation failed', error));
+        return;
+    }
     refreshSidebarRealtime();
     if (state.mode === 'index') cachedFetch(state.id);
     else if (state.mode === 'stock' && state.id) cachedFetch(state.id);
@@ -109,8 +172,9 @@ function startRefreshSchedulers() {
 
     // 30s 批量侧边栏价格刷新：1 次 JSONP 拿全部侧边栏标的实时价格
     registerRefreshInterval(() => {
-        if (document.hidden || !isMarketOpen()) return;
-        refreshSidebarRealtime();
+        if (document.hidden) return;
+        if (isMarketOpen()) refreshSidebarRealtime();
+        else refreshPostCloseConfirmation().catch(error => console.error('[DailyGlance] post-close confirmation failed', error));
     }, SYS_CONFIG.THROTTLE_MS);
 
     // 30s 当前标的完整同步：增量历史 + 实时合并 + 图表重绘，延迟启动以错开侧边栏刷新

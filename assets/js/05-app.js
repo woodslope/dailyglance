@@ -1223,6 +1223,9 @@ function refreshSidebarRealtime() {
         if (!isCurrentSidebarRealtimeBatch(area, ids)) return { status: 'stale', batchId };
 
         const receivedIds = ids.filter(id => Object.prototype.hasOwnProperty.call(prices, id));
+        if (!state.quoteRefreshFailures) state.quoteRefreshFailures = {};
+        requestIds.forEach(id => { state.quoteRefreshFailures[id] = !receivedIds.includes(id); });
+        if (typeof updateDataStatusRefreshBadge === 'function') updateDataStatusRefreshBadge();
         if (!receivedIds.length) {
             _sidebarRefreshFailCount++;
             if (_sidebarRefreshFailCount >= 2) {
@@ -1408,11 +1411,10 @@ async function _selectIndexImpl(id) {
     document.getElementById('btnBacktest').style.display = 'none';
 
     resetIndicatorState();
-    // P0-1: showLoading 提前到 clearCharts 之前，避免图表区一帧空白闪烁
-    showLoading(`加载 ${config.name} 数据...`);
+    hideLoading();
     renderIndexList();
     renderActiveSelectionStatus('loading');
-    clearCharts();
+    clearCharts('loading');
     renderCache.clear();
 
     try {
@@ -1462,10 +1464,10 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
     document.getElementById('btnBacktest').style.display = 'flex';
 
     resetIndicatorState();
-    // P0-1: showLoading 提前到 clearCharts 之前，避免图表区一帧空白闪烁
-    showLoading(`加载 ${safeName} 数据...`);
+    hideLoading();
     renderWatchlist();
-    clearCharts();
+    renderActiveSelectionStatus('loading');
+    clearCharts('loading');
     renderCache.clear();
 
     try {
@@ -1559,7 +1561,12 @@ function renderActiveLeftListAfterDataApply(txn = null, patch = {}) {
         renderIndexList();
         if (shouldCommitRefresh) markLeftListRefreshForActiveTab(refreshTxn, { area: 'index-list', ...patch });
     } else if (state.mode === 'stock' && typeof scheduleWatchlistRender === 'function') {
-        scheduleWatchlistRender({ markRefresh: shouldCommitRefresh, refreshTxn });
+        if (patch.renderNow === true && !watchlistDragCode) {
+            renderWatchlist();
+            if (shouldCommitRefresh) markLeftListRefreshForActiveTab(refreshTxn, { area: 'stock-list', ...patch });
+        } else {
+            scheduleWatchlistRender({ markRefresh: shouldCommitRefresh, refreshTxn });
+        }
     }
 }
 
