@@ -1629,11 +1629,15 @@ function getLeftQuoteDisplay(id) {
     const hasPrev = Number.isFinite(prev) && prev > 0;
     const change = hasPrice && hasPrev ? price - prev : 0;
     const pct = hasPrice && hasPrev ? change / prev * 100 : null;
-    const cl = !hasPrice || !hasPrev || change === 0 ? 'flat' : (change > 0 ? 'up' : 'down');
     const precision = getSecurityPricePrecision(id);
+    // 盘中还没拿到今天的报价时，最后一根仍是昨日确认 K 线，其涨跌是昨天的。
+    // 价格照常显示，涨跌先留 "--" 且不着色，避免打开瞬间先绿后红地翻色。
+    const lastDate = d?.length ? d[d.length - 1].date : '';
+    const awaitingTodayQuote = hasPrice && isMarketOpen() && lastDate < formatBJDate();
+    const cl = awaitingTodayQuote || !hasPrice || !hasPrev || change === 0 ? 'flat' : (change > 0 ? 'up' : 'down');
     return {
         priceText: hasPrice ? price.toFixed(precision) : '--',
-        changeText: pct == null ? '--' : `${change > 0 ? '+' : ''}${pct.toFixed(2)}%`,
+        changeText: awaitingTodayQuote || pct == null ? '--' : `${change > 0 ? '+' : ''}${pct.toFixed(2)}%`,
         cl
     };
 }
