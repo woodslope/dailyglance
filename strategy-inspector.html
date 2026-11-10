@@ -3,27 +3,27 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="DailyGlance 当前生产策略规则查看器。">
-<title>策略规则 · DailyGlance</title>
+<meta name="description" content="DailyGlance 当前生产策略的配置参考，不包含完整执行规则。">
+<title>策略配置参考 · DailyGlance</title>
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20261028-03">
-<link rel="stylesheet" href="assets/css/strategy-inspector.css?v=20261028-03">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20261110-02">
+<link rel="stylesheet" href="assets/css/strategy-inspector.css?v=20261110-02">
 </head>
 <body class="strategy-inspector-page">
 <div id="mobileGate" aria-label="电脑端使用提示">
     <div class="mobile-gate-card">
         <div class="mobile-gate-icon"><img src="assets/icons/logo.svg" alt="" aria-hidden="true"></div>
-        <div class="mobile-gate-title">请使用电脑端打开策略查看器</div>
-        <div class="mobile-gate-text">完整策略规则需要至少 1024px 的可用宽度。</div>
+        <div class="mobile-gate-title">请使用电脑端打开策略配置参考</div>
+        <div class="mobile-gate-text">配置参考页需要至少 1024px 的可用宽度。</div>
         <div class="mobile-gate-brand">DailyGlance · LINPO LAB · © 2026</div>
     </div>
 </div>
 <main class="strategy-inspector-shell">
     <header class="strategy-inspector-header">
         <div class="strategy-inspector-copy">
-            <div class="strategy-inspector-kicker">DAILYGLANCE / STRATEGY RULES</div>
-            <h1>策略规则</h1>
-            <p>核对生产配置中的买入、离场、预警、积分和仓位规则。这里不加载行情，也不改变应用策略。</p>
+            <div class="strategy-inspector-kicker">DAILYGLANCE / STRATEGY CONFIG</div>
+            <h1>策略配置参考</h1>
+            <p>本页用于查看策略配置，不包含全部执行条件、判断顺序和特殊处理，不能据此推导当前买卖动作。具体结果请查看主应用。</p>
         </div>
         <div class="strategy-inspector-header-actions">
             <span id="strategyCurrent" class="strategy-current-badge">应用当前：--</span>
@@ -36,33 +36,22 @@
     <section id="strategyOverview" class="strategy-overview" aria-live="polite"></section>
 
     <section class="strategy-section">
-        <div class="strategy-section-heading"><span class="strategy-section-index">01</span><div><h2>仓位路径</h2><p>四档仓位是统一输出；策略规则和风险限制共同决定最高可用档位。</p></div></div>
-        <div id="positionSteps" class="position-steps"></div>
-    </section>
-
-    <section class="strategy-section">
-        <div class="strategy-section-heading"><span class="strategy-section-index">02</span><div><h2>信号规则</h2><p>按信号用途查看中文含义、积分归属和在当前策略中的作用。</p></div></div>
+        <div class="strategy-section-heading"><span class="strategy-section-index">01</span><div><h2>信号配置</h2><p>买入、离场和预警信号的名称、分数与分组。</p></div></div>
         <div id="signalGroups" class="signal-groups"></div>
     </section>
 
-    <section class="strategy-two-column">
-        <section class="strategy-section">
-            <div class="strategy-section-heading"><span class="strategy-section-index">03</span><div><h2>积分与窗口</h2><p>窗口长度、门槛和同组去重规则。</p></div></div>
-            <div id="scoreRules" class="score-rules"></div>
-        </section>
-        <section class="strategy-section">
-            <div class="strategy-section-heading"><span class="strategy-section-index">04</span><div><h2>风险限制与例外</h2><p>这些规则会限制仓位，或覆盖基础决策。</p></div></div>
-            <div id="riskRules" class="risk-rules"></div>
-        </section>
+    <section class="strategy-section">
+        <div class="strategy-section-heading"><span class="strategy-section-index">02</span><div><h2>积分与窗口</h2><p>查看窗口参数、积分门槛和分组配置。</p></div></div>
+        <div id="scoreRules" class="score-rules"></div>
     </section>
 
     <section class="strategy-section">
-        <div class="strategy-section-heading"><span class="strategy-section-index">05</span><div><h2>原始配置</h2><p>需要核对字段或阈值时再展开，日常阅读以上方规则说明为准。</p></div></div>
-        <details class="strategy-config-details"><summary>展开当前策略完整配置</summary><pre id="rawConfig"></pre></details>
+        <div class="strategy-section-heading"><span class="strategy-section-index">03</span><div><h2>原始配置</h2><p>直接读取当前策略配置对象，不包含计算代码中的全部判断逻辑。</p></div></div>
+        <details class="strategy-config-details"><summary>展开当前策略配置对象</summary><pre id="rawConfig"></pre></details>
     </section>
     <footer class="strategy-inspector-footer">仅用于观察、研究和复盘，不构成投资建议。实际行情信号和每日结论请以主应用为准。</footer>
 </main>
-<script src="assets/js/00-strategy-config.js?v=20261028-03"></script>
-<script src="assets/js/strategy-inspector.js?v=20261028-03"></script>
+<script src="assets/js/00-strategy-config.js?v=20261110-02"></script>
+<script src="assets/js/strategy-inspector.js?v=20261110-02"></script>
 </body>
 </html>

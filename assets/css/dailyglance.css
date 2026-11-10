@@ -95,6 +95,10 @@ body { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Sego
 /* =========================================
    2.5 可访问性 — 键盘焦点 (Accessibility)
 ========================================= */
+.compact-disclosure > summary:focus-visible,
+.compact-watchlist-picker:focus-visible,
+.compact-watchlist-add:focus-visible,
+.compact-latest-button:focus-visible,
 .logo-box:focus-visible,
 .icon-btn:focus-visible,
 .seg-btn:focus-visible,
@@ -270,6 +274,7 @@ body { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .action-panel .action-cap { text-align: right; }
 .action-panel .action-cap span { display: block; color: var(--text-dim); font-size: var(--text-xs); margin-bottom: 2px; }
 .action-panel .action-cap strong { display: block; color: var(--text-main); font-size: var(--text-3xl); font-weight: 700; }
+.action-panel .action-cap .position-change-from { display: inline; margin: 0; font-size: var(--text-sm); font-weight: 500; white-space: nowrap; }
 .action-panel .action-sub { color: var(--text-dim); font-size: var(--text-base); line-height: 1.5; padding-top: var(--space-3); border-top: 1px dashed var(--border-color); }
 .decision-reason-block { display: flex; flex-direction: column; padding-top: var(--space-3); border-top: 1px dashed var(--border-color); }
 .decision-reason-row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); align-items: flex-start; column-gap: var(--space-2); padding: var(--space-2) 0; color: var(--text-dim); font-size: var(--text-sm); line-height: 1.55; border-bottom: 1px solid var(--border-light); }
@@ -284,15 +289,12 @@ body { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .level-pill strong { color: var(--text-main); font-size: var(--text-md); font-weight: 600; }
 .weekly-level-line .level-pill { flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
 
-.decision-evidence-panel { padding-top: var(--space-3); padding-bottom: var(--space-2); }
-.decision-evidence-panel .block-title { margin-bottom: 0; }
 .decision-evidence-list { display: flex; flex-direction: column; }
 .decision-evidence-row { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-light); }
 .decision-evidence-row:last-child { border-bottom: none; }
 .decision-evidence-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
 .decision-evidence-head span { color: var(--text-dim); font-size: var(--text-sm); font-weight: 700; white-space: nowrap; }
 .decision-evidence-head strong { font-size: var(--text-md); font-weight: 800; line-height: 1.2; text-align: right; }
-.decision-evidence-copy { color: var(--text-dim); font-size: var(--text-xs); line-height: 1.5; margin-top: var(--space-1); text-align: left; }
 .weekly-context-list { margin-bottom: var(--space-2); }
 
 .index-dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
@@ -397,6 +399,9 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 
 .chart-toolbar { --toolbar-control-height: 34px; display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: var(--space-3); flex-shrink: 0; gap: var(--space-3); flex-wrap: wrap; }
 .mobile-chart-meta { display: none; }
+.compact-watchlist-toolbar, .compact-watchlist-note, .compact-conclusion-context { display: none; }
+.compact-disclosure > summary { display: none; }
+.compact-disclosure-body { min-width: 0; }
 .toolbar-left { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; flex: 1; }
 .toolbar-right { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; margin-left: auto; }
 .chart-toolbar .segmented-control,
@@ -441,6 +446,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 .main-chart-box canvas, .volume-chart-box canvas, .macd-chart-box canvas, .kdj-chart-box canvas { width: 100% !important; height: 100% !important; touch-action: pan-y; }
 .main-chart-box canvas { cursor: grab; }
 .main-chart-box.drag-panning canvas { cursor: grabbing; }
+.chart-position-legend { flex: 0 0 auto; margin-top: var(--space-2); padding: 0 var(--space-2); color: var(--text-dim); font-size: var(--text-xs); line-height: 1.5; text-align: center; }
 .chart-copyright-line { flex: 0 0 14px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; margin-top: 8px; padding: 0 16px; color: var(--text-dim); font-size: 10px; font-weight: 400; line-height: 1; letter-spacing: 0; opacity: .62; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; user-select: none; }
 
 .header-meta-row { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); min-width: 0; }
@@ -805,8 +811,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .index-list-sticky-head,
     .dailyglance-app .watchlist-header-slot,
     .dailyglance-app #leftMarketContext { display: none; }
-    .dailyglance-app .index-list-items,
-    .dailyglance-app .watchlist-items {
+    .dailyglance-app .index-list-items {
         flex: 0 0 auto;
         width: calc(100% + var(--space-3) * 2);
         min-height: 0;
@@ -819,8 +824,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         scrollbar-width: none;
         -webkit-overflow-scrolling: touch;
     }
-    .dailyglance-app .index-list-items > div:first-child,
-    .dailyglance-app .watchlist-items > div:not(.watchlist-items-empty) {
+    .dailyglance-app .index-list-items > div:first-child {
         display: flex;
         align-items: stretch;
         gap: var(--space-2);
@@ -853,14 +857,34 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         min-width: 0;
         white-space: nowrap;
     }
+    .dailyglance-app .compact-watchlist-toolbar { display: flex; gap: var(--space-2); }
+    .dailyglance-app .compact-watchlist-picker,
+    .dailyglance-app .compact-watchlist-add,
+    .dailyglance-app .compact-latest-button {
+        min-height: 44px;
+        padding: 0 var(--space-3);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        background: var(--inner-bg);
+        color: var(--text-main);
+        font: inherit;
+        font-size: var(--text-base);
+        cursor: pointer;
+    }
+    .dailyglance-app .compact-watchlist-picker { flex: 1; min-width: 0; display: flex; gap: var(--space-2); align-items: center; justify-content: space-between; }
+    .dailyglance-app .compact-watchlist-picker strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dailyglance-app .compact-watchlist-picker span { flex-shrink: 0; color: var(--text-dim); }
+    .dailyglance-app .compact-watchlist-add { flex-shrink: 0; color: var(--blue-text); }
+    .dailyglance-app .compact-watchlist-note { display: block; margin: var(--space-2) 0; color: var(--text-dim); font-size: var(--text-xs); line-height: 1.5; }
+    .dailyglance-app #stockNavList:not(.compact-watchlist-open) > .watchlist-sticky-head,
+    .dailyglance-app #stockNavList:not(.compact-watchlist-open) > .watchlist-items { display: none; }
+    .dailyglance-app .watchlist-items { flex: 0 0 auto; width: 100%; max-height: min(36dvh, 300px); margin: 0; padding: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; }
     .dailyglance-app .watchlist-items .nav-list-item {
-        width: auto;
-        min-width: 210px;
-        min-height: 72px;
-        flex: 0 0 min(76vw, 260px);
-        margin: 0;
-        padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
-        scroll-snap-align: start;
+        width: 100%;
+        min-width: 0;
+        min-height: 68px;
+        margin: 0 0 var(--space-2);
+        padding: var(--space-1) var(--space-2) var(--space-2) var(--space-3);
     }
     .dailyglance-app .stock-search { margin: 0 0 var(--space-2); }
     .dailyglance-app .stock-search input {
@@ -880,7 +904,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     }
     .dailyglance-app .watchlist-items-empty { min-height: 0; }
 
-    /* 手机端先看数据新鲜度与主 K 线，再看价格、结论和风险依据。 */
+    /* 手机先读报价、结论与风险；主图和可展开的详细依据后置。 */
     .dailyglance-app .info-section {
         order: 1;
         display: contents;
@@ -895,9 +919,10 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         flex-wrap: wrap;
         column-gap: var(--space-3);
         row-gap: var(--space-1);
-        min-height: 44px;
+        min-height: 0;
     }
     .dailyglance-app .info-section > #lastRefreshBar .refresh-time-text {
+        display: none;
         min-width: 0;
         flex: 0 1 auto;
         line-height: 1.4;
@@ -912,8 +937,8 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         margin-right: var(--space-3);
         margin-left: var(--space-3);
     }
-    .dailyglance-app .info-section > #cardPrice { order: 3; margin-top: var(--space-3); }
-    .dailyglance-app .info-section > #cardAnalysis { order: 4; margin-top: var(--space-3); margin-bottom: var(--space-3); }
+    .dailyglance-app .info-section > #cardPrice { order: 2; margin-top: var(--space-3); }
+    .dailyglance-app #cardAnalysis > :not(.risk-note) { order: 3; width: calc(100% - var(--space-3) * 2); margin: var(--space-3) var(--space-3) 0; }
     .dailyglance-app .price-panel,
     .dailyglance-app .terminal-block,
     .dailyglance-app .action-panel { padding: var(--space-3) var(--space-4); }
@@ -921,14 +946,14 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .price-main { font-size: 30px; }
     .dailyglance-app .price-sub { font-size: var(--text-3xl); }
     .dailyglance-app .nav-capsule .btn-sm {
-        min-width: 0;
-        height: 26px;
+        min-width: 36px;
+        height: 36px;
         padding: 0 var(--space-2);
         font-size: var(--text-base);
     }
     .dailyglance-app .nav-capsule {
-        height: 36px;
-        padding: var(--space-1);
+        min-height: 38px;
+        padding: 0;
         align-items: center;
     }
     .dailyglance-app .action-panel .action-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
@@ -936,17 +961,29 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .action-panel .action-cap { min-width: 92px; max-width: 112px; }
     .dailyglance-app .action-panel .action-cap strong { font-size: var(--text-4xl); }
     .dailyglance-app .decision-reason-row {
-        grid-template-columns: minmax(0, 1fr);
-        row-gap: var(--space-1);
+        display: block;
         padding: var(--space-2) 0;
         font-size: var(--text-md);
         line-height: 1.55;
     }
     .dailyglance-app .decision-reason-row > span { white-space: normal; }
+    .dailyglance-app .decision-reason-row > div { display: inline; }
+    .dailyglance-app .compact-conclusion-context { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding-bottom: var(--space-3); margin-bottom: var(--space-3); border-bottom: 1px solid var(--border-light); }
+    .dailyglance-app .compact-conclusion-context > div { min-width: 0; display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: baseline; }
+    .dailyglance-app .compact-conclusion-context strong { font-size: var(--text-base); overflow-wrap: anywhere; }
+    .dailyglance-app .compact-conclusion-context span { font-size: var(--text-xs); color: var(--text-dim); }
+    .dailyglance-app .compact-conclusion-context.is-history span { color: var(--yellow); }
+    .dailyglance-app .compact-latest-button { flex-shrink: 0; color: var(--blue-text); }
+    .dailyglance-app .compact-disclosure > summary { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); cursor: pointer; list-style: none; color: var(--text-main); font-size: var(--text-base); font-weight: 600; }
+    .dailyglance-app .compact-disclosure > summary::-webkit-details-marker { display: none; }
+    .dailyglance-app .compact-disclosure-hint { color: var(--text-dim); font-size: var(--text-sm); font-weight: 400; }
+    .dailyglance-app .compact-disclosure-hint::after { content: '展开 ＋'; }
+    .dailyglance-app .compact-disclosure[open] > summary .compact-disclosure-hint::after { content: '收起 −'; }
+    .dailyglance-app .price-panel > .compact-disclosure { margin-top: var(--space-2); border-top: 1px solid var(--border-light); }
+    .dailyglance-app .compact-disclosure .data-grid-2x2 { margin-top: 0; }
     .dailyglance-app .decision-evidence-row { padding: var(--space-3) 0; }
     .dailyglance-app .decision-evidence-head span { font-size: var(--text-base); }
     .dailyglance-app .decision-evidence-head strong { font-size: var(--text-lg); }
-    .dailyglance-app .decision-evidence-copy { font-size: var(--text-base); line-height: 1.65; }
     .dailyglance-app .risk-note { font-size: var(--text-base); line-height: 1.7; }
     .dailyglance-app #cardAnalysis > .risk-note { display: none; }
     .dailyglance-app .data-box-row .lbl { font-size: var(--text-sm); }
@@ -956,12 +993,12 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         display: contents;
     }
     .dailyglance-app .chart-toolbar {
-        order: 2;
+        order: 4;
         width: calc(100% - var(--space-3) * 2);
         margin: var(--space-3) var(--space-3) var(--space-2);
     }
     .dailyglance-app .integrated-container {
-        order: 3;
+        order: 5;
         width: calc(100% - var(--space-3) * 2);
         margin: 0 var(--space-3);
     }
@@ -989,8 +1026,8 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app #updateDataBtn .icon { width: 18px; height: 18px; }
     .dailyglance-app .integrated-container {
         width: calc(100% - var(--space-3) * 2);
-        height: clamp(300px, 52dvh, 420px);
-        min-height: 300px;
+        height: clamp(240px, 36dvh, 320px);
+        min-height: 240px;
         flex: 0 0 auto;
         touch-action: pan-y;
         overscroll-behavior-y: auto;
@@ -999,8 +1036,9 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
     .dailyglance-app .volume-chart-box,
     .dailyglance-app .macd-chart-box,
     .dailyglance-app .kdj-chart-box { display: none !important; }
+    .dailyglance-app .chart-position-legend { order: 6; width: calc(100% - var(--space-3) * 2); margin: var(--space-2) var(--space-3) 0; box-sizing: border-box; }
     .dailyglance-app .chart-copyright-line {
-        order: 5;
+        order: 7;
         flex: 0 0 auto;
         width: calc(100% - var(--space-3) * 2);
         min-height: 28px;
@@ -1057,9 +1095,24 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 /* =========================================
    P1-5: 刷新时间戳与价格脉冲
 ========================================= */
-.refresh-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: 0; background: transparent; border: none; align-self: flex-start; max-width: 100%; }
+.refresh-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: 0; background: transparent; border: none; position: relative; align-self: flex-start; width: 100%; max-width: 100%; font-size: var(--text-sm); line-height: 1.5; }
+.refresh-bar > .data-status-pill { flex: 0 0 auto; gap: var(--space-1); padding: 0; border: none; background: transparent; max-width: none; }
+.refresh-bar .data-status-label { font-size: var(--text-sm); font-weight: 600; }
+.refresh-quote { flex: 0 0 auto; white-space: nowrap; }
+.refresh-quote::before { content: '·'; margin-right: var(--space-2); }
+.refresh-freshness { min-width: 0; font-size: var(--text-sm); line-height: 1.5; }
+.refresh-details { margin-left: auto; flex: 0 0 auto; }
+.refresh-details > summary { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; list-style: none; color: var(--text-dim); cursor: pointer; border-radius: var(--radius-sm); font-size: var(--text-md); }
+.refresh-details > summary::-webkit-details-marker { display: none; }
+.refresh-details > summary:hover, .refresh-details[open] > summary { color: var(--text-main); background: var(--inner-bg); }
+.refresh-details > summary:focus-visible { outline: 2px solid var(--blue-action); outline-offset: 2px; }
+.refresh-details-body { position: absolute; z-index: 80; top: calc(100% + var(--space-1)); right: 0; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--inner-bg); color: var(--text-main); font-size: var(--text-sm); line-height: 1.6; overflow-wrap: anywhere; }
+.refresh-detail-text { white-space: pre-line; }
 .refresh-time-text { font-size: var(--text-sm); }
-.refresh-freshness { order: 1; flex-basis: 100%; font-size: var(--text-xs); line-height: 1.5; }
+@media (max-width: 1023px) {
+    .dailyglance-app .info-section > #lastRefreshBar .refresh-time-text { display: inline; }
+    .refresh-details > summary { width: 44px; height: 44px; }
+}
 .refresh-dot { display: none; }
 @keyframes refreshPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 @keyframes pricePulse { 0% { transform: scale(1); } 40% { transform: scale(1.05); } 100% { transform: scale(1); } }

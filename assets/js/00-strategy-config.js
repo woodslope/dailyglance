@@ -1,9 +1,9 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-10-28-03';
-const SIGNAL_VERSION = 'v4.2.42';
-const WAVE_GOVERNANCE_VERSION = 'wave-regime-v7';
+const APP_BUILD = '2026-11-10-02';
+const SIGNAL_VERSION = 'v4.2.43';
+const WAVE_GOVERNANCE_VERSION = 'wave-regime-v14';
 window.__DG_BUILD__ = APP_BUILD;
 
 const STRATEGIES = {
@@ -39,7 +39,7 @@ STRATEGIES['波段抄底型'].wavePositionStages = {
     trendMovingAveragePeriod: 20,
     longMovingAveragePeriod: 60,
     trendSlopeLookbackDays: 5,
-    // 下跌/过渡状态中的高质量短期修复确认：不新增状态，允许0%直接建立或30%提高至50%确认仓。
+    // 下跌/过渡短期修复只放行开仓或加仓资格；按统一目标仓位执行，50%是上限而非必达仓位。
     shortRepair: {
         stocksOnly: true,
         shortMovingAveragePeriod: 5,

@@ -23,6 +23,8 @@ function clearSecondaryChartInstances() {
 }
 
 function clearCharts(reason = 'empty'){
+    const positionLegend = document.getElementById('chartPositionLegend');
+    if (positionLegend) positionLegend.hidden = true;
     cancelChartInteraction('clear-charts');
     CHART_CANVAS_IDS.forEach(id => { const c = Chart.getChart(id); if(c) c.destroy(); });
     state.charts = {};
@@ -87,6 +89,36 @@ function getStrategyShortLabel(strategyName = state.strategy) {
         '突破追涨型': '突破',
         '综合全能型': '综合'
     })[strategyName] || String(strategyName || '').trim();
+}
+
+// 手机只折叠补充信息；状态、仓位、原因与失效条件始终可见。
+const compactDisclosureState = Object.create(null);
+
+function rememberCompactDisclosure(element) {
+    if (isCompactMobileLayout() && element.dataset.compactLayout === 'mobile') {
+        compactDisclosureState[element.dataset.compactDisclosure] = element.open;
+    }
+}
+
+function renderCompactDisclosure(key, title, content, className = '') {
+    const compact = isCompactMobileLayout();
+    const open = !compact || compactDisclosureState[key] === true;
+    return `<details class="compact-disclosure ${className}" data-compact-disclosure="${key}" data-compact-layout="${compact ? 'mobile' : 'desktop'}" ${open ? 'open' : ''} ontoggle="rememberCompactDisclosure(this)">
+        <summary><span>${title}</span><span class="compact-disclosure-hint" aria-hidden="true"></span></summary>
+        <div class="compact-disclosure-body">${content}</div>
+    </details>`;
+}
+
+function renderCompactConclusionContext(idx, full) {
+    const item = full?.[idx];
+    if (!item) return '';
+    const historical = isHistoricalVisualState(full, idx);
+    const target = typeof getActiveSecurityTarget === 'function' ? getActiveSecurityTarget() : null;
+    const name = state.mode === 'index' && typeof getIndexConfig === 'function' ? getIndexConfig(state.id)?.name : target?.name;
+    return `<div class="compact-conclusion-context${historical ? ' is-history' : ''}">
+        <div><strong>${escapeHTML(name || state.stockId || state.id)}</strong><span class="mono">${historical ? '历史结论' : '当前结论'} · ${escapeHTML(item.date)}</span></div>
+        ${historical ? '<button type="button" class="compact-latest-button" onclick="resetLatest()">回到最新</button>' : ''}
+    </div>`;
 }
 
 function getConclusionTitleHTML(isIndexMode) {
@@ -226,6 +258,16 @@ function updateCrosshairOverlay() {
     }
 }
 
+// 只翻译已有决策，不从价格、技术信号或可见区间的第一根K线推断调仓。
+function getPositionAdjustment(item) {
+    const decision = item?._decision;
+    if (!decision || decision.bsMark === 'B' || decision.bsMark === 'S') return null;
+    const from = decision.prevAdv, to = decision.position;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0 || to <= 0
+        || from > 100 || to > 100 || from === to) return null;
+    return { from, to, increase: to > from, label: to > from ? '加' : '减', temporary: !!item._isLive };
+}
+
 const bsMarkerPlugin = {
     id: 'bsMarkerPlugin',
     afterDatasetsDraw: c => {
@@ -237,9 +279,9 @@ const bsMarkerPlugin = {
         const dss = c.data.datasets.find(d => d.isCandle === true && d.candleData);
         if (!dss || state.period === 'weekly') return; 
 
-        const activeData = getActiveData(); if(!activeData) return;
-        const visibleRange = getVisibleRange(activeData);
-        const slice = activeData.slice(visibleRange.start, visibleRange.end + 1);
+        // 标记与已经绘制的蜡烛使用同一份切片，刷新或拖动时不会错位到别的日期。
+        const slice = dss.sourceData;
+        if (!Array.isArray(slice) || slice.length !== dss.candleData.length) return;
         const colorUpHex = getCssVar('--up-color') || '#f6465d', colorDownHex = getCssVar('--down-color') || '#0ecb81';
 
         ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
@@ -265,6 +307,19 @@ const bsMarkerPlugin = {
                     ctx.strokeText('S', px, markerY);
                     ctx.fillText('S', px, markerY);
                 }
+            } else {
+                const adjustment = getPositionAdjustment(d);
+                if (!adjustment || adjustment.temporary) return;
+                const py = y.getPixelForValue(adjustment.increase ? d.low : d.high);
+                if (!Number.isFinite(py)) return;
+                const markerY = adjustment.increase ? Math.min(py + 14, bottom - 8) : Math.max(py - 14, top + 8);
+                ctx.save();
+                ctx.font = '500 9px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+                ctx.lineWidth = 3;
+                ctx.fillStyle = adjustment.increase ? colorUpHex : colorDownHex;
+                ctx.strokeText(adjustment.label, px, markerY);
+                ctx.fillText(adjustment.label, px, markerY);
+                ctx.restore();
             }
         });
         ctx.restore();
@@ -671,6 +726,8 @@ function drawViewport(options = {}) {
 }
 
 function renderChartViewport(perfTrace, options = {}) {
+    const positionLegend = document.getElementById('chartPositionLegend');
+    if (positionLegend) positionLegend.hidden = state.period !== 'daily';
     const currentFd = getActiveData(); 
     if(!currentFd || !currentFd.length) { clearCharts(); updateFreezeBadge(); PERF.end(perfTrace, { status: 'empty' }); return; }
     const visibleRange = getVisibleRange(currentFd);
@@ -740,11 +797,12 @@ function renderChartViewport(perfTrace, options = {}) {
     const ds = state.activeMAs.map(n => ({ 
         label: `MA${n}`, data: state.indicators.ma?.[n]?.slice(visibleRange.start, visibleRange.end + 1) || [], 
         borderColor: MA_COLORS[n], borderWidth: 1.2, pointRadius: 0, order: 1, 
-        isCandle: false, candleData: null, tension: 0.1 
+        isCandle: false, candleData: null, sourceData: null, tension: 0.1
     }));
     
     ds.push({ 
-        label: 'KLine', isCandle: true, 
+        label: 'KLine', isCandle: true,
+        sourceData: slice,
         candleData: slice.map(d => ({o: d.open, h: d.high, l: d.low, c: d.close})), 
         data: slice.map(d => d.close), 
         borderColor: 'transparent', pointRadius: 0, order: 0
@@ -846,94 +904,6 @@ function renderChartViewport(perfTrace, options = {}) {
     updateCrosshairOverlay();
 }
 
-function getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
-    const position = decision?.position ?? 0;
-    const action = decision?.simpleAction || '';
-    const scoreReset = meta?.inCooldown
-        || ['强离场', '清仓防守'].includes(decision?.exit?.level)
-        || ['清仓离场', '规避风险'].includes(action);
-    const scoreText = `${scoreReset ? 0 : (meta?.windowScore ?? 0)}/${STRATEGY?.buyThreshold ?? '-'}`;
-    const previousPosition = Number(decision?.prevAdv) || 0;
-    const signalCause = getSignalCauseSummary(meta);
-    const causeText = signalCause.text || '近窗有效信号';
-
-    // 个股仓位完全由个股信号、结构与离场规则决定，核心宽基在这里只是背景信息。
-    // 因此不再按环境分支逐个声明它对个股仓位没有约束——那是在解释一条并不存在的限制；
-    // 只对数据缺失单独说明标签来源。
-    let marketHint = '仅作市场背景参考；这只股票的开仓、持有、加仓与离场，由它自身的信号、结构和离场规则决定。';
-    if (['环境未知', '环境待确认'].includes(decision?.market?.label)) {
-        marketHint = '三项核心宽基数据尚未补齐，环境暂时无法判定；这只股票的结论仍由它自身的信号、结构和离场规则决定。';
-    }
-
-    let signalHint = scoreReset
-        ? `离场后积分：此前买入依据已失效，当前按 ${scoreText} 处理。`
-        : `未买入原因：买入积分只有 ${scoreText}，没有达到当前策略要求。`;
-    if (!scoreReset && previousPosition === 0 && position > 0) {
-        signalHint = `买入依据：${causeText}使买入积分达到 ${scoreText}，本次由空仓转为持仓。`;
-    } else if (!scoreReset && position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
-        signalHint = `持仓依据：${causeText}使买入积分维持在 ${scoreText}，当前持仓依据仍在。`;
-    } else if (!scoreReset && position > 0) {
-        signalHint = `观察依据：买入积分为 ${scoreText}，当前仓位主要依赖已有趋势和结构防守。`;
-    }
-
-    const structureDefenseText = formatPriceLevel(decision?.b11StructureDefense?.structureLevel);
-    const hasStructureDefense = structureDefenseText !== '--';
-    const stopText = hasStructureDefense ? structureDefenseText : formatPriceLevel(decision?.risk?.stop);
-    const riskText = guardHint || (displayExitLevel && displayExitLevel !== '无明确离场' ? displayExitLevel : '暂无额外风险压制');
-    const guardAction = stopText === '--'
-        ? `防守依据：${riskText}。`
-        : `防守依据：${riskText}；${hasStructureDefense ? '结构防守位' : '防守位'} ${stopText}。`;
-
-    return { marketHint, signalHint, guardHint: guardAction, scoreText };
-}
-
-function getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint) {
-    const position = decision?.position ?? 0;
-    const action = decision?.simpleAction || '';
-    const scoreReset = meta?.inCooldown
-        || ['强离场', '清仓防守'].includes(decision?.exit?.level)
-        || ['清仓离场', '规避风险'].includes(action);
-    const scoreText = `${scoreReset ? 0 : (meta?.windowScore ?? 0)}/${STRATEGY?.buyThreshold ?? '-'}`;
-    const previousPosition = Number(decision?.prevAdv) || 0;
-    const marketGate = decision?.marketGate || {};
-    const signalCause = getSignalCauseSummary(meta);
-    const causeText = signalCause.text || '近窗有效指数信号';
-
-    // 只有真正截断当天才说明上限；没有截断时不写“未限制/未触发”，避免读成一条正在作用的限制。
-    let marketHint = '仅作市场背景参考；当前指数是否提高风险仓位，由它自身的动能和离场规则决定。';
-    if (marketGate.type === 'increase-capped') {
-        const tierText = marketGate.strengthTier === 'independent' ? '指数自身独立走强' : '普通机会';
-        marketHint = `核心宽基偏弱，本次${tierText}新增风险上限为${marketGate.cap}%；已有风险仓位不会因此被动压缩。`;
-    }
-    else if (marketGate.type === 'entry-blocked') marketHint = '核心宽基数据未补齐，本次暂停增加市场风险暴露。';
-    else if (['环境未知', '环境待确认'].includes(decision?.market?.label)) marketHint = '三项核心宽基数据未补齐，本次暂停增加市场风险；已有风险仓位仍按指数自身信号处理。';
-
-    let signalHint = scoreReset
-        ? `离场后动能：此前动能依据已失效，当前按 ${scoreText} 处理。`
-        : `动能不足：指数动能积分只有 ${scoreText}，没有达到当前策略要求。`;
-    if (!scoreReset && previousPosition === 0 && position > 0) {
-        signalHint = `动能依据：${causeText}使指数动能积分达到 ${scoreText}，支持开始增加风险暴露。`;
-    } else if (!scoreReset && position > 0 && (meta?.windowScore ?? 0) >= (STRATEGY?.buyThreshold ?? Infinity)) {
-        signalHint = `维持依据：${causeText}使指数动能积分维持在 ${scoreText}，当前风险仓位仍有动能支持。`;
-    } else if (!scoreReset && position > 0) {
-        signalHint = `观察依据：指数动能积分为 ${scoreText}，当前风险仓位主要依赖已有趋势和结构防守。`;
-    }
-
-    const stopText = formatPriceLevel(decision?.risk?.stop);
-    const riskText = guardHint || (displayExitLevel && displayExitLevel !== '无明确离场' ? displayExitLevel : '暂无额外风险压制');
-    const guardAction = stopText === '--'
-        ? `市场防守：${riskText}。`
-        : `市场防守：${riskText}；指数防守位 ${stopText}。`;
-
-    return { marketHint, signalHint, guardHint: guardAction, scoreText };
-}
-
-function getNoviceEvidenceCopy(meta, decision, displayExitLevel, guardHint, mode = 'stock') {
-    return mode === 'index'
-        ? getIndexEvidenceCopy(meta, decision, displayExitLevel, guardHint)
-        : getStockEvidenceCopy(meta, decision, displayExitLevel, guardHint);
-}
-
 function getEffectiveDisplayModeForItem(item, id = state.id) {
     const display = state.displayStatus?.[id] || {};
     const mode = display.mode || 'unknown';
@@ -1025,27 +995,6 @@ function generateAnalysisHTML(idx, full, meta) {
     const decision = full[idx]?._decision; 
     if (!decision) return ''; 
     const noviceSummary = getNoviceDecisionSummary(meta, decision, state.mode);
-    const diagnosis = state.mode === 'stock' ? getHoldingDiagnosis(idx, full, state.indicators, meta, decision) : null;
-    const exitEvidence = getExitSignalEvidence(meta, decision);
-    const hasExitContext = decision.exit.level !== '无明确离场' || exitEvidence.direct.length || exitEvidence.windowDesc !== '近窗内无额外离场形态';
-    const displayExitLevel = getExitDisplayLevel(decision.exit.level, hasExitContext);
-    const isDirectExitContext = decision.exit.level !== '无明确离场' || exitEvidence.direct.length;
-    const guardValue = hasExitContext
-        ? displayExitLevel
-        : (Number.isFinite(Number(decision?.waveContext?.frozenHardDefense)) ? '结构防守' : '无明确离场');
-    const guardTextClass = isDirectExitContext ? 'text-warn' : 'text-main';
-    const guardSignals = [
-        ...exitEvidence.direct,
-        ...(exitEvidence.window || []).filter(sig => !exitEvidence.direct.includes(sig))
-    ].slice(0, 3);
-    const guardSignalSummary = guardSignals.length ? `信号 ${guardSignals.join(' / ')}` : '';
-    const guardHoldingText = diagnosis ? (diagnosis.displayStatus || diagnosis.status) : '';
-    const b11StructureText = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel))
-        ? `B11结构防守 ${Number(decision.b11StructureDefense.structureLevel).toFixed(2)}`
-        : '';
-    const guardHint = [guardSignalSummary, b11StructureText, guardHoldingText].filter(Boolean).join(' · ') || '买入信号、离场信号与结构防守共同决定';
-    const noviceEvidence = getNoviceEvidenceCopy(meta, decision, displayExitLevel, guardHint, state.mode);
-
     let panelClass = 'panel-neutral';
     const a = decision.simpleAction;
     
@@ -1056,10 +1005,11 @@ function generateAnalysisHTML(idx, full, meta) {
 
     const cooldownHtml = meta.inCooldown ? '<div class="cooldown-ribbon">防守冷静期</div>' : '';
     const titleHtml = getConclusionTitleHTML(isIndexMode);
-    const evidenceTitle1 = isIndexMode ? '核心宽基环境' : '市场背景';
-    const evidenceTitle2 = isIndexMode ? '指数自身动能' : '个股信号';
-    const evidenceTitle3 = isIndexMode ? '市场环境/防守' : '离场/结构防守';
-    const positionLabel = isIndexMode ? '当前风险仓位' : '策略参考仓位';
+    const adjustment = getPositionAdjustment(full[idx]);
+    const positionLabel = (isIndexMode ? '当前风险仓位' : '策略参考仓位') + (adjustment?.temporary ? '（临时）' : '');
+    const previousPositionHtml = adjustment
+        ? `<span class="position-change-from">${escapeHTML(`${adjustment.from}%`)} → </span>`
+        : '';
     const positionWhyLabel = `为什么是${noviceSummary.positionText}`;
     const whyText = noviceSummary.why || noviceSummary.reason;
     const positionWhyText = noviceSummary.positionWhy || noviceSummary.positionExplanation;
@@ -1079,6 +1029,7 @@ function generateAnalysisHTML(idx, full, meta) {
 
     const actionPanelHtml = `
         <div class="action-panel ${panelClass}">
+            ${renderCompactConclusionContext(idx, full)}
             ${cooldownHtml}
             <div class="conclusion-heading-row">
                 <div class="conclusion-title-row">
@@ -1090,7 +1041,7 @@ function generateAnalysisHTML(idx, full, meta) {
                 <div class="action-name ${decision.simpleColorClass}">${escapeHTML(noviceSummary.action)}</div>
                 <div class="action-cap">
                     <span class="text-dim">${positionLabel}</span>
-                    <strong class="mono text-main">${escapeHTML(noviceSummary.positionText)}</strong>
+                    <strong class="mono text-main">${previousPositionHtml}${escapeHTML(noviceSummary.positionText)}</strong>
                 </div>
             </div>
             <div class="decision-reason-block">
@@ -1118,38 +1069,8 @@ function generateAnalysisHTML(idx, full, meta) {
         </div>
     `;
 
-    const evidencePanelHtml = `
-        <div class="terminal-block decision-evidence-panel">
-            <div class="block-title">关键推导依据</div>
-            <div class="decision-evidence-list">
-                <div class="decision-evidence-row">
-                    <div class="decision-evidence-head">
-                        <span>${evidenceTitle1}</span>
-                        <strong class="${decision.market.cls === 'bull' ? 'text-bull' : (decision.market.cls === 'bear' ? 'text-bear' : 'text-main')}">${escapeHTML(decision.market.label)}</strong>
-                    </div>
-                    <div class="decision-evidence-copy">${escapeHTML(noviceEvidence.marketHint)}</div>
-                </div>
-                <div class="decision-evidence-row">
-                    <div class="decision-evidence-head">
-                        <span>${evidenceTitle2}</span>
-                        <strong class="text-main mono">${escapeHTML(noviceEvidence.scoreText)}</strong>
-                    </div>
-                    <div class="decision-evidence-copy">${escapeHTML(noviceEvidence.signalHint)}</div>
-                </div>
-                <div class="decision-evidence-row">
-                    <div class="decision-evidence-head">
-                        <span>${evidenceTitle3}</span>
-                        <strong class="${guardTextClass}">${escapeHTML(guardValue)}</strong>
-                    </div>
-                    <div class="decision-evidence-copy">${escapeHTML(noviceEvidence.guardHint)}</div>
-                </div>
-            </div>
-        </div>
-    `;
-
     return `
         ${actionPanelHtml}
-        ${evidencePanelHtml}
         <div class="risk-note">系统按 SOP 3.5.4 规则层层递推，结论仅用于辅助决策，非投资理财建议。</div>
     `;
 }
@@ -1177,11 +1098,14 @@ function safeUpdateSidebar(options = {}) {
             item.date,
             state.strategy,
             state.period,
+            isCompactMobileLayout() ? `mobile:${!!compactDisclosureState.quote}` : 'desktop',
+            isHistoricalVisualState(rd, safeIdx),
             item.close,
             item.vol,
             displayMode,
             !!item._isLive,
             getDecisionSignature(decision),
+            decision?.prevAdv ?? '',
             SIGNAL_VERSION,
             APP_BUILD
         ].join('_');
@@ -1230,6 +1154,8 @@ function updateSidebarPriceOnly() {
     const ch = item.close - (prev ? prev.close : item.open);
     const pct = (ch / (prev ? prev.close : item.open) * 100).toFixed(2);
     const cls = ch >= 0 ? 'up' : 'down';
+    const activeSecurity = typeof getActiveSecurityTarget === 'function' ? getActiveSecurityTarget() : null;
+    const pricePrecision = typeof getSecurityPricePrecision === 'function' ? getSecurityPricePrecision(activeSecurity || state.id) : 2;
     const fmt = v => !v ? '--' : (v >= 1e8 ? (v/1e8).toFixed(2)+'亿' : v >= 1e4 ? (v/1e4).toFixed(2)+'万' : v.toFixed(0));
 
     const cPrice = document.getElementById('cardPrice');
@@ -1248,10 +1174,10 @@ function updateSidebarPriceOnly() {
     }
 
     // 价格
-    diffUpdate(cPrice.querySelector('.price-main'), item.close.toFixed(2), cls);
+    diffUpdate(cPrice.querySelector('.price-main'), item.close.toFixed(pricePrecision), cls);
 
     // 涨跌幅
-    var subText = (ch >= 0 ? '+' : '') + ch.toFixed(2) + ' (' + (ch >= 0 ? '+' : '') + pct + '%)';
+    var subText = (ch >= 0 ? '+' : '') + ch.toFixed(pricePrecision) + ' (' + (ch >= 0 ? '+' : '') + pct + '%)';
     var subEl = cPrice.querySelector('.price-sub');
     if (subEl) {
         if (subEl.textContent !== subText) {
@@ -1265,9 +1191,9 @@ function updateSidebarPriceOnly() {
     // 今开 / 最高 / 最低 / 成交量
     var vals = cPrice.querySelectorAll('.data-box-row .val');
     if (vals.length >= 4) {
-        diffUpdate(vals[0], item.open.toFixed(2));
-        diffUpdate(vals[1], item.high.toFixed(2));
-        diffUpdate(vals[2], item.low.toFixed(2));
+        diffUpdate(vals[0], item.open.toFixed(pricePrecision));
+        diffUpdate(vals[1], item.high.toFixed(pricePrecision));
+        diffUpdate(vals[2], item.low.toFixed(pricePrecision));
         diffUpdate(vals[3], fmt(item.vol) + '手');
     }
 
@@ -1378,12 +1304,12 @@ function ensureAnalysisPanelVisibleForRealtimeRefresh() {
     if (!cAnalysis.innerHTML || !cAnalysis.innerHTML.trim()) {
         cAnalysis.innerHTML = renderAnalysisPendingHTML();
         cAnalysis.dataset.ah = String(hashString32(cAnalysis.innerHTML));
-        cAnalysis.style.display = 'flex';
+        cAnalysis.style.display = isCompactMobileLayout() ? 'contents' : 'flex';
         cAnalysis.style.flexDirection = 'column';
         safeUpdateSidebar();
         return true;
     }
-    cAnalysis.style.display = 'flex';
+    cAnalysis.style.display = isCompactMobileLayout() ? 'contents' : 'flex';
     cAnalysis.style.flexDirection = 'column';
     return false;
 }
@@ -1418,7 +1344,7 @@ function applySidebarHTML(bundle, cacheKey = '', options = {}) {
 
     if (cPrice.style.display !== 'flex') cPrice.style.display = 'flex';
     if (cPrice.style.flexDirection !== 'column') cPrice.style.flexDirection = 'column';
-    if (cAnalysis.style.display !== 'flex') cAnalysis.style.display = 'flex';
+    cAnalysis.style.display = isCompactMobileLayout() ? 'contents' : 'flex';
     if (cAnalysis.style.flexDirection !== 'column') cAnalysis.style.flexDirection = 'column';
 
     if (cacheKey && cPrice.dataset.key === cacheKey) {
@@ -1492,7 +1418,7 @@ function getDataStatusBadge(item, id = state.id, full = getActiveData()) {
     const itemDate = item?.date || '';
     const isLiveOverlay = effectiveMode === 'live-overlay' || effectiveMode === 'cached-live-overlay' || effectiveMode === 'post-close-pending';
     const quoteOnly = effectiveMode === 'quote-only';
-    const confirmedFresh = confirmed.status === 'fresh' || (!!lastConfirmedDate && lastConfirmedDate >= getExpectedConfirmedDate());
+    const confirmedFresh = !!lastConfirmedDate && lastConfirmedDate >= getExpectedConfirmedDate();
 
     if (isLiveOverlay) {
         if (effectiveMode === 'post-close-pending') {
@@ -1504,10 +1430,10 @@ function getDataStatusBadge(item, id = state.id, full = getActiveData()) {
         }
         return {
             tone: 'info',
-            label: effectiveMode === 'cached-live-overlay' ? '缓存盘中' : '盘中临时',
+            label: effectiveMode === 'cached-live-overlay' ? '缓存盘中' : '盘中参考',
             detail: effectiveMode === 'cached-live-overlay'
                 ? '沿用最近盘中数据。'
-                : '实时价已进入图表。'
+                : '实时价已进入图表，尚未收盘确认。'
         };
     }
     if (quoteOnly) {
@@ -1559,14 +1485,39 @@ function getDataFreshnessText(id = state.id) {
     const lastDate = state.rawData?.[id]?.slice(-1)[0]?.date || state.confirmedStatus?.[id]?.lastDate || '';
     const check = state.historyChecks?.[id];
     const quote = state.liveQuotes?.[id];
-    const parts = [lastDate ? `历史确认至 ${lastDate}` : '历史尚未确认'];
+    const parts = [lastDate ? `历史数据截至 ${lastDate}` : '历史尚未确认'];
     if (quote?.quoteTime) parts.push(`报价 ${quote.quoteTime}`);
     if (check?.status === 'checking') parts.push('正在检查历史');
     else if (check?.status === 'failed') parts.push('历史更新失败，保留可用数据');
+    else if (check?.status === 'stale') parts.push('历史尚未补齐，保留可用数据');
     else if (check?.checkedAt) parts.push(`历史检查于 ${new Date(check.checkedAt).toLocaleTimeString('en-GB', { hour12: false })}`);
-    else parts.push('本地历史，尚未联网检查');
+    else if (!check?.checkedAt) parts.push('本地历史，尚未联网检查');
     if (state.quoteRefreshFailures?.[id]) parts.push('报价更新失败，保留最近报价');
-    return parts.join(' · ');
+    return parts.join('\n');
+}
+
+function getRefreshQuoteText(id = state.id) {
+    const quoteTime = state.liveQuotes?.[id]?.quoteTime;
+    if (!quoteTime) return '';
+    const match = String(quoteTime).match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}):\d{2}$/);
+    if (!match) return `报价 ${quoteTime}`;
+    const today = getTodayDate();
+    const date = match[1] === today ? '' : `${match[1].slice(0, 4) === today.slice(0, 4) ? match[1].slice(5) : match[1]} `;
+    return `报价 ${date}${match[2]}`;
+}
+
+function getDataFreshnessNotice(id = state.id, statusLabel = '') {
+    const check = state.historyChecks?.[id];
+    const confirmed = state.confirmedStatus?.[id];
+    const lastDate = state.rawData?.[id]?.slice(-1)[0]?.date || confirmed?.lastDate || '';
+    const failed = check?.status === 'failed' || confirmed?.status === 'failed';
+    const stale = check?.status === 'stale' || confirmed?.status === 'stale' || !lastDate || lastDate < getExpectedConfirmedDate();
+    const historyLabel = failed ? '历史同步失败' : stale ? '历史待补齐' : '';
+    const parts = historyLabel && historyLabel !== statusLabel ? [historyLabel] : [];
+    if (check?.status === 'checking') parts.push('历史检查中');
+    else if (!historyLabel && !check?.checkedAt) parts.push('历史未联网检查');
+    if (state.quoteRefreshFailures?.[id]) parts.push('报价更新失败');
+    return { text: parts.join(' · '), warn: !!(failed || stale || state.quoteRefreshFailures?.[id]) };
 }
 
 function updateDataStatusRefreshBadge(item = null, id = state.id, full = null) {
@@ -1581,23 +1532,29 @@ function updateDataStatusRefreshBadge(item = null, id = state.id, full = null) {
         return;
     }
     bar.style.display = 'flex';
-    let freshness = bar.querySelector('[data-refresh-freshness]');
-    if (!freshness) {
-        freshness = document.createElement('span');
-        freshness.className = 'refresh-freshness text-dim';
-        freshness.dataset.refreshFreshness = 'true';
-        bar.appendChild(freshness);
+    const status = getDataStatusBadge(currentItem, id, data);
+    const quote = document.getElementById('refreshQuoteTime');
+    if (quote) {
+        quote.textContent = getRefreshQuoteText(id);
+        quote.hidden = !quote.textContent;
+        quote.title = state.liveQuotes?.[id]?.quoteTime || '';
     }
-    freshness.className = `refresh-freshness ${state.historyChecks?.[id]?.status === 'failed' || state.quoteRefreshFailures?.[id] ? 'text-warn' : 'text-dim'}`;
-    freshness.textContent = getDataFreshnessText(id);
-    freshness.title = '确认历史日期和接口报价时间，与界面显示时间不同。';
+    const freshness = document.getElementById('refreshFreshness');
+    if (freshness) {
+        const notice = getDataFreshnessNotice(id, status.label);
+        freshness.className = `refresh-freshness ${notice.warn ? 'text-warn' : 'text-dim'}`;
+        freshness.textContent = notice.text;
+        freshness.hidden = !notice.text;
+    }
+    const detail = document.getElementById('refreshDataDetail');
+    if (detail) detail.textContent = `${status.detail}\n${getDataFreshnessText(id)}`;
     const html = renderDataStatusRefreshBadge(currentItem, id, data).trim();
     if (existing) {
         if (existing.outerHTML !== html) existing.outerHTML = html;
     } else if (typeof bar.insertAdjacentHTML === 'function') {
-        bar.insertAdjacentHTML('beforeend', html);
+        bar.insertAdjacentHTML('afterbegin', html);
     } else {
-        bar.innerHTML = (bar.innerHTML || '') + html;
+        bar.innerHTML = html + (bar.innerHTML || '');
     }
 }
 
@@ -1634,8 +1591,8 @@ function generateSidebarBundle(item, prev, safeIdx, rd) {
                     ${headerMeta}
                 </div>
                 <div class="nav-capsule">
-                    <button class="btn-sm" onclick="prevDay()" title="上一天 (左方向键)">◀</button>
-                    <button class="btn-sm" onclick="nextDay()" title="下一天 (右方向键)">▶</button>
+                    <button type="button" class="btn-sm" onclick="prevDay()" title="上一天 (左方向键)" aria-label="上一交易日">◀</button>
+                    <button type="button" class="btn-sm" onclick="nextDay()" title="下一天 (右方向键)" aria-label="下一交易日">▶</button>
                     <button class="btn-sm ${isLatestNavActive(safeIdx, rd.length) ? 'active' : 'is-history'}" id="btnResetLatest" onclick="resetLatest()">最新</button>
                 </div>
             </div>
@@ -1643,7 +1600,7 @@ function generateSidebarBundle(item, prev, safeIdx, rd) {
                 <div class="price-main mono ${cls}">${formatPrice(item.close)}</div>
                 <div class="price-sub mono ${cls}">${ch >= 0 ? '+' : ''}${ch.toFixed(pricePrecision)} (${ch >= 0 ? '+' : ''}${pct}%)</div>
             </div>
-            <div class="data-grid-2x2">
+            ${renderCompactDisclosure('quote', '行情明细', `<div class="data-grid-2x2">
                 <div class="data-box-row"><span class="lbl">今开</span><span class="val mono">${formatPrice(item.open)}</span></div>
                 <div class="data-box-row"><span class="lbl">最高</span><span class="val mono">${formatPrice(item.high)}</span></div>
                 <div class="data-box-row"><span class="lbl">最低</span><span class="val mono">${formatPrice(item.low)}</span></div>
@@ -1651,7 +1608,7 @@ function generateSidebarBundle(item, prev, safeIdx, rd) {
             </div>
             <div class="amt-row">
                 <span class="lbl">成交额</span><span class="val mono">${formatUnit(item.amt)}</span>
-            </div>
+            </div>`)}
         </div>
     `;
     

@@ -200,11 +200,13 @@ function getWaveContext(idx, full, ind, strategy = STRATEGY) {
     };
 }
 
-function getWaveShortRepairContext(idx, full, meta, rawSignals, exit, prevPos, strategy = STRATEGY) {
+function getWaveShortRepairContext(idx, full, meta, rawSignals, exit, prevPos, waveContext, strategy = STRATEGY) {
     const config = strategy?.wavePositionStages?.shortRepair;
     const empty = { qualified: false, triggerSignal: '', triggerSignals: [], reason: '' };
     if (!config || state.strategy !== '波段抄底型' || state.period !== 'daily') return empty;
     if (config.stocksOnly !== false && state.mode !== 'stock') return empty;
+    // 只放宽下跌/过渡的新增风险资格；上涨和横盘仍走各自的分步建仓与确认规则。
+    if (!waveContext?.inScope || !['down', 'transition'].includes(waveContext.regime)) return empty;
     if (![0, 30].includes(Number(prevPos))) return empty;
     if (meta?.inCooldown || (meta?.exitSignals || []).length || (meta?.warningSignals || []).length
         || !exit || exit.level !== '无明确离场') return empty;
@@ -234,8 +236,8 @@ function getWaveShortRepairContext(idx, full, meta, rawSignals, exit, prevPos, s
         trendMovingAverage: trendMA,
         previousTrendMovingAverage: previousTrendMA,
         reason: directSignal
-            ? `当日${directSignal}回踩MA${trendPeriod}后收回，MA${shortPeriod}已修复且MA${trendPeriod}未下行，允许从0%直接建立或由30%提高至50%确认仓`
-            : `当日${triggerSignals.join('+')}与MA${shortPeriod}/MA${trendPeriod}回踩修复共振，允许从0%直接建立或由30%提高至50%确认仓`
+            ? `当日${directSignal}回踩MA${trendPeriod}后收回，MA${shortPeriod}已修复且MA${trendPeriod}未下行，具备开仓或加仓资格`
+            : `当日${triggerSignals.join('+')}与MA${shortPeriod}/MA${trendPeriod}回踩修复共振，具备开仓或加仓资格`
     };
 }
 
@@ -249,17 +251,15 @@ function getStockTrendPositionCap(idx, full, ind, position, wavePositionStage = 
     let limit = 50;
     let reason = '个股趋势数据不足，高仓位上限50%';
     if (hasTrendData && ma20 < ma60 && ma20 < ma20Prev) {
-        const shortRepairConfirmation = waveShortRepair?.qualified
-            && wavePositionStage?.stage === 'confirmation'
-            && Number(wavePositionStage?.allowedPosition) >= 50;
+        const shortRepairEligible = wavePositionStage?.shortRepairEligible === true;
         const strongBottomConfirmation = wavePositionStage?.stage === 'confirmation'
             && Number(wavePositionStage?.previousPosition) <= 0
             && ['B19', 'multi-reversal'].includes(wavePositionStage?.triggerSignal);
-        limit = (strongBottomConfirmation || shortRepairConfirmation) ? 50 : 30;
+        limit = (strongBottomConfirmation || shortRepairEligible) ? 50 : 30;
         reason = strongBottomConfirmation
             ? '当日强底部结构已经确认，允许建立50%确认仓，但不直接进入80%趋势仓'
-            : (shortRepairConfirmation
-                ? waveShortRepair.reason
+            : (shortRepairEligible
+                ? `${waveShortRepair.reason}，高仓位上限50%`
                 : '个股处于中期下降趋势，高仓位上限30%');
     } else if (hasTrendData && close > ma20 && ma20 > ma60 && ma20 >= ma20Prev) {
         return null;
@@ -273,7 +273,10 @@ function getPositionCap(meta, prevPos, position, idx, full, ind, wavePositionSta
     const caps = [];
     const trendCap = getStockTrendPositionCap(idx, full, ind, position, wavePositionStage, waveShortRepair);
     if (trendCap) caps.push(trendCap);
-    if (meta.allSignals?.W4 && prevPos > 0 && position >= 80) {
+    // 波段个股首次也可建议80%，同一高档位不能因昨日为空仓而跳过W4上限。
+    const waveStockEntry = prevPos === 0 && state.strategy === '波段抄底型'
+        && state.mode === 'stock' && state.period === 'daily';
+    if (meta.allSignals?.W4 && (prevPos > 0 || waveStockEntry) && position >= 80) {
         caps.push({ limit: 50, reason: 'W4缩量上涨背离，高仓位上限50%' });
     }
     if (!caps.length) return null;

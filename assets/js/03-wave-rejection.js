@@ -144,7 +144,7 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
             || (!!decisionContext.exit?.level && decisionContext.exit.level !== '无明确离场');
         const ma20RejectionRecoveryBlocked = previous.eventType === 'fresh_entry_failure'
             && previous.ma20RejectionExit === true;
-        const strongFreshRecovery = isStock
+        let strongFreshRecovery = isStock
             && freshRecoveryEvents.has(previous.eventType)
             && age >= minimumStrongFreshRecoveryAge
             && !ma20RejectionRecoveryBlocked
@@ -153,6 +153,37 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
             && marketAllowsRecovery
             && !blockedByDecision
             && targetPosition > 0;
+        // 空仓后的新交易单独评估；旧结构收复/健康回踩仍走原恢复路径。
+        // 不能把“有新积分”当作绕过普通首次建仓资格的通行证。
+        let newEntry = null;
+        if (isStock && prevPos <= 0 && decisionContext.waveContext?.inScope
+            && freshRecoveryEvents.has(previous.eventType) && !ma20RejectionRecoveryBlocked) {
+            const minimumAge = Math.max(minimumLockTradingDays, minimumStrongFreshRecoveryAge);
+            const remainingDays = Math.max(0, minimumAge - age);
+            let reason = blockedByDecision || blockedByRiskSignal || !marketAllowsRecovery ? 'risk'
+                : remainingDays > 0 ? 'waiting'
+                : postEvent.score < minimumPostEventScore || postEvent.signals.length < minimumPostEventGroups ? 'new-score'
+                : targetPosition <= 0 ? 'no-target' : '';
+            if (!reason) {
+                const entryMeta = { ...meta, windowScore: postEvent.score, windowScoreSignals: postEvent.signals };
+                const qualification = getWaveRegimeQualification(idx, full, entryMeta, decisionContext.waveContext, rawSignals, strategy);
+                const defense = getWaveEntryDefenseContext(idx, full, decisionContext.waveContext, rawSignals, strategy, { freshEventRecovery: true });
+                if (!isWaveEntryRegimeQualified(decisionContext.waveContext, qualification)) reason = 'entry-qualification';
+                else if (!defense.acceptable) reason = 'defense-distance';
+            }
+            const reasonTexts = {
+                risk: '当前仍有离场、预警、冷静期或风险限制，暂不建立新交易',
+                waiting: `新交易观察期未结束，还需${remainingDays}个交易日`,
+                'new-score': `止损后新积分为${postEvent.score}/${minimumPostEventScore}分，来自${postEvent.signals.length}/${minimumPostEventGroups}个独立计分组，尚未达标`,
+                'no-target': '当前没有可执行的建仓目标，不能仅凭收复旧价位买回',
+                'entry-qualification': `${decisionContext.waveContext.regimeLabel || '当前'}环境未满足本轮首次建仓资格`,
+                'defense-distance': '本轮新防守位距离建仓价过远，否决交易',
+                ready: '止损后新信号、首次建仓资格与防守距离均已通过'
+            };
+            newEntry = { inScope: true, eligible: !reason, reason: reason || 'ready', reasonText: reasonTexts[reason || 'ready'],
+                minimumAge, remainingDays, score: postEvent.score, groupCount: postEvent.signals.length };
+            strongFreshRecovery = strongFreshRecovery && newEntry.eligible;
+        }
         const pullbackConfig = config.pullbackRecovery || {};
         const pullbackEvents = new Set(pullbackConfig.eventTypes || ['mature_profit_rejection']);
         const recoveryRegime = decisionContext.trendRegime?.key || '';
@@ -168,9 +199,13 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
         const previousPullbackMa = Number(state.indicators?.ma?.[pullbackMaPeriod]?.[Math.max(0, idx - pullbackSlopeDays)]);
         const heldEventLow = pullbackConfig.requireHoldEventLow === false
             || (Number.isFinite(close) && close > Number(previous.triggerLow));
-        const pullbackRecoveryTarget = pullbackSourcePositions.has(Number(previous.sourcePosition))
+        const sourceRecoveryPosition = pullbackSourcePositions.has(Number(previous.sourcePosition))
             ? Number(previous.sourcePosition)
             : 0;
+        // 结构/信号失效后的恢复只回试探档；不能复用成熟浮盈减仓的原档回补数量。
+        const pullbackRecoveryTarget = signalHardInvalidationPullback
+            ? Math.min(sourceRecoveryPosition, recoveryCap)
+            : sourceRecoveryPosition;
         const stockTrendCap = Number(decisionContext.positionCap?.limit);
         const stockTrendAllowsPullbackRecovery = pullbackRecoveryTarget <= recoveryCap
             || !Number.isFinite(stockTrendCap)
@@ -200,6 +235,7 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
         const confirmedPostEventRecovery = isStock
             ? (recoveredRiskHigh && hasFreshPostEventSignal) || stableRecovery || strongFreshRecovery || pullbackRecovery
             : recoveredRiskHigh || hasFreshPostEventSignal || stableRecovery;
+        const reentryRoute = strongFreshRecovery && !pullbackRecovery && prevPos <= 0 ? 'new-entry' : 'original-recovery';
         const canRelease = age >= minimumLockTradingDays
             && !blockedByRiskSignal
             && confirmedPostEventRecovery;
@@ -208,6 +244,7 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
                 ...previous,
                 active: true,
                 status: 'locked',
+                ...(isStock ? { newEntry, reentryRoute: null } : {}),
                 lockAge: age,
                 lockRemaining: Math.max(0, minimumLockTradingDays - age),
                 blockedByRiskSignal,
@@ -236,6 +273,7 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
                 ...previous,
                 active: false,
                 status: 'released',
+                ...(isStock ? { newEntry, reentryRoute } : {}),
                 resolvedDay: idx,
                 resolvedDate: item.date || '',
                 recoveredRiskHigh,
@@ -270,6 +308,7 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
                 ...previous,
                 active: false,
                 status: 'released',
+                ...(isStock ? { newEntry, reentryRoute } : {}),
                 resolvedDay: idx,
                 resolvedDate: item.date || '',
                 recoveredRiskHigh,
@@ -297,6 +336,7 @@ function getWaveRejectionProtectionContext(idx, full, meta, prevPos, targetPosit
             ...previous,
             active: false,
             status: 'recovery_pending',
+            ...(isStock ? { newEntry, reentryRoute } : {}),
             resolvedDay: idx,
             resolvedDate: item.date || '',
             recoveredRiskHigh,

@@ -251,6 +251,12 @@ function getTencentQuoteTimeInfo(fields, fallbackDate = getTodayDate()) {
     return { date: fallbackDate, quoteTime: '', quoteDateSource: 'local-fallback' };
 }
 
+function hasTrustedQuoteTime(bar) {
+    if (bar?.quoteDateSource !== 'api') return false;
+    const parsed = parseTencentQuoteTime(String(bar.quoteTime || '').replace(/[- :]/g, ''));
+    return !!parsed && parsed.date === bar.date;
+}
+
 function normalizeTencentQuoteAmount(rawAmount) {
     const amountInTenThousands = parseFloat(rawAmount);
     return Number.isFinite(amountInTenThousands) && amountInTenThousands >= 0
@@ -530,6 +536,7 @@ function clearLiveOverlayCache(id) {
 
 function canUseCachedLiveOverlay(id, series, cacheEntry) {
     if (!cacheEntry || !cacheEntry.bar) return { ok: false, reason: 'missing-cache' };
+    if (!hasTrustedQuoteTime(cacheEntry.bar)) return { ok: false, reason: 'untrusted-quote-time' };
     if (isAfterMarketClose() && cacheEntry.bar.date === getTodayDate()) {
         const lastBar = series?.length ? series[series.length - 1] : null;
         if (!lastBar || !isValidPrice(cacheEntry.bar.close, id)) return { ok: false, reason: 'invalid-price' };
@@ -676,6 +683,7 @@ function canUseRealtimeOverlay(id, series, rtBar) {
     if (!rtBar || !series || !series.length) return { ok: false, reason: 'missing-data' };
     const lastBar = series[series.length - 1];
     if (!lastBar || !isValidPrice(rtBar.close, id)) return { ok: false, reason: 'invalid-price' };
+    if (!hasTrustedQuoteTime(rtBar)) return { ok: false, reason: 'untrusted-quote-time' };
     if (!rtBar.date || rtBar.date !== getTodayDate()) return { ok: false, reason: 'quote-date-not-today' };
     if (rtBar.date < lastBar.date) return { ok: false, reason: 'quote-older-than-history' };
     if (!isConfirmedSeriesFreshEnough(series)) return { ok: false, reason: 'confirmed-history-stale' };
@@ -917,6 +925,10 @@ function setRawData(id, data) {
         mergePendingIndicatorMutation(isSameIndicatorScope ? getDataMutationMeta(prevData, data) : { mode: 'full', startIdx: 0 });
         if (typeof markIndicatorsDirty === 'function') markIndicatorsDirty();
     }
+    // 包含当前选中的核心指数；其他标的/周期/策略下的旧快照也已不再可复用。
+    if (CORE_MARKET_INDEX_IDS.includes(id) && typeof pruneStaleMarketContextCaches === 'function') {
+        pruneStaleMarketContextCaches();
+    }
     const marketDataChanged = CORE_MARKET_INDEX_IDS.includes(id) && id !== state.id &&
         mutation.mode !== 'unchanged' && Boolean(prevData?.length || data?.length);
     if (marketDataChanged) mergePendingIndicatorMutation({ mode: 'market-only', startIdx: 0 });
@@ -1082,11 +1094,12 @@ function jsonpFetchEastmoneyKline(id) {
     });
 }
 
+let tencentKlineRequestSeq = 0;
 function jsonpFetchTencentKline(id) {
     if (isHistorySourceCircuitOpen('tencent')) return Promise.resolve([]);
     return new Promise(resolve => {
         let symbol = resolveTencentSymbol(id);
-        const cb = 'tx_kline_' + Date.now(), url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,1000,qfq&_var=${cb}`;
+        const cb = 'tx_kline_' + Date.now() + '_' + (++tencentKlineRequestSeq), url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,1000,qfq&_var=${cb}`;
         let cl = false, timer = 0, cancel = null;
         const cleanup = () => { if(cl) return; cl = true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
         cancel = () => { if (cl) return; cleanup(); resolve([]); };
@@ -1295,14 +1308,26 @@ async function performHistorySync(id) {
             { name: 'tencent', load: jsonpFetchTencentKline },
             { name: 'eastmoney', load: jsonpFetchEastmoneyKline }
         ];
+    let latestStale = null;
     for (const [index, source] of sources.entries()) {
         updateHistoryLoadingMessage(id, index ? `正在尝试备用来源（${index + 1}/${sources.length}）…` : '正在获取确认历史 K 线…');
         const data = normalizeConfirmedHistoryData(await source.load(id), id);
-        if (data && data.length >= 30) {
-            setConfirmedStatus(id, { source: source.name, status: 'fresh', lastDate: data[data.length - 1]?.date || '', syncedAt: Date.now() });
+        if (!data || data.length < 30) continue;
+        const lastDate = data[data.length - 1].date;
+        if (isConfirmedSeriesFreshEnough(data)) {
+            setConfirmedStatus(id, { source: source.name, status: 'fresh', lastDate, syncedAt: Date.now() });
             setHistoryCheckState(id, 'ready');
             return data;
         }
+        // 接口可达不代表历史已补齐；继续尝试备源，并保留日期最新的陈旧结果。
+        if (!latestStale || lastDate > latestStale.lastDate || (lastDate === latestStale.lastDate && data.length > latestStale.data.length)) {
+            latestStale = { source: source.name, lastDate, data };
+        }
+    }
+    if (latestStale) {
+        setConfirmedStatus(id, { source: latestStale.source, status: 'stale', lastDate: latestStale.lastDate, syncedAt: Date.now() });
+        setHistoryCheckState(id, 'stale');
+        return latestStale.data;
     }
     setConfirmedStatus(id, { status: 'failed', syncedAt: Date.now() });
     setHistoryCheckState(id, 'failed');
@@ -1478,9 +1503,21 @@ async function handleUpdateData(forceFull = false) {
         // 手动更新明确请求历史源，不把底层的旧缓存回退当成更新成功。
         if (syncDataInFlight.has(id)) await syncDataInFlight.get(id);
         const previous = state.rawData[id];
+        const previousConfirmed = state.confirmedStatus?.[id];
         const fresh = await syncDataWithHistory(id);
         if (!fresh?.length) {
             showToast(`${name} 更新失败，已保留原数据，可重新尝试。`, 'warn', 4500);
+            return;
+        }
+        const previousDate = previous?.[previous.length - 1]?.date || '';
+        if (previousDate > fresh[fresh.length - 1].date) {
+            setConfirmedStatus(id, {
+                source: previousConfirmed?.source || 'cache',
+                status: isConfirmedSeriesFreshEnough(previous) ? 'fresh' : 'stale',
+                lastDate: previousDate
+            });
+            setHistoryCheckState(id, 'stale');
+            showToast(`${name} 行情源历史落后于现有数据，已保留至 ${previousDate}，可重新尝试。`, 'warn', 4500);
             return;
         }
         await dbSet(id, fresh);

@@ -35,6 +35,9 @@ function getStockDecisionSummary(meta, decision) {
     const isEntry = previousPosition === 0 && position > 0;
     const isIncrease = position > previousPosition;
     const isReduce = previousPosition > 0 && position < previousPosition;
+    const appliedRegimeCap = decision?.waveContext?.appliedRegimeCap;
+    const regimeCapActive = Number.isFinite(appliedRegimeCap?.limit) && position === appliedRegimeCap.limit;
+    const isProbeEntry = multiTimeframeProbe.qualified && isEntry && position <= 30 && !wavePositionStage.shortRepairEligible;
     let stateLabel = '弱势观察';
     let userAction = '先不碰';
     if (hasCriticalExit) {
@@ -43,6 +46,9 @@ function getStockDecisionSummary(meta, decision) {
     } else if (position === 0) {
         stateLabel = meta?.inCooldown ? '离场冷静期' : (hasPositionExit ? (basePositionIsEmpty && directExitSignals.length === 0 ? '信号失效' : '风险防守') : '弱势观察');
         userAction = hasPositionExit ? '离场观察' : '暂时不买';
+    } else if (isReduce) {
+        stateLabel = '风险观察';
+        userAction = '降低仓位';
     } else if (position <= 30) {
         stateLabel = action.includes('减仓') || hasWarning ? '风险观察' : '试探观察';
         userAction = action.includes('减仓') ? '降低仓位' : '轻仓观察';
@@ -94,49 +100,55 @@ function getStockDecisionSummary(meta, decision) {
         stateLabel = 'MA20上方观察';
         userAction = '轻仓观察';
     } else if (!hasCriticalExit && waveRejection.status === 'triggered' && !signalBreakKeepsStructure) {
-        stateLabel = isSignalHardInvalidation ? '信号硬失效' : (isFreshEntryFailure ? '新仓失败离场' : '冲高回落止盈');
+        stateLabel = isStructureHardBreak ? '结构破位离场' : (isSignalHardInvalidation ? '信号硬失效' : (isFreshEntryFailure ? '新仓失败离场' : '冲高回落止盈'));
         userAction = position === 0 ? '离场观察' : '降低仓位';
     } else if (!hasCriticalExit && waveRejection.status === 'locked') {
         stateLabel = '风险恢复观察';
         userAction = position === 0 ? '暂时不买' : '持仓观察';
     } else if (!hasCriticalExit && ['released', 'recovery_pending'].includes(waveRejection.status)) {
-        stateLabel = '风险解除';
+        stateLabel = waveRejection.reentryRoute === 'new-entry' && position > 0 ? '新一轮建仓' : '风险解除';
         userAction = position > 0 ? (previousPosition === 0 ? '轻仓建仓' : '继续持有') : '继续观察';
     } else if (!hasCriticalExit && ['recovery_started', 'recovery_hold'].includes(waveRejection.status)) {
-        stateLabel = '分步恢复';
+        stateLabel = waveRejection.reentryRoute === 'new-entry' ? '新仓观察' : '分步恢复';
         userAction = '轻仓观察';
     } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.applied) {
-        stateLabel = '防守接管加仓';
+        stateLabel = '回踩确认加仓';
         userAction = '提高仓位';
     } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.active) {
-        stateLabel = '波段仓持有';
+        stateLabel = '确认仓持有';
         userAction = '继续持有';
     } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.status === 'released') {
-        stateLabel = '波段仓减仓';
+        stateLabel = '降回轻仓';
         userAction = '降低仓位';
     } else if (!hasCriticalExit && waveB6TrendAdd.applied) {
-        stateLabel = '趋势修复加仓';
+        stateLabel = '回踩确认加仓';
         userAction = '提高仓位';
-    } else if (!hasCriticalExit && multiTimeframeProbe.qualified && isEntry) {
+    } else if (!hasCriticalExit && isProbeEntry) {
         stateLabel = '多周期底部共振试探';
         userAction = '轻仓建仓';
     } else if (!hasCriticalExit && wavePositionStage.stage === 'breakout-wait') {
         stateLabel = '突破后等回踩';
         userAction = '暂不追价';
+    } else if (!hasCriticalExit && waveEntryBlocked && previousPosition === 0) {
+        stateLabel = '建仓条件未满足';
+        userAction = '暂时不买';
+    } else if (!hasCriticalExit && isReduce && regimeCapActive) {
+        stateLabel = '环境防守';
+        userAction = '降低仓位';
     } else if (!hasCriticalExit && wavePeak.confirmed && isReduce) {
         stateLabel = '波峰防守';
         userAction = '降低仓位';
-    } else if (!hasCriticalExit && wavePeak.candidate && !isIncrease) {
+    } else if (!hasCriticalExit && wavePeak.candidate && !isIncrease && !isReduce && !waveEntryBlocked) {
         stateLabel = '压力区观察';
         userAction = position > 0 ? '谨慎持有' : '暂不追价';
     } else if (!hasCriticalExit && wavePositionStage.increaseApplied && position > previousPosition) {
         stateLabel = wavePositionStage.stage === 'trend'
-            ? '趋势延续加仓'
+            ? (position < 80 ? '趋势建议受限' : (previousPosition === 0 ? '趋势确认建仓' : '趋势延续加仓'))
             : (wavePositionStage.stage === 'entry' && previousPosition === 0
                 ? '回踩试探建仓'
                 : (previousPosition === 0 ? '底部确认建仓' : '反转确认加仓'));
         userAction = previousPosition === 0
-            ? (wavePositionStage.stage === 'entry' ? '轻仓建仓' : '确认建仓')
+            ? (position <= 30 ? '轻仓建仓' : '确认建仓')
             : '提高仓位';
     } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
         stateLabel = waveMA20PullbackObservation.defenseType === 'standalone_l3'
@@ -160,7 +172,7 @@ function getStockDecisionSummary(meta, decision) {
 
     let reason = '';
     if (!hasCriticalExit && waveL10Handoff.applied) {
-        reason = `完整多头持仓中单独出现MACD顶背离，当前按趋势接管预警处理，不因单个L10清仓，仓位保持在${position}%以内观察`;
+        reason = `本次仅出现MACD顶背离，多头结构仍在，不直接清仓；仓位最多保留${position}%观察`;
     } else if (!hasCriticalExit && waveRejection.status === 'entry_blocked') {
         const sourceText = (waveRejection.sourceSignals || []).includes('B16') ? '周线支撑企稳信号' : '当前买入信号';
         reason = `${waveEvidence}，形成长上影；${sourceText}原本准备轻仓建仓，本次取消建仓且不画B`;
@@ -185,11 +197,13 @@ function getStockDecisionSummary(meta, decision) {
     } else if (!hasCriticalExit && waveRejection.status === 'locked') {
         const recoveryLevel = Number(waveRejection.recoveryCloseLevel ?? waveRejection.triggerClose);
         const currentClose = Number(meta?.currentClose);
-        const levelName = isHardInvalidationProtection ? '信号失效位' : '风险日收盘';
+        const levelName = isStructureHardBreak ? '原结构恢复参考价' : (isHardInvalidationProtection ? '信号失效位' : '风险日收盘');
         const recoveryState = Number.isFinite(currentClose) && Number.isFinite(recoveryLevel) && currentClose > recoveryLevel
             ? `当前收盘${formatPriceLevel(currentClose)}虽已站回${levelName}${formatPriceLevel(recoveryLevel)}，但完整观察期尚未结束`
             : `当前收盘${formatPriceLevel(currentClose)}尚未站回${levelName}${formatPriceLevel(recoveryLevel)}`;
-        reason = `${waveRejection.triggerDate || '此前'}的风险事件仍在局部保护期；${recoveryState}，事件前旧积分不立即触发回补，当前保持${position}%防守仓位`;
+        reason = waveRejection.newEntry?.inScope
+            ? `${waveRejection.triggerDate || '此前'}的风险事件后，${waveRejection.newEntry.reasonText}；原结构恢复仍按既有收复或回踩条件确认，新交易独立审查，不要求先收复旧止损位，当前保持${position}%`
+            : `${waveRejection.triggerDate || '此前'}的风险事件仍在局部保护期；${recoveryState}，事件前旧积分不立即触发回补，当前保持${position}%防守仓位`;
     } else if (!hasCriticalExit && waveRejection.status === 'released') {
         let recoveryText = `当前已收复事件高点${formatPriceLevel(Number(waveRejection.triggerHigh))}且事件后的新信号仍有效`;
         if (waveRejection.pullbackRecovery) {
@@ -199,30 +213,40 @@ function getStockDecisionSummary(meta, decision) {
         } else if (waveRejection.stableRecovery) {
             recoveryText = `当前收盘已站回${isHardInvalidationProtection ? '信号失效位' : '风险日收盘'}${formatPriceLevel(Number(waveRejection.recoveryCloseLevel ?? waveRejection.triggerClose))}`;
         }
-        reason = `${recoveryText}，局部保护解除，当前先恢复至${position}%仓位观察`;
+        reason = waveRejection.reentryRoute === 'new-entry'
+            ? (position > 0
+                ? `${recoveryText}，本轮首次建仓资格和防守距离通过，按新一轮建仓建立${position}%试探仓，不要求收复旧止损位，已重新冻结本轮防守位`
+                : `${recoveryText}，但尚未通过最终首次建仓检查，当前继续空仓；${decision.waveContext?.mainEvent || '等待本轮入场条件全部满足'}`)
+            : `${waveRejection.reentryRoute === 'original-recovery' ? '原结构恢复：' : ''}${recoveryText}，局部保护解除，当前先恢复至${position}%仓位观察`;
     } else if (!hasCriticalExit && waveRejection.status === 'recovery_pending') {
         reason = '冲高回落风险已局部解除，但当前尚无可执行的恢复仓位，继续空仓观察';
     } else if (!hasCriticalExit && waveRejection.status === 'recovery_started') {
         reason = `冲高回落事件后首次恢复，当前最多恢复至${position}%仓位`;
     } else if (!hasCriticalExit && waveRejection.status === 'recovery_hold') {
-        reason = `冲高回落事件后仍在低仓确认期，当前保持${position}%仓位`;
+        reason = waveRejection.reentryRoute === 'new-entry'
+            ? `新一轮建仓后仍在低仓确认期，当前保持${position}%仓位，按本轮新防守位管理风险`
+            : `冲高回落事件后仍在低仓确认期，当前保持${position}%仓位`;
     } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.applied) {
         reason = `前一日到期防守观察成功后，今日新出现均线回踩不破并重新站上MA5与MA20，MA20保持未下行，当前从${previousPosition}%提高至${position}%`;
     } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.active) {
-        reason = `${waveExpiryB11TakeoverAdd.triggerDate || '此前'}的防守接管加仓仍有效，当前按30%基础仓加20%波段仓继续持有${position}%`;
+        reason = `${waveExpiryB11TakeoverAdd.triggerDate || '此前'}的回踩确认仍有效，继续持有`;
     } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.status === 'released') {
-        reason = `防守接管后的额外20%波段仓已先减，原30%基础仓仍满足既有观察条件，当前从${previousPosition}%降至${position}%且不生成S`;
+        reason = `当前不再满足原确认仓位的持有条件，由${previousPosition}%降至${position}%；原有轻仓仍满足观察条件，暂不全部离场`;
     } else if (!hasCriticalExit && waveB6TrendAdd.applied) {
         reason = `今日缩量回踩${waveB6TrendAdd.movingAveragePeriod}日线后收回，且该均线未下行，触发趋势修复加仓，当前从${previousPosition}%提高至${position}%`;
     } else if (!hasCriticalExit && waveShortRepair.qualified && wavePositionStage.increaseApplied && position > previousPosition) {
         reason = `${waveShortRepair.reason}，当前从${previousPosition}%提高至${position}%；中期趋势仍未确认反转，暂不进入80%趋势仓`;
-    } else if (!hasCriticalExit && multiTimeframeProbe.qualified && isEntry) {
+    } else if (!hasCriticalExit && isProbeEntry) {
         reason = `周线双底第二底与日线B20共振，当前建立${position}%底部试探仓；该信号属于低位修复，不等同于颈线突破确认`;
     } else if (!hasCriticalExit && wavePositionStage.stage === 'breakout-wait') {
         reason = wavePositionStage.reason || '突破确认后等待首次回踩，不追价建仓';
+    } else if (!hasCriticalExit && waveEntryBlocked && previousPosition === 0) {
+        reason = `买入积分已达到 ${scoreText}，但${decision.waveContext.mainEvent}，当前保持0%，等待首次建仓条件全部满足`;
+    } else if (!hasCriticalExit && isReduce && regimeCapActive) {
+        reason = `${appliedRegimeCap.reason}，当前由${previousPosition}%降至${position}%`;
     } else if (!hasCriticalExit && wavePeak.confirmed) {
         reason = wavePeak.reason || '触及日线或周线压力并出现转弱形态，按波峰防守处理';
-    } else if (!hasCriticalExit && wavePeak.candidate
+    } else if (!hasCriticalExit && wavePeak.candidate && !isReduce && !waveEntryBlocked
             && !(wavePositionStage.increaseApplied && position > previousPosition)) {
         reason = wavePeak.reason || '已接近日线或周线压力区，先观察波峰是否确认';
     } else if (!hasCriticalExit && wavePositionStage.increaseApplied && position > previousPosition) {
@@ -232,7 +256,7 @@ function getStockDecisionSummary(meta, decision) {
                 ? `今日底背离与${wavePositionStage.freshGroupCount || 2}组反转信号共振`
                 : `今日新出现${getUserSignalText(wavePositionStage.triggerSignal)}`);
         reason = wavePositionStage.stage === 'trend'
-            ? `${triggerText}，且个股保持完整多头结构，当前从${previousPosition}%提高至${position}%趋势仓`
+            ? `${triggerText}，且个股保持完整多头结构，当前${previousPosition === 0 ? '首次建议' : `从${previousPosition}%提高至`}${position}%${position >= 80 ? '趋势仓' : '策略参考仓位'}`
             : (wavePositionStage.stage === 'entry' && previousPosition === 0
                 ? `${wavePositionStage.breakoutDate || '此前'}突破后，今日${getUserSignalText(wavePositionStage.triggerSignal)}完成首次回踩确认，当前建立${position}%低吸试探仓`
                 : `${triggerText}，当前${previousPosition === 0 ? '直接建立' : `从${previousPosition}%提高至`}${position}%确认仓`);
@@ -298,7 +322,7 @@ function getStockDecisionSummary(meta, decision) {
     } else if (waveEntryBlocked) {
         reason = `买入积分已达到 ${scoreText}，但${decision.waveContext.mainEvent}，当前暂不建仓`;
     } else if (position === 0) {
-        reason = `买入积分只有 ${scoreText}，当前还不满足开仓条件`;
+        reason = `买入积分当前为${meta?.windowScore ?? 0}分，开仓需${STRATEGY?.buyThreshold ?? '--'}分，暂不买入`;
     } else if (isEntry) {
         reason = positionChange.reason;
     } else if (isIncrease && meta.type === '📈 趋势抱单') {
@@ -311,7 +335,7 @@ function getStockDecisionSummary(meta, decision) {
             : `买入积分为 ${scoreText}，当前按${position}%轻仓继续观察`;
     } else {
         reason = scoreReady
-            ? `${buyCauseText}使买入积分维持在 ${scoreText}，继续支持当前${position}%仓位`
+            ? `${buyCauseText}，继续支持当前持仓`
             : `买入积分为 ${scoreText}，当前按${position}%仓位继续观察`;
     }
     const why = getPlainDisplayText(reason);
@@ -328,10 +352,12 @@ function getStockDecisionSummary(meta, decision) {
     const lockRemaining = Math.max(0, Number(waveRejection.lockRemaining) || 0);
     const freshScoreRecoveryAllowed = ['fresh_entry_failure', 'fresh_entry_downside_failure'].includes(waveRejection.eventType)
         && waveRejection.ma20RejectionExit !== true;
-    const lockedNextFocus = lockRemaining > 0
+    const lockedNextFocus = waveRejection.newEntry?.inScope
+        ? getWaveNewEntryNextFocus(waveRejection)
+        : lockRemaining > 0
         ? `当前是风险事件后的第${Math.max(1, Number(waveRejection.lockAge) || 1)}个观察交易日，还需等待${lockRemaining}个交易日；最早下一个交易日重新评估30%试探仓。`
         : (isHardInvalidationProtection
-            ? `完整观察期已结束；等事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分且至少来自${Number(waveRejection.minimumPostEventGroups) || 2}个独立计分组，或价格站回失效位后，再恢复最多30%试探仓。`
+            ? `观察期已结束。恢复最多30%试探仓需满足其一：事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分，且来自至少${Number(waveRejection.minimumPostEventGroups) || 2}类不同信号；或价格站回失效位。`
             : (freshScoreRecoveryAllowed
                 ? `完整观察期已结束；等事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分且至少来自${Number(waveRejection.minimumPostEventGroups) || 2}个独立计分组，风险稳定后可恢复最多30%试探仓，不要求先收复风险日收盘价。`
                 : '完整观察期已结束；若是已有浮盈减仓，新的缩量/均线回踩企稳并守住风险日低点时可先补回一档；否则待价格收复关键压力。'));
@@ -340,15 +366,15 @@ function getStockDecisionSummary(meta, decision) {
         : (waveRejection.status === 'locked'
             ? lockedNextFocus
             : (waveExpiryB11TakeoverAdd.applied || waveExpiryB11TakeoverAdd.active
-        ? `额外20%按波段仓管理；若出现压力回落、预警或风险上限收紧，先降回30%。若30%基础仓自身失效、跌破防守位${formatPriceLevel(decision?.risk?.stop)}或出现离场信号，再按原规则降至0%。`
+        ? `若出现压力回落、预警或仓位上限收紧，先由确认仓降回30%轻仓。若原有轻仓条件失效、跌破防守位${formatPriceLevel(decision?.risk?.stop)}或出现离场信号，再按规则降至0%。`
         : (waveMA20PullbackObservation.applied
-            ? `下一交易日需重新站回MA20，或新触发B6/B11；若未接管、收盘跌破观察日低点${formatPriceLevel(waveMA20PullbackObservation.triggerLow)}、跌破结构防守位${formatPriceLevel(waveMA20PullbackObservation.defenseLevel)}或出现离场信号，仓位降至0%。`
+            ? `下一交易日需重新站回MA20，或出现新的B6/B11确认。若到期仍未满足上述条件，或收盘跌破观察日低点${formatPriceLevel(waveMA20PullbackObservation.triggerLow)}、结构防守位${formatPriceLevel(waveMA20PullbackObservation.defenseLevel)}，或出现离场信号，仓位降至0%。`
             : (waveExpiryHandoff.applied
                 ? (waveExpiryHandoff.trendWashout
                     ? `洗盘观察最多保留${waveExpiryHandoff.maxTradingDays || 2}个交易日；期间需重新站回MA20或出现新的有效买入信号接管。若MA20转弱、收盘跌破原买点防守位或出现离场信号，仓位降至0%。`
                     : (waveExpiryHandoff.observationMode === 'defensive'
-                    ? `下一交易日需重新站上MA5与MA20，或出现新的有效买入信号；若未接管、收盘跌破观察日低点${formatPriceLevel(waveExpiryHandoff.triggerLow)}、跌破原买点防守位${formatPriceLevel(waveExpiryHandoff.entryLow)}或出现离场信号，仓位降至0%。`
-                    : `下一交易日需由趋势抱单或新的有效买入信号接管；若未接管、跌破原买点防守位${formatPriceLevel(waveExpiryHandoff.entryLow)}或出现离场信号，仓位降至0%。`))
+                    ? `下一交易日需同时重新站上MA5与MA20，或出现新的有效买入信号。若到期仍未满足上述条件，或收盘跌破观察日低点${formatPriceLevel(waveExpiryHandoff.triggerLow)}、原买点防守位${formatPriceLevel(waveExpiryHandoff.entryLow)}，或出现离场信号，仓位降至0%。`
+                    : `下一交易日需确认趋势仍支持持仓，或出现新的有效买入信号。若到期仍未满足上述条件，或跌破原买点防守位${formatPriceLevel(waveExpiryHandoff.entryLow)}、出现离场信号，仓位降至0%。`))
                 : getPlainDisplayText(getStockNextFocus(meta, decision, position, hasWarning))))));
 
     return {
@@ -480,7 +506,7 @@ function getIndexDecisionSummary(meta, decision) {
         const reduceAction = position === 0 ? `当前风险仓位从${previousPosition}%降至 0%，保持低风险暴露` : `当前风险仓位从${previousPosition}%降至${position}%`;
         reason = `${reduceCause}，${reduceAction}`;
     } else if (position === 0) {
-        reason = `当前指数动能积分只有 ${scoreText}，暂不增加市场风险暴露`;
+        reason = `指数动能积分当前为${meta?.windowScore ?? 0}分，需达到${STRATEGY?.buyThreshold ?? '--'}分，暂不提高风险仓位`;
     } else if (isEntry) {
         reason = `${causeText}使指数动能积分达到 ${scoreText}，支持风险仓位由0%提高至${position}%`;
     } else if (isIncrease && meta.type === '📈 趋势抱单') {
@@ -493,7 +519,7 @@ function getIndexDecisionSummary(meta, decision) {
             : `指数动能积分为 ${scoreText}，当前保持${position}%低风险暴露观察`;
     } else {
         reason = scoreReady
-            ? `${causeText}使指数动能积分维持在 ${scoreText}，继续支持当前${position}%风险仓位`
+            ? `${causeText}，继续支持当前风险仓位`
             : `指数动能积分为 ${scoreText}，当前维持${position}%风险仓位观察`;
     }
 
@@ -502,7 +528,7 @@ function getIndexDecisionSummary(meta, decision) {
         .replace(/买入积分/g, '指数动能积分')
         .replace(/买入信号/g, '指数动能信号');
     const indexPositionNote = waveExpiryHandoff.applied
-        ? { code: 'index-expiry-handoff', text: `本次积分下降来自时间窗口自然到期，不是真实破位；一日接管规则将风险仓位维持在${position}%，不生成S` }
+        ? { code: 'index-expiry-handoff', text: `旧信号因时间到期不再计分，但指数未破位；暂时保留${position}%风险仓位观察一日` }
         : (waveRejection.status === 'triggered' && isFreshEntryFailure
             ? { code: 'index-fresh-entry-failure',
                 text: `${isFreshEntryRejectionFailure ? '指数新仓冲高失败' : '指数新仓下跌失败'}在风险日直接触发防守，最终${formatPositionChangeClause(previousPosition, position, '风险仓位')}` }
@@ -515,7 +541,7 @@ function getIndexDecisionSummary(meta, decision) {
             .replace(/试探仓/g, '低风险仓位');
     const positionWhyCode = indexPositionNote ? indexPositionNote.code : 'position-path';
     const nextFocus = waveExpiryHandoff.applied
-        ? `下一交易日需由趋势抱单或新的有效指数动能信号接管；若未接管、跌破原买点防守位${formatPriceLevel(Number(waveExpiryHandoff.entryLow))}或出现离场信号，风险仓位降至0%。`
+        ? `下一交易日需确认趋势仍支持当前风险仓位，或出现新的有效指数动能信号。若到期仍未满足上述条件，或跌破原买点防守位${formatPriceLevel(Number(waveExpiryHandoff.entryLow))}、出现离场信号，风险仓位降至0%。`
         : getPlainDisplayText(getIndexNextFocus(meta, decision, position, hasWarning));
 
     return {
@@ -536,12 +562,19 @@ function getNoviceDecisionSummary(meta, decision, mode = 'stock') {
     const summary = mode === 'index'
         ? getIndexDecisionSummary(meta, decision)
         : getStockDecisionSummary(meta, decision);
-    if (decision?.bsMark !== 'B' || !['trial', 'strong'].includes(decision?.bQuality)) return summary;
-    const reasons = (decision.bQualityReasons || []).filter(Boolean).slice(0, 2);
+    const hasBuyQuality = decision?.bsMark === 'B' && ['trial', 'strong'].includes(decision?.bQuality);
+    const reasons = hasBuyQuality ? (decision.bQualityReasons || []).filter(Boolean).slice(0, 2) : [];
+    const why = getPlainDisplayText(reasons.length ? reasons.join('；') : summary.why);
+    const positionWhy = getPlainDisplayText(summary.positionWhy);
+    const nextFocus = getPlainDisplayText(summary.nextFocus);
+    // 所有可见分支共用同一翻译出口，波段说明和买点质量说明也不例外。
     return {
         ...summary,
-        state: decision.bQuality === 'trial' ? '试用确认买点' : '强确认买点',
-        why: reasons.length ? reasons.join('；') : summary.why,
-        reason: reasons.length ? reasons.join('；') : summary.reason
+        state: getPlainDisplayText(hasBuyQuality ? (decision.bQuality === 'trial' ? '试用确认买点' : '强确认买点') : summary.state),
+        action: getPlainDisplayText(summary.action),
+        why, positionWhy, nextFocus,
+        reason: why,
+        positionExplanation: positionWhy,
+        invalidCondition: nextFocus
     };
 }

@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20261028-03"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20261110-02"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20261028-03">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20261110-02">
 </head>
 <body class="dailyglance-app">
 
@@ -50,9 +50,9 @@
                     <li><strong>先看状态：</strong> 判断大盘或个股处于什么阶段。</li>
                     <li><strong>再看动作：</strong> 关注右侧每日结论和参考仓位。</li>
                     <li><strong>最后看风险：</strong> 阅读结论下方的主要依据、风险和防守位。</li>
-                    <li><strong>需要核对策略时：</strong> 打开独立策略页查看完整信号、门槛和限制规则。</li>
+                    <li><strong>需要核对策略时：</strong> 打开独立策略页查看信号列表、积分门槛和原始配置，不把配置当作完整执行规则。</li>
                 </ul>
-                <div class="help-link-row"><a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener">查看完整策略说明 ↗</a></div>
+                <div class="help-link-row"><a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener">查看策略配置参考 ↗</a></div>
             </div>
             <div class="brand-attribution" aria-label="项目归属与版权">
                 <div class="brand-attribution-name">DailyGlance · LINPO LAB</div>
@@ -179,11 +179,23 @@
             <div class="macd-chart-box"><canvas id="macdChart"></canvas></div>
             <div class="kdj-chart-box"><canvas id="kdjChart"></canvas></div>
         </div>
+        <div id="chartPositionLegend" class="chart-position-legend" hidden title="加/减只标已确认日线；盘中变动请查看临时结论。">策略参考：B开仓 · 加/减调仓 · S清仓（非成交）</div>
         <div class="chart-copyright-line">© 2026 LINPO LAB · 仅供研究观察，不构成投资建议</div>
     </section>
     
     <aside class="info-section">
-        <div id="lastRefreshBar" class="refresh-bar" style="display:none;"><span class="text-dim mono refresh-time-text" title="当前区域应用到界面的时间，不代表交易所行情时间">界面更新于 <span id="lastRefreshTime">--:--:--</span></span></div>
+        <div id="lastRefreshBar" class="refresh-bar" style="display:none;">
+            <span id="refreshQuoteTime" class="refresh-quote text-dim mono" hidden></span>
+            <span id="refreshFreshness" class="refresh-freshness text-dim" data-refresh-freshness hidden></span>
+            <details class="refresh-details">
+                <summary aria-label="查看数据详情" title="查看数据详情">ⓘ</summary>
+                <div class="refresh-details-body">
+                    <div id="refreshDataDetail" class="refresh-detail-text"></div>
+                    <span class="text-dim mono refresh-time-text">界面更新于 <span id="lastRefreshTime">--:--:--</span></span>
+                    <span class="text-dim">界面更新时间不代表交易所行情时间。</span>
+                </div>
+            </details>
+        </div>
         <div id="cardPrice" style="display: none;"></div>
         <div id="cardAnalysis" style="display: none;"></div>
     </aside>
@@ -284,19 +296,19 @@
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/00-strategy-config.js?v=20261028-03"></script>
-<script src="assets/js/01-config-ui.js?v=20261028-03"></script>
-<script src="assets/js/02-data.js?v=20261028-03"></script>
-<script src="assets/js/02-observation-data.js?v=20261028-03"></script>
-<script src="assets/js/03-calculations.js?v=20261028-03"></script>
-<script src="assets/js/03-explain.js?v=20261028-03"></script>
-<script src="assets/js/03-summary.js?v=20261028-03"></script>
-<script src="assets/js/03-wave-regime.js?v=20261028-03"></script>
-<script src="assets/js/03-wave-rejection.js?v=20261028-03"></script>
-<script src="assets/js/03-decision.js?v=20261028-03"></script>
-<script src="assets/js/04-render.js?v=20261028-03"></script>
-<script src="assets/js/05-app.js?v=20261028-03"></script>
-<script src="assets/js/06-settings.js?v=20261028-03"></script>
-<script src="assets/js/07-refresh-controller.js?v=20261028-03"></script>
+<script src="assets/js/00-strategy-config.js?v=20261110-02"></script>
+<script src="assets/js/01-config-ui.js?v=20261110-02"></script>
+<script src="assets/js/02-data.js?v=20261110-02"></script>
+<script src="assets/js/02-observation-data.js?v=20261110-02"></script>
+<script src="assets/js/03-calculations.js?v=20261110-02"></script>
+<script src="assets/js/03-explain.js?v=20261110-02"></script>
+<script src="assets/js/03-summary.js?v=20261110-02"></script>
+<script src="assets/js/03-wave-regime.js?v=20261110-02"></script>
+<script src="assets/js/03-wave-rejection.js?v=20261110-02"></script>
+<script src="assets/js/03-decision.js?v=20261110-02"></script>
+<script src="assets/js/04-render.js?v=20261110-02"></script>
+<script src="assets/js/05-app.js?v=20261110-02"></script>
+<script src="assets/js/06-settings.js?v=20261110-02"></script>
+<script src="assets/js/07-refresh-controller.js?v=20261110-02"></script>
 </body>
 </html>

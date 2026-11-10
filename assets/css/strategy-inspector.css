@@ -37,13 +37,7 @@
 .strategy-section-index { flex: 0 0 auto; color: var(--blue-text); font: 700 var(--text-sm)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .strategy-section h2 { margin: 0; font-size: var(--text-2xl); line-height: 1.35; letter-spacing: 0; }
 .strategy-section-heading p { margin: 5px 0 0; color: var(--text-dim); font-size: var(--text-md); line-height: 1.55; }
-.position-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-2); }
-.position-step, .signal-group, .score-rule, .risk-rule { min-width: 0; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--inner-bg); }
-.position-step { padding: var(--space-4); }
-.position-step-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-light); }
-.position-step-head strong { color: var(--blue-text); font-size: var(--text-4xl); line-height: 1; }
-.position-step-label { color: var(--text-main); font-size: var(--text-md); font-weight: 800; text-align: right; }
-.position-step p { margin: var(--space-3) 0 0; color: var(--text-dim); font-size: var(--text-md); line-height: 1.6; }
+.signal-group, .score-rule { min-width: 0; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--inner-bg); }
 .signal-groups { display: grid; gap: var(--space-3); }
 .signal-group { overflow: hidden; }
 .signal-group-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); padding: var(--space-4); border-bottom: 1px solid var(--border-light); }
@@ -65,21 +59,16 @@
 .signal-score { color: var(--text-dim); font-weight: 700; }.signal-score.is-active { color: var(--up-color); }
 .signal-group-text, .signal-role { color: var(--text-dim); }
 .strategy-empty { display: block; padding: var(--space-4); color: var(--text-dim); font-size: var(--text-md); }
-.strategy-two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-8); }
-.strategy-two-column .strategy-section { min-width: 0; }
-.score-rules, .risk-rules { display: grid; gap: var(--space-2); }
+.score-rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
 .score-rule { padding: var(--space-4); }
 .score-rule-wide { grid-column: 1 / -1; }
 .rule-label { display: block; margin-bottom: 7px; color: var(--text-dim); font-size: var(--text-sm); font-weight: 700; }
 .score-rule strong { display: block; color: var(--text-main); font-size: var(--text-2xl); line-height: 1.3; }
-.score-rule p, .risk-rule p { margin: 7px 0 0; color: var(--text-dim); font-size: var(--text-md); line-height: 1.6; }
+.score-rule p { margin: 7px 0 0; color: var(--text-dim); font-size: var(--text-md); line-height: 1.6; }
 .score-group-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .score-group-list li { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: var(--space-3); padding: 7px 0; border-top: 1px solid var(--border-light); color: var(--text-main); font-size: var(--text-md); line-height: 1.5; }
 .score-group-list li:first-child { padding-top: 0; border-top: 0; }
 .score-group-list li span:first-child { color: var(--blue-text); }
-.risk-rule { padding: var(--space-4); }
-.risk-rule strong { display: block; color: var(--text-main); font-size: var(--text-md); }
-.risk-rule.exit { border-left: 3px solid var(--down-color); }.risk-rule.warning { border-left: 3px solid var(--yellow); }.risk-rule.info { border-left: 3px solid var(--border-color); }
 .strategy-config-details { border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--inner-bg); }
 .strategy-config-details summary { padding: var(--space-4); color: var(--blue-text); cursor: pointer; font-size: var(--text-md); font-weight: 800; }
 .strategy-config-details pre { max-height: 520px; margin: 0; padding: var(--space-4); overflow: auto; border-top: 1px solid var(--border-color); color: var(--text-dim); font: var(--text-sm)/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

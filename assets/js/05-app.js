@@ -9,13 +9,21 @@ function calculateBacktestSummary(full, options = {}) {
     const startIdx = Math.max(1, options.startIdx ?? 60);
     const delayBars = Math.max(1, Number(options.delayBars) || 1);
     const minimumTradesForWinRate = Math.max(1, Number(options.minimumTradesForWinRate) || 30);
+    const hasReplayBars = full.length > startIdx;
     let capital = initialCapital, peakCapital = initialCapital, maxDrawdown = 0;
-    let benchmarkCapital = initialCapital * (1 - costRate), benchmarkPeak = benchmarkCapital, benchmarkMaxDrawdown = 0;
+    let benchmarkCapital = initialCapital * (1 - (hasReplayBars ? costRate : 0));
+    let benchmarkPeak = initialCapital, benchmarkMaxDrawdown = hasReplayBars ? costRate : 0;
     const effectiveDecision = index => {
         const signalIndex = Math.max(0, index - delayBars);
         return { signalIndex, decision:full[signalIndex]?._decision || null };
     };
-    let prevAdv = effectiveDecision(startIdx - 1).decision?.position || 0;
+    let prevAdv = hasReplayBars ? (effectiveDecision(startIdx - 1).decision?.position || 0) : 0;
+    const initialPosition = prevAdv;
+    const initialPositionCost = initialCapital * (initialPosition / 100) * costRate;
+    capital -= initialPositionCost;
+    maxDrawdown = initialPositionCost / initialCapital;
+    // 以区间前一根收盘价承接期初仓位；收益计入区间，但不伪造完整交易样本。
+    let carriedPositionOpen = initialPosition > 0, carriedPositionClosed = false;
     let entryCapital = 0, winCount = 0, totalTrades = 0;
     const trades = [], closedTradeReturns = [];
 
@@ -40,6 +48,7 @@ function calculateBacktestSummary(full, options = {}) {
         const effectivePosition = effective.decision?.position || 0;
         if (effectivePosition !== prevAdv) {
             const turnover = Math.abs(effectivePosition - prevAdv) / 100;
+            const capitalBeforeCost = capital;
             const cost = capital * turnover * costRate;
             if (cost > 0) capital -= cost;
 
@@ -54,12 +63,17 @@ function calculateBacktestSummary(full, options = {}) {
             });
 
             if (prevAdv === 0 && effectivePosition > 0) {
-                entryCapital = capital;
+                entryCapital = capitalBeforeCost;
             } else if (effectivePosition === 0 && prevAdv > 0) {
-                totalTrades++;
-                const tradeRet = entryCapital ? (capital - entryCapital) / entryCapital : 0;
-                closedTradeReturns.push(tradeRet);
-                if (tradeRet > 0) winCount++;
+                if (carriedPositionOpen) {
+                    carriedPositionOpen = false;
+                    carriedPositionClosed = true;
+                } else if (entryCapital > 0) {
+                    totalTrades++;
+                    const tradeRet = (capital - entryCapital) / entryCapital;
+                    closedTradeReturns.push(tradeRet);
+                    if (tradeRet > 0) winCount++;
+                }
                 entryCapital = 0;
             }
 
@@ -74,6 +88,9 @@ function calculateBacktestSummary(full, options = {}) {
     const benchmarkReturn = (benchmarkCapital - initialCapital) / initialCapital * 100;
     return {
         capital,
+        initialPosition,
+        initialPositionCost,
+        carriedPositionClosed,
         ret: strategyReturn.toFixed(2),
         benchmarkRet: benchmarkReturn.toFixed(2),
         excessRet: (strategyReturn - benchmarkReturn).toFixed(2),
@@ -164,13 +181,13 @@ async function runBacktest() {
                     <div class="text-dim backtest-metric-label">完整交易样本</div>
                     <div class="backtest-sample-row">
                         <div class="mono ${summary.winRateQualified ? 'text-info' : 'text-dim'} backtest-win-rate">${summary.winRateQualified ? `${winRate}%` : '样本不足'}</div>
-                        <div class="text-dim backtest-sample-note">${totalTrades} 次清仓结算，获利 ${winCount} 次；${summary.openPositionAtEnd ? '期末仍有未平仓仓位' : '期末无未平仓仓位'}</div>
+                        <div class="text-dim backtest-sample-note">${totalTrades} 次完整交易结算，获利 ${winCount} 次；${summary.openPositionAtEnd ? '期末仍有未平仓仓位' : '期末无未平仓仓位'}</div>
                     </div>
                 </div>
             </div>
             ${tradeListHtml}
             <div class="text-dim backtest-boundary-note">
-                注：收益按实际仓位比例滚动计算，买入持有基准按同区间满仓持有并计入一次入场成本。未完整模拟涨跌停无法成交、盘中滑点、冲击成本和 T+1 约束。主图 B/S 是策略决策标记，不代表实际成交点；中途加减仓仅在交易记录中展示。
+                注：收益按实际仓位比例滚动计算，买入持有基准按同区间满仓持有并计入一次入场成本。${summary.initialPosition > 0 ? `期初承接 ${summary.initialPosition}% 仓位，以区间前一根收盘价为基准，已扣除 ${summary.initialPositionCost.toFixed(2)} 元入场成本；该笔跨区间持仓的收益计入区间收益，但不计入完整交易和胜率。` : '区间从空仓开始。'}完整交易盈亏包含建仓、调仓和清仓成本。未完整模拟涨跌停无法成交、盘中滑点、冲击成本和 T+1 约束。主图 B/S 是策略决策标记，不代表实际成交点；中途加减仓仅在交易记录中展示。
             </div>
         `;
         
@@ -330,24 +347,30 @@ async function searchAndShowInSuggest(q) {
 }
 
 function renderSuggest(container, res) {
-    container.innerHTML = res.map((x, index) => {
-        const target = normalizeSecurityTarget(x);
-        const isSupported = isSupportedWatchlistSecurity(x);
+    const entries = res.map(input => ({ target: normalizeSecurityTarget(input), isSupported: isSupportedWatchlistSecurity(input) }));
+    container.innerHTML = entries.map(({ target, isSupported }, index) => {
         if (!isSupported) {
             return `
-        <div id="stockSuggestOption${index}" class="stock-suggest-item is-unsupported" role="option" aria-selected="false" onclick="showUnsupportedSecurityNotice()">
+        <div id="stockSuggestOption${index}" class="stock-suggest-item is-unsupported" role="option" aria-selected="false">
             <span class="ss-name">${escapeHTML(target.name)}</span>
             <span class="ss-meta"><span class="ss-code mono">${escapeHTML(target.code)}</span><span class="ss-support">暂不支持</span></span>
         </div>
     `;
         }
         return `
-        <div id="stockSuggestOption${index}" class="stock-suggest-item" role="option" aria-selected="false" onclick="selectSuggestItem('${escapeJSArg(target.code)}','${escapeJSArg(target.name)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')">
+        <div id="stockSuggestOption${index}" class="stock-suggest-item" role="option" aria-selected="false">
             <span class="ss-name">${escapeHTML(target.name)}</span>
             <span class="ss-code mono">${escapeHTML(target.code)}</span>
         </div>
     `;
     }).join('');
+    container.querySelectorAll('.stock-suggest-item').forEach((option, index) => {
+        const { target, isSupported } = entries[index];
+        option.addEventListener('click', () => {
+            if (!isSupported) return showUnsupportedSecurityNotice();
+            selectSuggestItem(target.code, target.name, target.secid, target.type, target.tencentSymbol);
+        });
+    });
     container.style.display = 'block';
     const inp = document.getElementById('stockSearchInput');
     if (inp) {
@@ -988,6 +1011,7 @@ async function addToWatchlist(code, name, meta = {}) {
 }
 
 function focusWatchlistSearch() {
+    if (isCompactMobileLayout()) toggleCompactWatchlist(true);
     const input = document.getElementById('stockSearchInput');
     if (!input) return;
     input.focus();
@@ -1254,10 +1278,13 @@ function refreshSidebarRealtime() {
                 const lastBar = series[series.length - 1];
                 if (!lastBar || !isValidPrice(rtBar.close, id)) continue;
                 if (rtBar.date < lastBar.date) continue;
+                const hadLiveOverlay = !!state.liveBars?.[id];
                 const applyResult = applyRealtimeQuoteForSeries(id, series, rtBar);
                 if (!applyResult) continue;
                 appliedIds.push(id);
-                if (id === state.id && (applyResult === 'overlay' || applyResult === 'cached-overlay')) activeOverlayChanged = true;
+                // 准入失败移除旧 overlay 时，图表与右侧也必须回到确认历史；纯 quote-only 更新不重绘。
+                const overlayRemoved = hadLiveOverlay && !state.liveBars?.[id];
+                if (id === state.id && (applyResult === 'overlay' || applyResult === 'cached-overlay' || overlayRemoved)) activeOverlayChanged = true;
             }
         } finally {
             if (typeof endLiveOverlayCacheBatch === 'function') endLiveOverlayCacheBatch();
@@ -1291,7 +1318,8 @@ function refreshSidebarRealtime() {
         if (activeOverlayChanged) {
             const activeId = state.id;
             if (!state.realtimeBatchAt) state.realtimeBatchAt = {};
-            state.realtimeBatchAt[activeId] = batchFetchedAt;
+            if (state.liveBars?.[activeId]) state.realtimeBatchAt[activeId] = batchFetchedAt;
+            else delete state.realtimeBatchAt[activeId];
         }
         if (activeOverlayChanged && !state.isFrozen) {
             const activeId = state.id;
@@ -1303,7 +1331,7 @@ function refreshSidebarRealtime() {
                 }
                 const rightTxn = beginRefreshTransaction('rightPanel', { source: 'realtime-batch', id: activeId });
                 applyActiveDataRefresh(activeId);
-                markRefreshTime(rightTxn, { path: 'active-overlay' });
+                markRefreshTime(rightTxn, { path: state.liveBars?.[activeId] ? 'active-overlay' : 'confirmed-fallback' });
             };
             applyActiveRefresh();
         }
@@ -1404,6 +1432,7 @@ async function _selectIndexImpl(id) {
     const config = getIndexConfig(id);
 
     applyActiveSelectionState({ tab: 'index', mode: 'index', id, stockId: null });
+    if (isCompactMobileLayout()) compactLastSelection.index = id;
     setWatchlistEmptyState(false);
     resetViewportToLatest(null);
 
@@ -1457,6 +1486,10 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
     const interactionToken = beginChartInteractionBlock();
 
     applyActiveSelectionState({ tab: 'stock', mode: 'stock', id: targetSecid, stockId: safeCode });
+    if (isCompactMobileLayout()) {
+        compactLastSelection.stock = safeCode;
+        toggleCompactWatchlist(false);
+    }
     setWatchlistEmptyState(false);
     resetViewportToLatest(null);
 
@@ -1540,6 +1573,30 @@ function markLeftListRefreshForActiveTab(txn = null, patch = {}) {
 }
 
 let mobileNavAutoScrollKey = '';
+const compactLastSelection = { index: null, stock: null };
+let compactWatchlistOpen = false;
+
+function updateCompactWatchlistPicker(container = document.getElementById('stockNavList')) {
+    if (!container) return;
+    const selected = state.watchlist.find(stock => stock.code === state.stockId);
+    const expanded = compactWatchlistOpen || !state.watchlist.length;
+    const button = container.querySelector('.compact-watchlist-picker');
+    const name = container.querySelector('[data-compact-stock-name]');
+    const count = container.querySelector('[data-compact-stock-count]');
+    if (name) name.textContent = selected ? getSecurityShortName(selected) : '本机自选';
+    if (count) count.textContent = `${state.watchlist.length}只 · ${expanded ? '收起' : '选择'}`;
+    if (button) button.setAttribute('aria-expanded', String(expanded));
+    container.classList?.toggle('compact-watchlist-open', expanded);
+}
+
+function toggleCompactWatchlist(open = !compactWatchlistOpen) {
+    compactWatchlistOpen = Boolean(open);
+    const container = document.getElementById('stockNavList');
+    if (!open && isCompactMobileLayout() && container?.contains?.(document.activeElement)) {
+        container.querySelector('.compact-watchlist-picker')?.focus({ preventScroll: true });
+    }
+    updateCompactWatchlistPicker(container);
+}
 
 function scrollActiveMobileNavItemIntoView(container) {
     if (!isCompactMobileLayout() || !container || typeof requestAnimationFrame !== 'function') return;
@@ -1548,9 +1605,13 @@ function scrollActiveMobileNavItemIntoView(container) {
     mobileNavAutoScrollKey = nextKey;
     requestAnimationFrame(() => {
         const activeItem = container.querySelector('.nav-list-item.active');
-        if (activeItem && typeof activeItem.scrollIntoView === 'function') {
-            activeItem.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
-        }
+        const track = container.querySelector('.index-list-items');
+        if (!activeItem || !track) return;
+        const itemRect = activeItem.getBoundingClientRect();
+        const trackRect = track.getBoundingClientRect();
+        // 只调整指数轨道，不能把正在阅读结论的整页拉回顶部。
+        if (itemRect.left < trackRect.left + 12) track.scrollLeft -= trackRect.left + 12 - itemRect.left;
+        else if (itemRect.right > trackRect.right - 12) track.scrollLeft += itemRect.right - trackRect.right + 12;
     });
 }
 
@@ -1648,7 +1709,7 @@ function renderWatchlist() {
     
     const sHtml = `
         <div class="stock-search">
-            <input id="stockSearchInput" placeholder="输入股票代码或名称" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="stockSuggest" aria-expanded="false" oninput="onSearchInput()" onkeydown="onSearchKeydown(event)">
+            <input id="stockSearchInput" placeholder="输入股票代码或名称" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="stockSuggest" aria-expanded="false">
             <div class="stock-suggest" id="stockSuggest" role="listbox" aria-label="股票搜索建议"></div>
         </div>
     `;
@@ -1660,15 +1721,29 @@ function renderWatchlist() {
         if (headerSlot && searchBox && itemsSlot) {
             headerSlot.innerHTML = headerHtml;
             itemsSlot.innerHTML = bodyHtml;
+            updateCompactWatchlistPicker(container);
             return;
         }
         container.innerHTML = `
-            <div class="watchlist-sticky-head">
+            <div class="compact-watchlist-toolbar">
+                <button type="button" class="compact-watchlist-picker" aria-expanded="false" aria-controls="compactWatchlistSearch compactWatchlistItems">
+                    <strong data-compact-stock-name>本机自选</strong><span data-compact-stock-count></span>
+                </button>
+                <button type="button" class="compact-watchlist-add">＋ 添加</button>
+            </div>
+            <p class="compact-watchlist-note">仅保存在当前浏览器，不与电脑同步</p>
+            <div class="watchlist-sticky-head" id="compactWatchlistSearch">
                 <div class="watchlist-header-slot">${headerHtml}</div>
                 ${sHtml}
             </div>
-            <div class="watchlist-items">${bodyHtml}</div>
+            <div class="watchlist-items" id="compactWatchlistItems">${bodyHtml}</div>
         `;
+        updateCompactWatchlistPicker(container);
+        container.querySelector('.compact-watchlist-picker')?.addEventListener('click', () => toggleCompactWatchlist());
+        container.querySelector('.compact-watchlist-add')?.addEventListener('click', focusWatchlistSearch);
+        const input = container.querySelector('#stockSearchInput');
+        input?.addEventListener('input', onSearchInput);
+        input?.addEventListener('keydown', onSearchKeydown);
     };
     
     if(!state.watchlist.length) { 
@@ -1679,8 +1754,9 @@ function renderWatchlist() {
         return; 
     }
     
-    const lHtml = state.watchlist.map(s => {
-        const target = normalizeSecurityTarget(s);
+    const targets = state.watchlist.map(stock => normalizeSecurityTarget(stock));
+    const lHtml = state.watchlist.map((s, index) => {
+        const target = targets[index];
         const isSupported = isSupportedWatchlistSecurity(target);
         const displayName = target.name;
         const shortName = getSecurityShortName(target);
@@ -1696,21 +1772,15 @@ function renderWatchlist() {
         const positionChangeHtml = rowStatus.positionChange
             ? `<span class="wl-position-change">${escapeHTML(rowStatus.positionChange)}</span>`
             : '';
-        const dragTargetAttrs = s._pendingRemove
-            ? ''
-            : `ondragover="updateWatchlistDragTarget(event,'${escapeJSArg(target.code)}')" ondrop="dropWatchlistItem(event,'${escapeJSArg(target.code)}')"`;
-        const selectAction = isSupported
-            ? `selectStock('${escapeJSArg(target.code)}','${escapeJSArg(displayName)}','${escapeJSArg(target.secid)}','${escapeJSArg(target.type)}','${escapeJSArg(target.tencentSymbol)}')`
-            : 'showUnsupportedSecurityNotice()';
         const selectTargetAttrs = s._pendingRemove
             ? ''
-            : `role="button" tabindex="0" aria-label="查看 ${escapeHTML(displayName)}" onclick="event.stopPropagation();${selectAction}" onkeydown="handleWatchlistSelectKeydown(event)"`;
+            : `role="button" tabindex="0" aria-label="查看 ${escapeHTML(displayName)}"`;
         
         return `
-            <div class="nav-list-item watchlist-item ${isSupported ? '' : 'is-unsupported '}${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${target.code}" ${dragTargetAttrs} ${s._pendingRemove ? '' : `onclick="${selectAction}"`}>
+            <div class="nav-list-item watchlist-item ${isSupported ? '' : 'is-unsupported '}${target.code === state.stockId ? 'active' : ''}${s._pendingRemove ? ' pending-remove' : ''}" data-code="${escapeHTML(target.code)}">
                 <div class="nav-list-main">
                     ${s._pendingRemove ? '' : `
-                    <button type="button" class="wl-drag-handle" data-code="${target.code}" draggable="true" title="拖动调整顺序" aria-label="拖动或使用上下方向键调整 ${escapeHTML(displayName)} 的顺序" onclick="event.stopPropagation()" ondragstart="startWatchlistDrag(event,'${escapeJSArg(target.code)}')" ondragend="finishWatchlistDrag()" onkeydown="handleWatchlistDragKeydown(event,'${escapeJSArg(target.code)}')">
+                    <button type="button" class="wl-drag-handle" data-code="${escapeHTML(target.code)}" draggable="true" title="拖动调整顺序" aria-label="拖动或使用上下方向键调整 ${escapeHTML(displayName)} 的顺序">
                         <svg viewBox="0 0 12 18" aria-hidden="true"><circle cx="3" cy="3" r="1.2"></circle><circle cx="9" cy="3" r="1.2"></circle><circle cx="3" cy="9" r="1.2"></circle><circle cx="9" cy="9" r="1.2"></circle><circle cx="3" cy="15" r="1.2"></circle><circle cx="9" cy="15" r="1.2"></circle></svg>
                     </button>`}
                     <div class="lname-wrap watchlist-select-target" ${selectTargetAttrs}>
@@ -1718,15 +1788,15 @@ function renderWatchlist() {
                         <span class="wl-status ${rowStatus.toneClass}" title="${escapeHTML(statusTitle)}">${rowStatus.label}</span>
                         ${positionChangeHtml}
                     </div>
-                    ${s._pendingRemove ? '' : `<button type="button" class="wl-close" title="移除自选股" aria-label="移除 ${escapeHTML(displayName)}" onclick="event.stopPropagation();removeStock('${escapeJSArg(target.code)}')">×</button>`}
+                    ${s._pendingRemove ? '' : `<button type="button" class="wl-close" title="移除自选股" aria-label="移除 ${escapeHTML(displayName)}">×</button>`}
                 </div>
                 <div class="nav-list-sub">
                     <div class="wl-sub-left">
                         <span class="lcode mono">${escapeHTML(target.code)}</span>
                     </div>
                     <div class="lquote">
-                        <span class="lprice mono ${quoteDisplay.cl}" data-code="${target.code}">${quoteDisplay.priceText}</span>
-                        <span class="lchange mono ${quoteDisplay.cl}" data-code="${target.code}">${quoteDisplay.changeText}</span>
+                        <span class="lprice mono ${quoteDisplay.cl}" data-code="${escapeHTML(target.code)}">${quoteDisplay.priceText}</span>
+                        <span class="lchange mono ${quoteDisplay.cl}" data-code="${escapeHTML(target.code)}">${quoteDisplay.changeText}</span>
                     </div>
                 </div>
             </div>
@@ -1737,6 +1807,30 @@ function renderWatchlist() {
         renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`),
         `<div>${lHtml}</div>`
     );
+    // 仅向本次新建的行绑定监听器；外部名称和标识只作为闭包数据，不拼进可执行属性。
+    container.querySelectorAll('.watchlist-item').forEach((row, index) => {
+        const target = targets[index];
+        if (state.watchlist[index]._pendingRemove) return;
+        const select = () => {
+            if (!isSupportedWatchlistSecurity(target)) return showUnsupportedSecurityNotice();
+            selectStock(target.code, target.name, target.secid, target.type, target.tencentSymbol);
+        };
+        row.addEventListener('click', select);
+        row.addEventListener('dragover', event => updateWatchlistDragTarget(event, target.code));
+        row.addEventListener('drop', event => dropWatchlistItem(event, target.code));
+        const selectTarget = row.querySelector('.watchlist-select-target');
+        selectTarget?.addEventListener('click', event => { event.stopPropagation(); select(); });
+        selectTarget?.addEventListener('keydown', event => handleWatchlistSelectKeydown(event));
+        const handle = row.querySelector('.wl-drag-handle');
+        handle?.addEventListener('click', event => event.stopPropagation());
+        handle?.addEventListener('dragstart', event => startWatchlistDrag(event, target.code));
+        handle?.addEventListener('dragend', finishWatchlistDrag);
+        handle?.addEventListener('keydown', event => handleWatchlistDragKeydown(event, target.code));
+        row.querySelector('.wl-close')?.addEventListener('click', event => {
+            event.stopPropagation();
+            removeStock(target.code);
+        });
+    });
     scrollActiveMobileNavItemIntoView(container);
 }
 
@@ -2448,6 +2542,11 @@ function openExternalWorkspace() {
 
 function openMarketWorkspace(tab) {
     const returnSelection = externalReturnSelection;
+    const compact = isCompactMobileLayout();
+    if (compact && state.tab === state.mode) {
+        if (state.mode === 'index') compactLastSelection.index = state.id;
+        if (state.mode === 'stock') compactLastSelection.stock = state.stockId;
+    }
     if (state.tab === 'external' && typeof cancelExternalObservationTasks === 'function') {
         cancelExternalObservationTasks('workspace-leave');
     }
@@ -2455,7 +2554,7 @@ function openMarketWorkspace(tab) {
     state.tab = tab;
     setPrimaryWorkspace(tab);
     if (tab === 'index') {
-        const id = returnSelection?.tab === 'index' ? returnSelection.id : 'sh';
+        const id = returnSelection?.tab === 'index' ? returnSelection.id : (compact && getIndexConfig(compactLastSelection.index) ? compactLastSelection.index : 'sh');
         document.getElementById('indexNavList').style.display = 'flex';
         document.getElementById('stockNavList').style.display = 'none';
         selectIndex(id || 'sh');
@@ -2463,9 +2562,8 @@ function openMarketWorkspace(tab) {
         document.getElementById('indexNavList').style.display = 'none';
         document.getElementById('stockNavList').style.display = 'flex';
         renderWatchlist();
-        const savedTarget = returnSelection?.tab === 'stock'
-            ? state.watchlist.find(item => item.code === returnSelection.stockId && isSupportedWatchlistSecurity(item))
-            : null;
+        const rememberedCode = returnSelection?.tab === 'stock' ? returnSelection.stockId : (compact ? compactLastSelection.stock : null);
+        const savedTarget = state.watchlist.find(item => item.code === rememberedCode && isSupportedWatchlistSecurity(item));
         const nextTarget = savedTarget || getSupportedWatchlistFallback();
         if (nextTarget) selectStock(nextTarget.code, nextTarget.name, nextTarget.secid, nextTarget.type, nextTarget.tencentSymbol);
         else showEmptyWatchlistView();
@@ -2501,7 +2599,7 @@ async function handleExternalRefresh() {
 
 function applyCompactMobileDefaults() {
     if (!isCompactMobileLayout()) return false;
-    applyPeriodState('daily');
+    if (state.period !== 'daily') applyPeriodState('daily');
     state.range = 90;
     state.activeMAs = [5, 20, 60];
     return true;
@@ -2516,7 +2614,27 @@ function bindResponsiveLayoutChange() {
         if (nextCompact === compact) return;
         compact = nextCompact;
         requestAnimationFrame(() => {
-            if (typeof drawViewport === 'function' && getActiveData()?.length) drawViewport();
+            if (nextCompact) {
+                const previousPeriod = state.period;
+                applyCompactMobileDefaults();
+                if (previousPeriod !== state.period) {
+                    resetViewportToLatest(getActiveData());
+                    resetIndicatorState();
+                }
+                document.querySelectorAll('#periodTabs .seg-btn, #rangeTabs .seg-btn').forEach(button => {
+                    const active = button.dataset.period ? button.dataset.period === state.period : Number(button.dataset.range) === state.range;
+                    button.classList.toggle('active', active);
+                    button.setAttribute('aria-pressed', String(active));
+                });
+                renderMASelector();
+                if (state.tab === 'external') openMarketWorkspace('index');
+            }
+            if (typeof drawViewport === 'function' && getActiveData()?.length) {
+                drawViewport();
+                // 折叠默认值与分析区布局随断点重建，不保留桌面的隐藏控件状态。
+                renderCache.clear();
+                safeUpdateSidebar();
+            }
             ['main', 'vol', 'macd', 'kdj'].forEach(key => state.charts[key]?.resize?.());
             updateCrosshairOverlay();
             updateFreezeBadge();
@@ -2547,7 +2665,13 @@ async function init() {
     }
     PERF.mark(startupPerf, 'load-stock-cache');
     
-    const savedStrategy = localStorage.getItem('quant_strategy');
+    let savedStrategy = null;
+    let strategyPreferenceUnavailable = false;
+    try {
+        savedStrategy = localStorage.getItem('quant_strategy');
+    } catch (error) {
+        strategyPreferenceUnavailable = true;
+    }
     if(savedStrategy && STRATEGIES[savedStrategy]) { 
         setActiveStrategy(savedStrategy); 
     }
@@ -2631,5 +2755,8 @@ async function init() {
         showToast('本地缓存不可用，本次仅在当前页面保留数据。', 'warn', 6000);
     }
 
+    if (strategyPreferenceUnavailable) {
+        showToast('策略偏好读取失败，已使用默认策略；本次设置仅在当前页面生效。', 'warn', 6000);
+    }
     scheduleStartupBackgroundHydration();
 }
