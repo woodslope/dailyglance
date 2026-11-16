@@ -996,7 +996,7 @@ async function addToWatchlist(code, name, meta = {}) {
         if (JSON.stringify(existing) !== JSON.stringify(next)) {
             Object.assign(existing, next);
             await saveWatchlist();
-            renderWatchlist();
+            if (state.mode === 'stock') renderWatchlist();
         }
         return true;
     }
@@ -1006,7 +1006,7 @@ async function addToWatchlist(code, name, meta = {}) {
     }
     state.watchlist.push(target);
     await saveWatchlist();
-    renderWatchlist(); 
+    if (state.mode === 'stock') renderWatchlist();
     return true;
 }
 
@@ -1044,7 +1044,9 @@ function setWatchlistEmptyState(isEmpty) {
 }
 
 function showEmptyWatchlistView() {
-    globalSelectionSeq++;
+    invalidatePendingSelection();
+    if (typeof cancelWorkspaceHydration === 'function') cancelWorkspaceHydration();
+    if (typeof releaseChartInteractionBlock === 'function') releaseChartInteractionBlock();
     applyActiveSelectionState({ tab: 'stock', mode: 'stock', id: null, stockId: null });
     resetViewportToLatest(null);
     clearCharts();
@@ -1088,7 +1090,6 @@ async function removeStock(code) {
     }, 3000);
 }
 
-let watchlistUpdateTimer = null;
 let sidebarFullSyncTimer = 0;
 let sidebarFullSyncInFlight = null;
 const sidebarFullSyncRuntime = {
@@ -1101,17 +1102,18 @@ const sidebarFullSyncRuntime = {
 };
 if (typeof window !== 'undefined') window.__DG_SIDEBAR_FULL_SYNC__ = sidebarFullSyncRuntime;
 
-function debounceWatchlistUpdate() {
-    if (watchlistUpdateTimer) clearTimeout(watchlistUpdateTimer);
-    watchlistUpdateTimer = setTimeout(async () => {
-        await updateAllWatchlistData({ renderNow: true });
-    }, 2000);
-}
-
+let watchlistDataRefreshKey = '';
 async function updateAllWatchlistData(options = {}) {
     if (!state.watchlist || !state.watchlist.length) return [];
-    if (watchlistDataRefreshInFlight) return watchlistDataRefreshInFlight;
-
+    const isCurrent = options.isCurrent || (() => !document.hidden && state.tab === 'stock');
+    if (!isCurrent()) return [];
+    const key = `${globalSelectionSeq}:${state.strategy}:${getSupportedWatchlistTargets().map(stock => stock.secid).sort().join(',')}`;
+    if (watchlistDataRefreshInFlight) {
+        if (watchlistDataRefreshKey === key) return watchlistDataRefreshInFlight;
+        await watchlistDataRefreshInFlight;
+        return isCurrent() ? updateAllWatchlistData(options) : [];
+    }
+    watchlistDataRefreshKey = key;
     const stocks = getSupportedWatchlistTargets().filter(stock => stock.secid !== state.id);
     const batchStrategy = state.strategy;
     const batchWatchlistKey = getSupportedWatchlistTargets().map(stock => stock.secid).sort().join(',');
@@ -1121,9 +1123,10 @@ async function updateAllWatchlistData(options = {}) {
         let results = [];
         try {
             results = await pLimit(stocks, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (stock) => {
+                if (!isCurrent()) return { code: stock.code, success: false, reason: 'cancelled' };
                 const secid = stock.secid;
                 try {
-                    const data = await syncData(secid);
+                    const data = await (options.historyOnly ? syncConfirmedData(secid) : syncData(secid));
                     if (data && data.length >= 30 && isValidPrice(data[data.length - 1].close, secid)) {
                         setRawData(secid, data);
                         syncWatchlistSignalSnapshotFast(stock.code, state.rawData[secid] || data);
@@ -1150,7 +1153,7 @@ async function updateAllWatchlistData(options = {}) {
         await waitForWatchlistSnapshotQueue();
 
         const currentWatchlistKey = getSupportedWatchlistTargets().map(stock => stock.secid).sort().join(',');
-        const isCurrentBatch = state.strategy === batchStrategy && currentWatchlistKey === batchWatchlistKey;
+        const isCurrentBatch = isCurrent() && state.strategy === batchStrategy && currentWatchlistKey === batchWatchlistKey;
         if (!isCurrentBatch) return results;
 
         const successCount = results.filter(result => result?.success).length;
@@ -1227,14 +1230,20 @@ function shouldSkipScheduledActiveRefresh(id) {
     return true;
 }
 
+let sidebarRealtimePendingKey = '';
+let sidebarRealtimeRunningKey = '';
 function refreshSidebarRealtime() {
-    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
-    if (sidebarRealtimeInFlight) return sidebarRealtimeInFlight;
-
+    if (document.hidden || (typeof canRequestMarketData === 'function' && !canRequestMarketData())) return;
     const ids = getSidebarRealtimeTargetIds();
+    const key = `${getSidebarRealtimeArea()}:${ids.slice().sort().join(',')}`;
+    if (sidebarRealtimeInFlight) {
+        sidebarRealtimePendingKey = key === sidebarRealtimeRunningKey ? '' : key;
+        return sidebarRealtimeInFlight;
+    }
     if (!ids.length) return;
 
     const area = getSidebarRealtimeArea();
+    sidebarRealtimeRunningKey = key;
     const batchId = ++sidebarRealtimeBatchSeq;
     const task = (async () => {
         const now = Date.now();
@@ -1260,9 +1269,8 @@ function refreshSidebarRealtime() {
         _sidebarRefreshFailCount = 0;
 
         const batchFetchedAt = Date.now();
-        // 只给已有历史序列、本轮能真正应用报价的标的记限流；冷启动时历史尚未补齐的标的
-        // 不能被这次“拿到但用不上”的报价锁住 30 秒，否则历史补齐后的立即刷新会被跳过。
-        receivedIds.filter(id => state.rawData[id]?.length).forEach(id => {
+        // 无历史报价也会进入 liveQuotes；历史就绪后重新 gate，无需重复请求。
+        receivedIds.forEach(id => {
             const limiter = requestManager.limiters.get(id) || { lastCall: 0, isFetching: false };
             requestManager.limiters.set(id, { ...limiter, lastCall: batchFetchedAt, isFetching: false });
         });
@@ -1274,10 +1282,9 @@ function refreshSidebarRealtime() {
             for (const id of ids) {
                 const rtBar = prices[id];
                 const series = state.rawData[id];
-                if (!rtBar || !series || !series.length) continue;
-                const lastBar = series[series.length - 1];
-                if (!lastBar || !isValidPrice(rtBar.close, id)) continue;
-                if (rtBar.date < lastBar.date) continue;
+                if (!rtBar || !isValidPrice(rtBar.close, id)) continue;
+                const lastBar = series?.[series.length - 1];
+                if (lastBar && rtBar.date < lastBar.date) continue;
                 const hadLiveOverlay = !!state.liveBars?.[id];
                 const applyResult = applyRealtimeQuoteForSeries(id, series, rtBar);
                 if (!applyResult) continue;
@@ -1324,7 +1331,7 @@ function refreshSidebarRealtime() {
         if (activeOverlayChanged && !state.isFrozen) {
             const activeId = state.id;
             const applyActiveRefresh = () => {
-                if (activeId !== state.id || state.isFrozen) return;
+                if (activeId !== state.id || state.isFrozen || !isCurrentSidebarRealtimeBatch(area, ids) || document.hidden) return;
                 if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
                     window.setTimeout(applyActiveRefresh, 120);
                     return;
@@ -1340,7 +1347,13 @@ function refreshSidebarRealtime() {
 
     sidebarRealtimeInFlight = task;
     return task.finally(() => {
-        if (sidebarRealtimeInFlight === task) sidebarRealtimeInFlight = null;
+        if (sidebarRealtimeInFlight === task) {
+            sidebarRealtimeInFlight = null;
+            sidebarRealtimeRunningKey = '';
+            const pending = sidebarRealtimePendingKey;
+            sidebarRealtimePendingKey = '';
+            if (pending && !document.hidden && isMarketOpen()) void refreshSidebarRealtime();
+        }
     });
 }
 
@@ -1352,22 +1365,25 @@ async function runSidebarFullSync() {
     if (document.hidden) return null;
     if (!isMarketOpen()) return null;
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return null;
-    // 先让同一时间片的左侧批量行情完成，再开始历史补数，避免两条链路同时提交同一批标的。
-    if (sidebarRealtimeInFlight) {
-        try { await sidebarRealtimeInFlight; } catch (error) {}
-    }
-
     sidebarFullSyncRuntime.inFlight = true;
     sidebarFullSyncRuntime.startedAt = Date.now();
     sidebarFullSyncRuntime.runCount++;
     sidebarFullSyncRuntime.lastError = '';
     const task = (async () => {
+        // 先占住慢通道，再等待快通道，避免多个调用同时越过等待点。
+        if (sidebarRealtimeInFlight) {
+            try { await sidebarRealtimeInFlight; } catch (error) {}
+        }
+        if (document.hidden || !isMarketOpen() || !canRequestMarketData()) return null;
         if (state.tab === 'index' || state.mode === 'index') {
+            const selectionSeq = globalSelectionSeq;
             const ids = INDEX_IDS.filter(id => id !== state.id);
+            const isCurrent = () => !document.hidden && state.tab === 'index' && selectionSeq === globalSelectionSeq;
             let failCnt = 0;
             if (typeof beginLiveOverlayCacheBatch === 'function') beginLiveOverlayCacheBatch();
             try {
                 await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (id) => {
+                    if (!isCurrent()) return;
                     try {
                         const data = await syncData(id);
                         if (data && data.length >= 30) {
@@ -1378,6 +1394,7 @@ async function runSidebarFullSync() {
             } finally {
                 if (typeof endLiveOverlayCacheBatch === 'function') endLiveOverlayCacheBatch();
             }
+            if (!isCurrent()) return;
             if (failCnt >= 2) showToast('\u90e8\u5206\u6307\u6570\u5386\u53f2\u6570\u636e\u540c\u6b65\u5931\u8d25', 'warn', 4000);
             const leftTxn = failCnt < ids.length ? beginRefreshTransaction('leftList', { source: 'sidebar-full-sync', area: 'index-list' }) : null;
             renderIndexList();
@@ -1417,43 +1434,78 @@ function stopSidebarFullSync() {
     sidebarFullSyncTimer = 0;
 }
 
-// P0-3: 切换标的防抖 — 快速连点只执行最后一次，避免浪费网络请求
+// 选择意图立即生效；防抖只合并尚未发出的网络工作。
 let _selectDebounceTimer = 0;
-function selectIndex(id) {
-    clearTimeout(_selectDebounceTimer);
-    _selectDebounceTimer = setTimeout(() => _selectIndexImpl(id), 120);
+let _resolveSelectionDelay = null;
+let activeSelectionLoad = null;
+function invalidatePendingSelection() {
+    if (_selectDebounceTimer) clearTimeout(_selectDebounceTimer);
+    _selectDebounceTimer = 0;
+    if (_resolveSelectionDelay) _resolveSelectionDelay(false);
+    _resolveSelectionDelay = null;
+    return ++globalSelectionSeq;
 }
 
-async function _selectIndexImpl(id) {
-    const perfTrace = PERF.start('selectIndex', { id });
-    if (!getIndexConfig(id)) return;
-    const selectionSeq = ++globalSelectionSeq;
+function createSelectionNetworkGate(selectionSeq, debounce) {
+    let ready = null;
+    return () => {
+        if (selectionSeq !== globalSelectionSeq) return Promise.resolve(false);
+        if (!debounce) return Promise.resolve(true);
+        if (!ready) ready = new Promise(resolve => {
+            _resolveSelectionDelay = resolve;
+            _selectDebounceTimer = setTimeout(() => {
+                _selectDebounceTimer = 0;
+                _resolveSelectionDelay = null;
+                resolve(selectionSeq === globalSelectionSeq);
+            }, 120);
+        });
+        return ready;
+    };
+}
+
+function prepareMarketSelection(selection) {
+    const selectionSeq = invalidatePendingSelection();
     const interactionToken = beginChartInteractionBlock();
-    const config = getIndexConfig(id);
-
-    applyActiveSelectionState({ tab: 'index', mode: 'index', id, stockId: null });
-    if (isCompactMobileLayout()) compactLastSelection.index = id;
+    const repeated = state.tab === selection.tab && state.id === selection.id && state.renderedSelectionId === selection.id && !!state.charts?.main;
+    applyActiveSelectionState(selection);
+    setPrimaryWorkspace(selection.tab);
     setWatchlistEmptyState(false);
-    resetViewportToLatest(null);
-
-    syncPrimaryNavigationState('index');
-    document.getElementById('indexNavList').style.display = 'flex';
-    document.getElementById('stockNavList').style.display = 'none';
-    document.getElementById('btnBacktest').style.display = 'none';
-
-    resetIndicatorState();
+    document.getElementById('indexNavList').style.display = selection.tab === 'index' ? 'flex' : 'none';
+    document.getElementById('stockNavList').style.display = selection.tab === 'stock' ? 'flex' : 'none';
+    document.getElementById('btnBacktest').style.display = selection.tab === 'stock' ? 'flex' : 'none';
+    if (!repeated) {
+        resetViewportToLatest(null);
+        resetIndicatorState();
+        renderCache.clear();
+        if (!state.rawData[selection.id]?.length) {
+            renderActiveSelectionStatus('loading');
+            clearCharts('loading');
+        }
+    }
     hideLoading();
-    renderIndexList();
-    renderActiveSelectionStatus('loading');
-    clearCharts('loading');
-    renderCache.clear();
+    if (selection.tab === 'index') renderIndexList();
+    else renderWatchlist();
+    if (typeof requestVisibleWorkspaceRefresh === 'function') requestVisibleWorkspaceRefresh();
+    return { selectionSeq, interactionToken, forceRender: !repeated };
+}
 
+function selectIndex(id) {
+    return _selectIndexImpl(id, { debounce: true }).catch(error => console.error('[DailyGlance] index selection failed', error));
+}
+
+async function _selectIndexImpl(id, options = {}) {
+    if (!getIndexConfig(id)) return;
+    const perfTrace = PERF.start('selectIndex', { id });
+    const { selectionSeq, interactionToken, forceRender } = prepareMarketSelection({ tab: 'index', mode: 'index', id, stockId: null });
+    if (isCompactMobileLayout()) compactLastSelection.index = id;
     try {
-        await cachedFetch(id);
+        const beforeNetwork = createSelectionNetworkGate(selectionSeq, options.debounce);
+        const promise = cachedFetch(id, { forceRender, beforeNetwork });
+        activeSelectionLoad = { selectionSeq, promise, beforeNetwork };
+        await promise;
         PERF.mark(perfTrace, 'cachedFetch');
-        if (selectionSeq !== globalSelectionSeq || state.id !== id) return;
+        if (selectionSeq !== globalSelectionSeq || state.mode !== 'index' || state.id !== id) return;
         renderIndexList();
-        PERF.mark(perfTrace, 'renderIndexList');
     } finally {
         if (selectionSeq === globalSelectionSeq) {
             hideLoading();
@@ -1464,68 +1516,53 @@ async function _selectIndexImpl(id) {
 }
 
 function selectStock(code, name, secid = '', type = '', tencentSymbol = '') {
-    clearTimeout(_selectDebounceTimer);
-    _selectDebounceTimer = setTimeout(() => _selectStockImpl(code, name, secid, type, tencentSymbol), 120);
+    return _selectStockImpl(code, name, secid, type, tencentSymbol, { debounce: true })
+        .catch(error => console.error('[DailyGlance] stock selection failed', error));
 }
 
-async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol = '') {
+async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol = '', options = {}) {
     const target = normalizeSecurityTarget({ Code: code, Name: name, QuoteID: secid, type, tencentSymbol });
-    const safeCode = target.code;
-    const safeName = target.name;
-    if (!/^\d{6}$/.test(safeCode)) return;
+    if (!/^\d{6}$/.test(target.code)) return;
     if (!isSupportedWatchlistSecurity({ Code: code, QuoteID: secid, type })) {
         showUnsupportedSecurityNotice();
         return;
     }
+    if (!state.watchlist.some(item => item.code === target.code) && state.watchlist.length >= SYS_CONFIG.WATCHLIST_LIMIT) {
+        await customAlert(`最多只能添加 ${SYS_CONFIG.WATCHLIST_LIMIT} 只自选股。`);
+        return;
+    }
+    // 添加先更新会话数据，持久化不阻塞用户选择，也不在完成后重新导航。
+    void addToWatchlist(target.code, target.name, target).catch(error => console.error('[DailyGlance] watchlist save failed', error));
     const perfTrace = PERF.start('selectStock', { code });
-
-    const selectionSeq = ++globalSelectionSeq;
-    const targetSecid = target.secid;
-    await addToWatchlist(safeCode, safeName, target);
-    if (selectionSeq !== globalSelectionSeq) return;
-    const interactionToken = beginChartInteractionBlock();
-
-    applyActiveSelectionState({ tab: 'stock', mode: 'stock', id: targetSecid, stockId: safeCode });
+    const { selectionSeq, interactionToken, forceRender } = prepareMarketSelection({ tab: 'stock', mode: 'stock', id: target.secid, stockId: target.code });
     if (isCompactMobileLayout()) {
-        compactLastSelection.stock = safeCode;
+        compactLastSelection.stock = target.code;
         toggleCompactWatchlist(false);
     }
-    setWatchlistEmptyState(false);
-    resetViewportToLatest(null);
-
-    syncPrimaryNavigationState('stock');
-    document.getElementById('indexNavList').style.display = 'none';
-    document.getElementById('stockNavList').style.display = 'flex';
-    document.getElementById('btnBacktest').style.display = 'flex';
-
-    resetIndicatorState();
-    hideLoading();
-    renderWatchlist();
-    renderActiveSelectionStatus('loading');
-    clearCharts('loading');
-    renderCache.clear();
-
+    const isCurrent = () => selectionSeq === globalSelectionSeq && state.mode === 'stock' && state.id === target.secid;
     try {
-        await cachedFetch(targetSecid);
+        const beforeNetwork = createSelectionNetworkGate(selectionSeq, options.debounce);
+        const promise = cachedFetch(target.secid, { forceRender, beforeNetwork });
+        activeSelectionLoad = { selectionSeq, promise, beforeNetwork };
+        await promise;
         PERF.mark(perfTrace, 'cachedFetch');
-        if (selectionSeq !== globalSelectionSeq || state.id !== targetSecid || state.stockId !== safeCode) return;
-        const data = getActiveData();
-        if (!(data && data.length >= 30 && isValidPrice(data[data.length - 1].close, targetSecid))) {
-            setRawData(targetSecid, null);
+        if (!isCurrent()) return;
+        // 数据充足性检查以确认日线为准，不把周线条数当成日线条数。
+        const data = state.rawData[target.secid];
+        if (!(data?.length >= 30 && isValidPrice(data[data.length - 1].close, target.secid))) {
             clearCharts('error');
             renderActiveSelectionStatus('unavailable');
         }
-        PERF.mark(perfTrace, 'post-check', { points: data?.length || 0 });
-    } catch(e) {
-        if (selectionSeq !== globalSelectionSeq || state.id !== targetSecid || state.stockId !== safeCode) return;
-        setRawData(targetSecid, null);
-        clearCharts('error');
-        renderActiveSelectionStatus('unavailable');
+    } catch (error) {
+        if (!isCurrent()) return;
+        if (!state.rawData[target.secid]?.length) {
+            clearCharts('error');
+            renderActiveSelectionStatus('unavailable');
+        }
     } finally {
-        if (selectionSeq === globalSelectionSeq) {
+        if (isCurrent()) {
             hideLoading();
             renderWatchlist();
-            debounceWatchlistUpdate();
             releaseChartInteractionAfterPaint(interactionToken);
         }
         PERF.end(perfTrace, { selected: state.stockId, selectionSeq });
@@ -2316,7 +2353,7 @@ function renderSectorTrendOverview() {
         { label: '上涨趋势', value: summary.uptrendCount || 0, note: '多周期同向且上涨家数扩散', tone: 'is-positive' },
         { label: '刚刚转强', value: summary.turningCount || 0, note: '短中期改善，仍需继续确认', tone: 'is-mixed' },
         { label: '单日异动', value: summary.momentumCount || 0, note: '当日强势，尚未构成趋势', tone: 'is-warning' },
-        { label: '当前最强', value: summary.strongest || '--', note: `行业扫描 ${summary.totalCount || 0} 个 · 概念热点取前 ${summary.conceptCount || 0} 个`, tone: 'is-info', textValue: true }
+        { label: '当前最强', value: summary.strongest || '--', note: `行业扫描 ${summary.totalCount || 0} 个 · ${sectorTrendState.conceptStatus === 'loading' ? '概念热点加载中' : `概念热点取前 ${summary.conceptCount || 0} 个`}`, tone: 'is-info', textValue: true }
     ];
     container.innerHTML = items.map(item => `
         <article class="sector-summary-card">
@@ -2329,7 +2366,7 @@ function renderSectorTrendOverview() {
 
 function renderSectorTrendCandidates(board) {
     const candidates = Array.isArray(board.candidates) ? board.candidates : [];
-    if (!candidates.length) return '<div class="sector-candidate-empty">暂无可用活跃个股</div>';
+    if (!candidates.length) return `<div class="sector-candidate-empty">${sectorTrendState.candidateStatuses?.[board.key] === 'loading' ? '正在补充活跃个股…' : '暂无可用活跃个股'}</div>`;
     return candidates.map(candidate => `
         <span class="sector-candidate-chip">
             <span>${escapeHTML(normalizeStockDisplayName(candidate.code, candidate.name))}</span>
@@ -2343,7 +2380,7 @@ function renderSectorConceptHighlights() {
     if (!container) return;
     const concepts = Array.isArray(sectorTrendState.concepts) ? sectorTrendState.concepts : [];
     if (!concepts.length) {
-        container.innerHTML = '<div class="sector-concept-empty">暂无概念热点数据。</div>';
+        container.innerHTML = `<div class="sector-concept-empty">${sectorTrendState.conceptStatus === 'loading' ? '正在加载概念热点…' : '暂无概念热点数据。'}</div>`;
         return;
     }
     container.innerHTML = concepts.map((concept, index) => {
@@ -2412,7 +2449,7 @@ function renderSectorTrendCards(targetId, boards, emptyCopy) {
                 ` : ''}
                 <div class="sector-trend-candidates">
                     <span>当前活跃个股</span>
-                    <div>${renderSectorTrendCandidates(board)}</div>
+                    <div data-sector-candidates="${escapeHTML(board.key)}">${renderSectorTrendCandidates(board)}</div>
                 </div>
                 <div class="sector-trend-invalid"><strong>失效观察</strong><span>${escapeHTML(board.invalidCondition || '等待更完整数据后再判断。')}</span></div>
             </article>
@@ -2428,7 +2465,7 @@ function updateExternalRefreshButton() {
     const icon = refreshBtn.querySelector('svg');
     const label = refreshBtn.querySelector('span');
     if (icon) icon.classList.toggle('spin', isLoading);
-    if (label) label.textContent = isLoading ? '正在扫描' : '重新扫描';
+    if (label) label.textContent = isLoading ? (sectorTrendState.phase === 'supplement' ? '补充中' : '正在扫描') : '重新扫描';
 }
 
 function getSectorTrendWorkspaceStatus() {
@@ -2455,7 +2492,9 @@ function renderSectorTrendWorkspaceStatus() {
         cached: { label: '缓存结果', tone: 'data-status-info', tooltip: snapshotStatus.error || '公开接口暂不可用，当前显示最近扫描结果' },
         error: { label: '暂不可用', tone: 'data-status-warn', tooltip: snapshotStatus.error || '板块行情暂不可用' }
     };
-    const status = statusMap[snapshotStatus.key] || statusMap.idle;
+    const status = snapshotStatus.key === 'loading' && sectorTrendState.phase === 'supplement'
+        ? { label: '趋势已就绪', tone: 'data-status-info', tooltip: '行业趋势已完成，正在补充概念热点和活跃个股' }
+        : (statusMap[snapshotStatus.key] || statusMap.idle);
     statusEl.dataset.currentStatusKey = snapshotStatus.key;
     statusEl.classList.remove('data-status-ok', 'data-status-info', 'data-status-warn');
     statusEl.classList.add(status.tone);
@@ -2467,21 +2506,34 @@ function renderSectorTrendWorkspaceStatus() {
     if (label) label.textContent = status.label;
 }
 
-function renderSectorTrendSnapshot() {
+function renderSectorTrendSnapshot(section = 'all') {
     loadSectorTrendCache();
     const workspace = document.getElementById('externalWorkspace');
     if (workspace) {
         const uiState = isSectorTrendUnavailable()
             ? 'error'
-            : (!hasSectorTrendSnapshot() && (sectorTrendState.status === 'idle' || sectorTrendState.status === 'loading') ? 'loading' : sectorTrendState.status || 'idle');
+            : (hasSectorTrendSnapshot() && sectorTrendState.status === 'loading'
+                ? 'partial'
+                : (!hasSectorTrendSnapshot() && (sectorTrendState.status === 'idle' || sectorTrendState.status === 'loading') ? 'loading' : sectorTrendState.status || 'idle'));
         workspace.dataset.uiState = uiState;
     }
-    renderExternalLeadStrip();
-    renderSectorTrendOverview();
-    renderSectorConceptHighlights();
-    renderSectorTrendCards('sectorTrendLeaders', sectorTrendState.groups.uptrend, '当前没有板块同时满足多周期趋势和上涨家数条件。');
-    renderSectorTrendCards('sectorTrendTurning', sectorTrendState.groups.turning, '当前没有明显的刚转强板块。');
-    renderSectorTrendCards('sectorTrendMomentum', sectorTrendState.groups.momentum, '当前没有需要单独提醒的单日异动。');
+    if (section === 'all' || section === 'industry') {
+        renderExternalLeadStrip();
+        renderSectorTrendOverview();
+        renderSectorConceptHighlights();
+        renderSectorTrendCards('sectorTrendLeaders', sectorTrendState.groups.uptrend, '当前没有板块同时满足多周期趋势和上涨家数条件。');
+        renderSectorTrendCards('sectorTrendTurning', sectorTrendState.groups.turning, '当前没有明显的刚转强板块。');
+        renderSectorTrendCards('sectorTrendMomentum', sectorTrendState.groups.momentum, '当前没有需要单独提醒的单日异动。');
+    } else if (section === 'concepts') {
+        renderSectorTrendOverview();
+        renderSectorConceptHighlights();
+    } else if (section === 'candidates') {
+        const boards = new Map(sectorTrendState.boards.map(board => [board.key, board]));
+        document.querySelectorAll('[data-sector-candidates]').forEach(el => {
+            const board = boards.get(el.dataset.sectorCandidates);
+            if (board) el.innerHTML = renderSectorTrendCandidates(board);
+        });
+    }
     renderSectorTrendWorkspaceStatus();
     const metaEl = document.getElementById('sectorTrendMeta');
     if (metaEl) {
@@ -2524,6 +2576,9 @@ function setPrimaryWorkspace(tab) {
 
 function openExternalWorkspace() {
     if (isCompactMobileLayout()) return;
+    invalidatePendingSelection();
+    if (typeof cancelWorkspaceHydration === 'function') cancelWorkspaceHydration();
+    if (typeof releaseChartInteractionBlock === 'function') releaseChartInteractionBlock();
     if (state.tab === 'index' || state.tab === 'stock') {
         externalReturnSelection = { tab: state.tab, mode: state.mode, id: state.id, stockId: state.stockId };
     }
@@ -2657,14 +2712,6 @@ async function init() {
     initWatchlistCrossPageSync();
     PERF.mark(startupPerf, 'load-watchlist');
     if (typeof hydrateLiveOverlayCacheState === 'function') hydrateLiveOverlayCacheState();
-    try {
-        const sc = await dbGet('stock_cache');
-        stockCache = (sc && Array.isArray(sc.data)) ? sc.data : [];
-    } catch(e) {
-        stockCache = [];
-    }
-    PERF.mark(startupPerf, 'load-stock-cache');
-    
     let savedStrategy = null;
     let strategyPreferenceUnavailable = false;
     try {
@@ -2747,7 +2794,9 @@ async function init() {
 
     startRefreshSchedulers();
 
-    await _selectIndexImpl('sh');  // init 直接调用 impl，跳过防抖
+    const initialSelection = _selectIndexImpl('sh');  // 页面选择即时生效，不等待历史再启动可见缓存水合
+    scheduleStartupBackgroundHydration(initialSelection);
+    await initialSelection;
     PERF.mark(startupPerf, 'initial-selection');
     PERF.end(startupPerf, { path: compactMobile ? 'initial-mobile-index-ready' : 'initial-index-ready' });
 
@@ -2758,5 +2807,4 @@ async function init() {
     if (strategyPreferenceUnavailable) {
         showToast('策略偏好读取失败，已使用默认策略；本次设置仅在当前页面生效。', 'warn', 6000);
     }
-    scheduleStartupBackgroundHydration();
 }

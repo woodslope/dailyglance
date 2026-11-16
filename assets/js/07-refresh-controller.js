@@ -1,74 +1,93 @@
 /* DailyGlance [7] - refresh scheduling. Loaded after the application lifecycle script. */
 
 function scheduleIdleTask(fn, timeout = 300) {
-    if (typeof window.requestIdleCallback === 'function') {
-        return window.requestIdleCallback(fn, { timeout });
-    }
-    return window.setTimeout(fn, timeout);
+    const idle = typeof window.requestIdleCallback === 'function';
+    let handle;
+    const run = deadline => {
+        refreshSchedulerRuntime.idles.delete(handle);
+        return Promise.resolve().then(() => fn(deadline)).catch(error => console.error('[DailyGlance] idle task failed', error));
+    };
+    handle = idle ? window.requestIdleCallback(run, { timeout }) : window.setTimeout(run, timeout);
+    refreshSchedulerRuntime.idles.set(handle, idle);
+    return handle;
 }
 
-// 缓存预载补齐核心宽基后，左侧环境卡已按新数据重绘；右侧推导依据也要同轮重算，
-// 避免同一屏左边写“偏弱”、右边仍是“环境未知”。只在确有待应用的指标变更时触发。
+function cancelIdleTask(handle) {
+    if (!refreshSchedulerRuntime.idles.has(handle)) return;
+    if (refreshSchedulerRuntime.idles.get(handle)) window.cancelIdleCallback?.(handle);
+    else window.clearTimeout(handle);
+    refreshSchedulerRuntime.idles.delete(handle);
+}
+
 function applyActivePanelAfterMarketPreload() {
     if (!state.pendingIndicatorMutation || typeof scheduleCachedFetchRefreshApply !== 'function') return;
-    const activeData = typeof getActiveData === 'function' ? getActiveData() : null;
-    if (!state.id || !activeData || !activeData.length) return;
+    if (!['index', 'stock'].includes(state.mode) || !getActiveData()?.length) return;
     scheduleCachedFetchRefreshApply(state.id);
 }
 
+let workspaceHydrationGeneration = 0;
+let workspaceHydrationIdle = null;
+function cancelWorkspaceHydration() {
+    workspaceHydrationGeneration++;
+    if (workspaceHydrationIdle !== null) cancelIdleTask(workspaceHydrationIdle);
+    workspaceHydrationIdle = null;
+}
+
+function requestVisibleWorkspaceRefresh() {
+    cancelWorkspaceHydration();
+    if (document.hidden || !['index', 'stock'].includes(state.tab)) return;
+    if (isMarketOpen()) void refreshSidebarRealtime();
+    const generation = workspaceHydrationGeneration;
+    const tab = state.tab;
+    const id = state.id;
+    const selectionSeq = globalSelectionSeq;
+    const isCurrent = () => !document.hidden && generation === workspaceHydrationGeneration && tab === state.tab && id === state.id && selectionSeq === globalSelectionSeq;
+    workspaceHydrationIdle = scheduleIdleTask(async () => {
+        workspaceHydrationIdle = null;
+        if (!isCurrent()) return;
+        const ids = getSidebarRealtimeTargetIds();
+        await preloadCacheOnly({ ids, isCurrent });
+        if (!isCurrent()) return;
+        const txn = beginRefreshTransaction('leftList', { source: 'visible-cache-preload', area: getSidebarRealtimeArea() });
+        if (tab === 'index') renderIndexList();
+        else renderWatchlist();
+        const appliedCount = ids.filter(key => state.rawData[key]?.length || state.liveQuotes[key]).length;
+        if (appliedCount) markLeftListRefreshForActiveTab(txn, { area: getSidebarRealtimeArea(), expectedCount: ids.length, appliedCount, status: appliedCount === ids.length ? 'full' : 'partial' });
+        applyActivePanelAfterMarketPreload();
+        // 先让用户选中的标的就绪，再占用历史请求槽位。
+        const pendingSelection = activeSelectionLoad;
+        if (pendingSelection?.selectionSeq === selectionSeq) {
+            await pendingSelection.promise;
+            await pendingSelection.beforeNetwork();
+        }
+        if (id && confirmedDataInFlight.has(id)) await confirmedDataInFlight.get(id);
+        if (!isCurrent()) return;
+        const coreIds = CORE_MARKET_INDEX_IDS;
+        await preloadCacheOnly({ ids: coreIds, isCurrent });
+        if (!isCurrent()) return;
+        await ensureMarketTemperatureData({ ids: coreIds, isCurrent });
+        if (!isCurrent()) return;
+        if (tab === 'stock') {
+            await hydrateWatchlistDecisionCache({ isCurrent });
+            if (!isCurrent()) return;
+            await updateAllWatchlistData({ isCurrent, historyOnly: true });
+        } else {
+            await ensureMarketTemperatureData({ ids: ids.filter(key => key !== id && !coreIds.includes(key)), isCurrent });
+        }
+    }, 300);
+}
+
 function scheduleStartupBackgroundHydration() {
+    // 可见工作区水合由选择入口启动；搜索词库不占首屏准备路径。
     scheduleIdleTask(async () => {
-        await preloadCacheOnly({
-            onIndexesLoaded: () => {
-                if (state.mode === 'index') renderIndexList();
-                applyActivePanelAfterMarketPreload();
-            }
-        });
-        // 冷启动先用落盘的决策缓存水合内存，命中后自选股快照直接复用、跳过重算。
-        if (typeof hydrateWatchlistDecisionCache === 'function') {
-            try { await hydrateWatchlistDecisionCache(); } catch (error) {}
-        }
-        if (state.mode === 'index') {
-            renderIndexList();
-            applyActivePanelAfterMarketPreload();
-            if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
-        } else if (state.mode === 'stock' || state.tab === 'stock') {
-            const leftTxn = beginRefreshTransaction('leftList', { source: 'startup-cache-preload', area: 'stock-list' });
-            renderWatchlist();
-            markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
-            applyActivePanelAfterMarketPreload();
-            if (!document.hidden && isMarketOpen()) await refreshSidebarRealtime();
-        }
-
-        // 盘后先确认自选股历史，再计算策略快照，避免旧缓存让左侧长期停在“同步”。
-        // 复用现有批量同步和状态口径，不新增可见状态，也不改变盘中刷新频率。
-        if (!document.hidden && !isMarketOpen() && typeof updateAllWatchlistData === 'function') {
-            await updateAllWatchlistData();
-        } else if (typeof refreshWatchlistSignalSnapshots === 'function') {
-            await refreshWatchlistSignalSnapshots();
-        }
+        if (document.hidden) return;
+        const cached = await dbGet('stock_cache');
+        stockCache = Array.isArray(cached?.data) ? cached.data : [];
     }, 600);
-
-    // 首屏先保持可交互；核心宽基的陈旧缓存补数放到更晚的空闲窗口，
-    // 仍会在后台完成，不与首次打开和第一次拖动争抢主线程。
-    registerRefreshTimeout(() => {
-        scheduleIdleTask(async () => {
-            if (document.hidden) return;
-            await ensureMarketTemperatureData();
-            if (state.mode === 'index') {
-                renderIndexList();
-                if (isMarketOpen()) await refreshSidebarRealtime();
-            } else if (state.mode === 'stock' || state.tab === 'stock') {
-                const leftTxn = beginRefreshTransaction('leftList', { source: 'delayed-startup-hydration', area: 'stock-list' });
-                renderWatchlist();
-                markLeftListRefreshForActiveTab(leftTxn, { area: 'stock-list' });
-                if (isMarketOpen()) await refreshSidebarRealtime();
-            }
-        }, 1200);
-    }, 1800);
 }
 
 const refreshSchedulerRuntime = {
+    idles: new Map(),
     intervals: new Set(),
     timeouts: new Set(),
     visibilityHandler: null,
@@ -156,6 +175,7 @@ async function refreshPostCloseConfirmation() {
 
 function handleRefreshVisibilityChange() {
     if (document.hidden) {
+        cancelWorkspaceHydration();
         if (typeof cancelExternalObservationTasks === 'function') cancelExternalObservationTasks('hidden');
         return;
     }
@@ -166,6 +186,7 @@ function handleRefreshVisibilityChange() {
         ]).catch(error => console.error('[DailyGlance] external visibility refresh failed', error));
         return;
     }
+    requestVisibleWorkspaceRefresh();
     if (!isMarketOpen()) {
         refreshPostCloseConfirmation().catch(error => console.error('[DailyGlance] post-close confirmation failed', error));
         return;
@@ -215,6 +236,10 @@ function startRefreshSchedulers() {
 }
 
 function stopRefreshSchedulers(reason = 'lifecycle') {
+    cancelWorkspaceHydration();
+    if (typeof invalidatePendingSelection === 'function') invalidatePendingSelection();
+    if (typeof releaseChartInteractionBlock === 'function') releaseChartInteractionBlock();
+    for (const handle of refreshSchedulerRuntime.idles.keys()) cancelIdleTask(handle);
     refreshSchedulerRuntime.intervals.forEach(handle => clearInterval(handle));
     refreshSchedulerRuntime.timeouts.forEach(handle => clearTimeout(handle));
     refreshSchedulerRuntime.intervals.clear();

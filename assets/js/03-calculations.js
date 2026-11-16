@@ -674,6 +674,32 @@ function isWindowBuySignalEligible(signal, signalDay, full, strategy = STRATEGY,
     return false;
 }
 
+// 原始技术信号继续展示；新增风险资格只使用通过本轮护栏的当日买入信号。
+function getWaveEligibleFreshBuySignals(idx, full, meta, strategy = STRATEGY, rawSignals = full?.[idx]?._signals || []) {
+    const signals = rawSignals.filter(signal => strategy.buySignals?.includes(signal));
+    if (state.strategy !== '波段抄底型' || state.mode !== 'stock' || state.period !== 'daily') return signals;
+    const resetDay = Number.isInteger(meta?.buySignalResetDay) ? meta.buySignalResetDay : -1;
+    return idx <= resetDay ? [] : signals.filter(signal => isWindowBuySignalEligible(signal, idx, full, strategy, resetDay + 1));
+}
+
+// 观察接管查询真实事件，不让同组积分代表遮住后出现的有效回踩。
+function getWaveObservationBuyEvents(idx, full, ind, triggerDay, meta, strategy = STRATEGY) {
+    if (!Number.isInteger(triggerDay) || triggerDay < 0 || triggerDay >= idx) return [];
+    const resetDay = Number.isInteger(meta?.buySignalResetDay) ? meta.buySignalResetDay : -1;
+    const windowDays = Math.max(1, Number(strategy?.windowDays) || 1);
+    const firstDay = Math.max(triggerDay + 1, resetDay + 1, idx - windowDays + 1);
+    const events = [];
+    for (let day = firstDay; day <= idx; day++) {
+        for (const signal of full?.[day]?._signals || []) {
+            if (!strategy?.buySignals?.includes(signal)) continue;
+            if (!isWindowBuySignalEligible(signal, day, full, strategy, resetDay + 1)) continue;
+            if (getWindowSignalInvalidation(signal, day, idx, full, ind, strategy)) continue;
+            events.push({ signal, day, signalDate: full[day].date || '' });
+        }
+    }
+    return events;
+}
+
 function getPostEventBuyScoreContext(idx, full, ind, triggerDay, strategy = STRATEGY, options = {}) {
     const firstDay = Math.max(Number(triggerDay) + 1, idx - Math.max(1, Number(strategy?.windowDays) || 1) + 1);
     const excludedSignals = new Set(options.excludedSignals || []);
@@ -877,7 +903,7 @@ function calculateAllSignals(idx, full, ind) {
                 if(sig.startsWith('L') && S.exitSignals?.includes(sig)
                     && !isWaveL10TrendHandoffSignal(full, i, sig, S)
                     && !isWaveMA20TrendDefenseSignal(full, i, sig, S)) { windowSignals.push({day: i, signal: sig}); usedSignals.add(sig); }
-                else if(sig.startsWith('B') && S.buySignals?.includes(sig) && i > buySignalResetIdx && isWindowBuySignalEligible(sig, i, full, S)) {
+                else if(sig.startsWith('B') && S.buySignals?.includes(sig) && i > buySignalResetIdx && isWindowBuySignalEligible(sig, i, full, S, waveStockDaily ? buySignalResetIdx + 1 : 0)) {
                     const invalidation = getWindowSignalInvalidation(sig, i, idx, full, ind, S);
                     if (invalidation?.reason === 'local-price-break') localBreakWindowSignals.push(invalidation);
                     else if (invalidation) { invalidatedWindowSignals.push(invalidation); return; }
@@ -913,6 +939,7 @@ function calculateAllSignals(idx, full, ind) {
         previousStrongExitDate: previousStrongExitIdx >= 0 ? full[previousStrongExitIdx]?.date || '' : '',
         repeatedStrongExit,
         lastPositionExitDate: lastPositionExitIdx >= 0 ? full[lastPositionExitIdx]?.date || '' : '',
+        buySignalResetDay: buySignalResetIdx,
         daysSincePositionExit: lastPositionExitIdx >= 0 ? idx - lastPositionExitIdx : Infinity
     };
 }

@@ -295,8 +295,9 @@ const bsMarkerPlugin = {
                 const py = y.getPixelForValue(d.low);
                 if (!isNaN(py)) {
                     const markerY = Math.min(py + 18, bottom - 9);
-                    ctx.strokeText('B', px, markerY);
-                    ctx.fillText('B', px, markerY);
+                    const label = d._isLive ? 'B?' : 'B';
+                    ctx.strokeText(label, px, markerY);
+                    ctx.fillText(label, px, markerY);
                 }
             } 
             else if (d._decision.bsMark === 'S') { 
@@ -304,8 +305,9 @@ const bsMarkerPlugin = {
                 const py = y.getPixelForValue(d.high);
                 if (!isNaN(py)) {
                     const markerY = Math.max(py - 18, top + 9);
-                    ctx.strokeText('S', px, markerY);
-                    ctx.fillText('S', px, markerY);
+                    const label = d._isLive ? 'S?' : 'S';
+                    ctx.strokeText(label, px, markerY);
+                    ctx.fillText(label, px, markerY);
                 }
             } else {
                 const adjustment = getPositionAdjustment(d);
@@ -384,7 +386,7 @@ function beginChartInteractionBlock() {
     return chartInteractionBlockSeq;
 }
 
-function releaseChartInteractionBlock(token) {
+function releaseChartInteractionBlock(token = chartInteractionBlockSeq) {
     if (token !== chartInteractionBlockSeq) return;
     chartInteractionBlocked = false;
     chartInteractionIgnoreInputUntil = Date.now() + 140;
@@ -1006,7 +1008,7 @@ function generateAnalysisHTML(idx, full, meta) {
     const cooldownHtml = meta.inCooldown ? '<div class="cooldown-ribbon">防守冷静期</div>' : '';
     const titleHtml = getConclusionTitleHTML(isIndexMode);
     const adjustment = getPositionAdjustment(full[idx]);
-    const positionLabel = (isIndexMode ? '当前风险仓位' : '策略参考仓位') + (adjustment?.temporary ? '（临时）' : '');
+    const positionLabel = (isIndexMode ? '当前风险仓位' : '策略参考仓位') + (full[idx]?._isLive ? '（临时）' : '');
     const previousPositionHtml = adjustment
         ? `<span class="position-change-from">${escapeHTML(`${adjustment.from}%`)} → </span>`
         : '';
@@ -1019,13 +1021,10 @@ function generateAnalysisHTML(idx, full, meta) {
         return text && /[。！？；]$/.test(text) ? text : `${text}。`;
     };
     const waveGoverned = decision?.waveContext?.inScope;
-    const hasWaveDefense = Number.isFinite(Number(decision?.waveContext?.frozenHardDefense));
-    const hasB11StructureDefense = Number.isFinite(Number(decision?.b11StructureDefense?.structureLevel));
-    const visibleDefenseLabel = hasWaveDefense ? '硬防守位' : (hasB11StructureDefense ? '结构防守位' : '防守位');
-    const visibleDefenseLevel = hasWaveDefense
-        ? decision.waveContext.frozenHardDefense
-        : (hasB11StructureDefense ? decision.b11StructureDefense.structureLevel : decision.risk.stop);
-    const showDefensePill = !waveGoverned || (Number(decision.position) > 0 && hasWaveDefense);
+    const defenseDisplay = getDecisionDefenseDisplay(decision);
+    const visibleDefenseLabel = defenseDisplay?.label || '防守位';
+    const visibleDefenseLevel = defenseDisplay?.level;
+    const showDefensePill = !!defenseDisplay && (!waveGoverned || Number(decision.position) > 0);
 
     const actionPanelHtml = `
         <div class="action-panel ${panelClass}">

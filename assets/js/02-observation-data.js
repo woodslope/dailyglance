@@ -332,6 +332,10 @@ const sectorTrendState = {
     fetchedAt: 0,
     lastAttemptAt: 0,
     status: 'idle',
+    phase: '',
+    conceptStatus: 'idle',
+    candidateStatuses: {},
+    committedGeneration: 0,
     stale: false,
     error: '',
     inFlight: null,
@@ -608,9 +612,9 @@ function getSectorTrendCooldownRemaining(now = Date.now()) {
     return Math.max(0, SECTOR_TREND_CONFIG.COOLDOWN_MS - (now - sectorTrendState.lastAttemptAt));
 }
 
-function notifySectorTrendState() {
+function notifySectorTrendState(section = 'all') {
     if (state.tab !== 'external' || document.hidden) return;
-    if (typeof renderSectorTrendSnapshot === 'function') renderSectorTrendSnapshot();
+    if (typeof renderSectorTrendSnapshot === 'function') renderSectorTrendSnapshot(section);
 }
 
 function buildSectorTrendListUrl(type, page = 1) {
@@ -743,62 +747,94 @@ async function refreshSectorTrendSnapshot(options = {}) {
     const task = (async () => {
         sectorTrendState.lastAttemptAt = Date.now();
         sectorTrendState.status = 'loading';
+        sectorTrendState.phase = 'industry';
+        sectorTrendState.conceptStatus = 'loading';
+        sectorTrendState.candidateStatuses = {};
         sectorTrendState.error = '';
         notifySectorTrendState();
-
         const listRequest = createSectorTrendRequestLimiter(SECTOR_TREND_CONFIG.LIST_CONCURRENCY, controller?.signal);
-        const listResults = await Promise.allSettled(Object.keys(SECTOR_TREND_CONFIG.TYPES).map(type => fetchSectorTrendList(type, listRequest, { signal: controller?.signal })));
+        const errors = [];
+        let conceptResult = null;
+        const applyConcepts = result => {
+            if (!isCurrent() || sectorTrendState.committedGeneration !== generation) return;
+            const snapshot = buildSectorConceptSnapshot(result.rows || []);
+            sectorTrendState.concepts = snapshot.concepts;
+            sectorTrendState.summary.conceptCount = snapshot.scannedCount;
+            sectorTrendState.summary.conceptTotal = result.total || snapshot.scannedCount;
+            sectorTrendState.conceptStatus = result.errors?.length ? 'error' : 'ready';
+            notifySectorTrendState('concepts');
+        };
+        // 两类列表共用限流，但行业统计不等待概念请求结束。
+        const industryTask = fetchSectorTrendList('industry', listRequest, { signal: controller?.signal });
+        const conceptTask = fetchSectorTrendList('concept', listRequest, { signal: controller?.signal })
+            .catch(error => ({ rows: [], total: 0, errors: [error] }))
+            .then(result => {
+                conceptResult = result;
+                applyConcepts(result);
+                return result;
+            });
+        let industry;
+        try {
+            industry = await industryTask;
+        } catch (error) {
+            industry = { rows: [], errors: [error] };
+        }
         if (!isCurrent()) return sectorTrendState;
-        const freshRows = listResults.flatMap(result => result.status === 'fulfilled' ? result.value.rows : []);
-        const freshIndustryBoards = freshRows.filter(item => item.type === 'industry');
-        const freshConceptBoards = freshRows.filter(item => item.type === 'concept');
-        const listErrors = listResults.flatMap(result => {
-            if (result.status === 'rejected') return [result.reason];
-            return result.value.errors || [];
-        }).map(error => error?.name === 'AbortError' ? '板块列表请求超时' : (error?.message || '板块列表请求失败'));
-
-        if (!freshIndustryBoards.length) {
-            sectorTrendState.error = Array.from(new Set(listErrors)).join('；') || '板块行情暂不可用';
+        const errorText = error => error?.name === 'AbortError' ? '板块请求超时' : (error?.message || '板块请求失败');
+        errors.push(...(industry.errors || []).map(errorText));
+        if (!industry.rows.length) {
+            sectorTrendState.error = errors.join('；') || '板块行情暂不可用';
             sectorTrendState.status = sectorTrendState.boards.length ? 'cached' : 'error';
+            sectorTrendState.phase = '';
+            sectorTrendState.conceptStatus = 'error';
             sectorTrendState.lastStableStatus = sectorTrendState.status;
             sectorTrendState.stale = sectorTrendState.boards.length > 0;
+            // 行业主结果失败时，概念结果不能伪装成可用行业快照。
+            try { controller?.abort(); } catch (error) {}
             saveSectorTrendCache();
             notifySectorTrendState();
             return sectorTrendState;
         }
-
-        const snapshot = buildSectorTrendSnapshot(freshIndustryBoards, { industryOnly: true });
-        const conceptSnapshot = buildSectorConceptSnapshot(freshConceptBoards);
-        const candidateTargets = snapshot.boards.slice(0, SECTOR_TREND_CONFIG.COMPONENT_BOARD_LIMIT);
-        const candidateResults = await pLimit(candidateTargets, SECTOR_TREND_CONFIG.COMPONENT_CONCURRENCY, board => fetchSectorBoardCandidates(board, { signal: controller?.signal }));
-        if (!isCurrent()) return sectorTrendState;
-        let componentFailures = 0;
-        candidateTargets.forEach((board, index) => {
-            const candidates = candidateResults[index];
-            if (Array.isArray(candidates) && candidates.length) board.candidates = candidates;
-            else componentFailures++;
-        });
-
+        const snapshot = buildSectorTrendSnapshot(industry.rows, { industryOnly: true });
         sectorTrendState.boards = snapshot.boards;
         applyIndustryEtfMappings(sectorTrendState.boards);
-        sectorTrendState.concepts = conceptSnapshot.concepts;
         sectorTrendState.groups = snapshot.groups;
-        sectorTrendState.summary = {
-            ...snapshot.summary,
-            conceptCount: conceptSnapshot.scannedCount,
-            conceptTotal: listResults.find(result => result.status === 'fulfilled' && result.value.rows.some(item => item.type === 'concept'))?.value.total || conceptSnapshot.scannedCount
-        };
+        sectorTrendState.summary = { ...snapshot.summary, conceptCount: 0, conceptTotal: 0 };
+        sectorTrendState.concepts = [];
         sectorTrendState.source = '东方财富板块行情（行业全量 + 概念热点首100）';
         sectorTrendState.fetchedAt = Date.now();
-        sectorTrendState.stale = listErrors.length > 0 || componentFailures > 0;
-        sectorTrendState.error = [
-            ...Array.from(new Set(listErrors)),
-            componentFailures ? `${componentFailures} 个前排板块暂未补齐活跃个股` : ''
-        ].filter(Boolean).join('；');
+        sectorTrendState.committedGeneration = generation;
+        sectorTrendState.phase = 'supplement';
+        sectorTrendState.stale = errors.length > 0;
+        sectorTrendState.error = errors.join('；');
+        const candidateTargets = snapshot.boards.slice(0, SECTOR_TREND_CONFIG.COMPONENT_BOARD_LIMIT);
+        candidateTargets.forEach(board => { sectorTrendState.candidateStatuses[board.key] = 'loading'; });
+        if (conceptResult) applyConcepts(conceptResult);
+        saveSectorTrendCache();
+        notifySectorTrendState('industry');
+        let componentFailures = 0;
+        const candidateTask = pLimit(candidateTargets, SECTOR_TREND_CONFIG.COMPONENT_CONCURRENCY, async board => {
+            if (!isCurrent()) return;
+            let candidates = null;
+            try { candidates = await fetchSectorBoardCandidates(board, { signal: controller?.signal }); } catch (error) {}
+            if (!isCurrent()) return;
+            const ready = Array.isArray(candidates) && candidates.length > 0;
+            if (ready) board.candidates = candidates;
+            else componentFailures++;
+            sectorTrendState.candidateStatuses[board.key] = ready ? 'ready' : 'error';
+            notifySectorTrendState('candidates');
+        });
+        const [concepts] = await Promise.all([conceptTask, candidateTask]);
+        if (!isCurrent()) return sectorTrendState;
+        errors.push(...(concepts.errors || []).map(errorText));
+        if (componentFailures) errors.push(`${componentFailures} 个前排板块暂未补齐活跃个股`);
+        sectorTrendState.stale = errors.length > 0;
+        sectorTrendState.error = Array.from(new Set(errors)).join('；');
         sectorTrendState.status = sectorTrendState.stale ? 'partial' : 'ready';
+        sectorTrendState.phase = '';
         sectorTrendState.lastStableStatus = sectorTrendState.status;
         saveSectorTrendCache();
-        notifySectorTrendState();
+        notifySectorTrendState('status');
         return sectorTrendState;
     })();
 
@@ -821,6 +857,7 @@ function restoreCancelledObservationState(snapshotState, hasSnapshot, previousSt
 function cancelExternalObservationTasks(reason = 'lifecycle') {
     const cancelLeadStrip = !!externalLeadStripController || !!externalLeadStripState.inFlight;
     const cancelSectorTrend = !!sectorTrendController || !!sectorTrendState.inFlight;
+    const hasCommittedIndustry = cancelSectorTrend && sectorTrendState.committedGeneration === sectorTrendGeneration;
     externalLeadStripGeneration++;
     sectorTrendGeneration++;
     try { externalLeadStripController?.abort?.(reason); } catch (error) {}
@@ -834,7 +871,21 @@ function cancelExternalObservationTasks(reason = 'lifecycle') {
         saveExternalLeadStripCache();
     }
     if (cancelSectorTrend) {
-        restoreCancelledObservationState(sectorTrendState, (sectorTrendState.boards || []).length > 0, sectorTrendPreviousState);
+        if (hasCommittedIndustry) {
+            sectorTrendState.status = 'partial';
+            sectorTrendState.lastStableStatus = 'partial';
+            sectorTrendState.stale = true;
+            sectorTrendState.error = '趋势统计已保留，部分辅助信息尚未补齐';
+            // 取消不占用一次成功刷新冷却，返回页面可以继续补齐。
+            sectorTrendState.lastAttemptAt = sectorTrendPreviousState?.lastAttemptAt || 0;
+        } else {
+            restoreCancelledObservationState(sectorTrendState, (sectorTrendState.boards || []).length > 0, sectorTrendPreviousState);
+        }
+        sectorTrendState.phase = '';
+        if (sectorTrendState.conceptStatus === 'loading') sectorTrendState.conceptStatus = 'error';
+        Object.keys(sectorTrendState.candidateStatuses).forEach(key => {
+            if (sectorTrendState.candidateStatuses[key] === 'loading') sectorTrendState.candidateStatuses[key] = 'error';
+        });
         saveSectorTrendCache();
     }
     return getExternalObservationRuntime();

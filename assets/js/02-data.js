@@ -392,8 +392,8 @@ function getVisibleQuoteChangeBase(id, visibleData = getVisibleQuoteData(id)) {
     const quote = getQuoteBar(id);
     if (quote && quote.prevClose && isValidPrice(quote.prevClose, id)) return quote.prevClose;
     if (visibleData?.length > 1) return visibleData[visibleData.length - 2].close;
-    if (visibleData?.length) return visibleData[0].open;
-    return 1;
+    // 没有有效昨收时不以开盘价伪造涨跌幅。
+    return null;
 }
 
 function getLiveOverlayCacheKey(id) {
@@ -1282,15 +1282,34 @@ function updateHistoryLoadingMessage(id, message) {
 }
 
 const historySyncInFlight = new Map();
+const historySyncQueue = [];
+let activeHistoryRequests = 0;
+function drainHistorySyncQueue() {
+    while (activeHistoryRequests < SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY && historySyncQueue.length) {
+        // 用户当前标的可以越过尚未启动的后台任务；进行中的请求不重复启动。
+        const priority = historySyncQueue.findIndex(entry => entry.id === state.id);
+        const entry = historySyncQueue.splice(priority < 0 ? 0 : priority, 1)[0];
+        activeHistoryRequests++;
+        Promise.resolve().then(() => {
+            if (document.hidden || (entry.workspace !== state.tab && !(state.mode === state.tab && entry.id === state.id))) return getCachedData(entry.id);
+            return performHistorySync(entry.id);
+        }).then(entry.resolve, entry.reject).finally(() => {
+            activeHistoryRequests--;
+            drainHistorySyncQueue();
+        });
+    }
+}
 async function syncDataWithHistory(id) {
     if (historySyncInFlight.has(id)) return historySyncInFlight.get(id);
-    const task = performHistorySync(id).catch(error => {
+    const queued = new Promise((resolve, reject) => historySyncQueue.push({ id, workspace: state.tab, resolve, reject }));
+    const task = queued.catch(error => {
         setHistoryCheckState(id, 'failed');
         throw error;
     }).finally(() => {
         if (historySyncInFlight.get(id) === task) historySyncInFlight.delete(id);
     });
     historySyncInFlight.set(id, task);
+    drainHistorySyncQueue();
     return task;
 }
 
@@ -1359,19 +1378,8 @@ function shouldSkipHistoryRefresh(id, cached) {
 
 async function syncDataIncremental(id) { 
     try { 
-        const cached = await dbGet(id); 
-        const cachedData = normalizeConfirmedHistoryData(cached?.data, id);
+        const cachedData = await getCachedData(id);
         if(!cachedData || !cachedData.length) return await syncDataWithHistory(id); 
-        if (Number(cached?.updated) > 0) {
-            const meta = getHistoryRefreshMeta(id);
-            if (!meta.lastSuccessAt || Number(cached.updated) > meta.lastSuccessAt) {
-                setHistoryRefreshMeta(id, {
-                    lastSuccessAt: Number(cached.updated),
-                    lastAttemptAt: Number(cached.updated),
-                    lastDate: cachedData[cachedData.length - 1]?.date || ''
-                });
-            }
-        }
         if (shouldSkipHistoryRefresh(id, cachedData)) return cachedData;
         
         setHistoryRefreshMeta(id, { lastAttemptAt: Date.now(), lastDate: cachedData[cachedData.length - 1]?.date || '' });
@@ -1405,75 +1413,55 @@ async function syncData(id) {
     return task;
 }
 
-async function performSyncData(id) {
-    let cached = await getCachedData(id);
-    const hasEnough = cached && cached.length >= 30; 
-    const cachedLastDate = cached && cached.length ? (cached[cached.length - 1]?.date || '') : '';
+const confirmedDataInFlight = new Map();
+
+function syncConfirmedData(id) {
+    if (!id) return Promise.resolve(null);
+    if (confirmedDataInFlight.has(id)) return confirmedDataInFlight.get(id);
+    const task = performConfirmedDataSync(id).finally(() => {
+        if (confirmedDataInFlight.get(id) === task) confirmedDataInFlight.delete(id);
+    });
+    confirmedDataInFlight.set(id, task);
+    return task;
+}
+
+async function performConfirmedDataSync(id) {
+    const cached = await getCachedData(id);
+    const hasEnough = cached?.length >= 30;
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
-        // 当前页面未持有行情租约时，保留已经展示的盘中状态；只有没有现有 overlay 时才恢复缓存。
         if (hasEnough && !state.liveBars?.[id]) tryApplyCachedLiveOverlay(id, cached);
         return hasEnough ? cached : null;
     }
-    
-    if(isMarketOpen()) { 
-        if(hasEnough) { 
-            const incremental = await syncDataIncremental(id); 
-            if (incremental && incremental.length > 0) {
-                const mutation = getDataMutationMeta(cached, incremental);
-                if (mutation.mode !== 'unchanged') await dbSet(id, incremental);
-                cached = incremental;
-            }
-            const rt = await requestManager.fetchRealtimeWithThrottle(id);
-            const realtimeSkipped = isRealtimeFetchSkipped(rt);
-            if (rt && !realtimeSkipped) applyRealtimeQuoteForSeries(id, cached, rt);
-            else if (!realtimeSkipped) tryApplyCachedLiveOverlay(id, incremental && incremental.length > 0 ? incremental : cached);
-            if (!realtimeSkipped && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
-                setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
-            }
-            return cached; 
-        } 
-        setHistoryRefreshMeta(id, { lastAttemptAt: Date.now(), lastDate: cachedLastDate });
-        const data = await syncDataWithHistory(id); 
-        if(data && data.length >= 30) {
-            setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastDate: data[data.length - 1]?.date || '' });
-            await dbSet(id, data);
-            const rt = await requestManager.fetchRealtimeWithThrottle(id);
-            const realtimeSkipped = isRealtimeFetchSkipped(rt);
-            if (rt && !realtimeSkipped) applyRealtimeQuoteForSeries(id, data, rt);
-            else if (!realtimeSkipped) tryApplyCachedLiveOverlay(id, data);
-            if (!realtimeSkipped && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
-                setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
-            }
-            return data;
-        } 
-        setConfirmedStatus(id, { source: 'cache', status: 'stale', lastDate: cachedLastDate, syncedAt: Date.now() });
-        return hasEnough ? cached : null; 
-    } else { 
-        if(hasEnough) { 
-            const incremental = await syncDataIncremental(id); 
-            if(incremental && incremental.length > 0) {
-                const mutation = getDataMutationMeta(cached, incremental);
-                if (mutation.mode !== 'unchanged') await dbSet(id, incremental);
-                if (!isConfirmedSeriesFreshEnough(incremental)) tryApplyCachedLiveOverlay(id, incremental);
-                return incremental;
-            }
-            tryApplyCachedLiveOverlay(id, cached);
-            return cached; 
-        } 
-        setHistoryRefreshMeta(id, { lastAttemptAt: Date.now(), lastDate: cachedLastDate });
-        const data = await syncDataWithHistory(id); 
-        if(data && data.length >= 30) {
-            setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastDate: data[data.length - 1]?.date || '' });
-            await dbSet(id, data);
-            if (!isConfirmedSeriesFreshEnough(data)) tryApplyCachedLiveOverlay(id, data);
-            return data;
-        } 
-        setConfirmedStatus(id, { source: 'cache', status: hasEnough ? 'stale' : 'failed', lastDate: cachedLastDate, syncedAt: Date.now() });
-        if (!state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
-            setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
-        }
-        return null; 
-    } 
+    if (!hasEnough) setHistoryRefreshMeta(id, { lastAttemptAt: Date.now() });
+    const fresh = hasEnough ? await syncDataIncremental(id) : await syncDataWithHistory(id);
+    if (!fresh || fresh.length < 30) {
+        setConfirmedStatus(id, { source: 'cache', status: hasEnough ? 'stale' : 'failed', lastDate: cached?.at(-1)?.date || '', syncedAt: Date.now() });
+        return hasEnough ? cached : null;
+    }
+    if (!hasEnough) setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastAttemptAt: Date.now(), lastDate: fresh.at(-1).date });
+    // 持久化不属于可见内容的完成条件，失败由存储层降级处理。
+    if (getDataMutationMeta(cached, fresh).mode !== 'unchanged') void dbSet(id, fresh);
+    const quote = getQuoteBar(id);
+    if (quote && !quote._isCachedLive && isMarketOpen()) applyRealtimeQuoteForSeries(id, fresh, quote);
+    else if (!isConfirmedSeriesFreshEnough(fresh)) tryApplyCachedLiveOverlay(id, fresh);
+    return fresh;
+}
+
+async function performSyncData(id) {
+    const data = await syncConfirmedData(id);
+    return syncRealtimeForSeries(id, data);
+}
+
+async function syncRealtimeForSeries(id, data) {
+    if (!data?.length || !isMarketOpen() || (typeof canRequestMarketData === 'function' && !canRequestMarketData())) return data;
+    const rt = await requestManager.fetchRealtimeWithThrottle(id);
+    const skipped = isRealtimeFetchSkipped(rt);
+    if (rt && !skipped) applyRealtimeQuoteForSeries(id, data, rt);
+    else if (!skipped) tryApplyCachedLiveOverlay(id, data);
+    if (!skipped && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
+        setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0, cachedAt: 0, cacheAgeMs: 0 });
+    }
+    return data;
 }
 
 const lastUpdateClicks = new Map();
@@ -1483,7 +1471,8 @@ async function handleUpdateData(forceFull = false) {
     const id = state.id;
     const selectionSeq = globalSelectionSeq;
     const name = getIndexConfig(id)?.name || getActiveSecurityTarget()?.name || id;
-    const isCurrentSelection = () => state.id === id && globalSelectionSeq === selectionSeq;
+    const workspace = state.tab;
+    const isCurrentSelection = () => state.tab === workspace && state.mode === workspace && state.id === id && globalSelectionSeq === selectionSeq;
     const now = Date.now(), lastClick = lastUpdateClicks.get(id) || 0;
     if (!forceFull && now - lastClick < SYS_CONFIG.UPDATE_COOLDOWN) {
         showToast(`请 ${Math.ceil((SYS_CONFIG.UPDATE_COOLDOWN - (now - lastClick)) / 1000)} 秒后再更新。`, 'info');
@@ -1699,6 +1688,8 @@ function dbSet(id, data) {
     });
 }
 async function getCachedData(id) {
+    const memory = state.rawData[id];
+    if (memory?.length) return memory;
     const c = await dbGet(id);
     const data = (c && c.data) ? normalizeConfirmedHistoryData(c.data, id) : null;
     if (data?.length && Number(c?.updated) > 0) {
@@ -1720,7 +1711,7 @@ function getRenderedSidebarDate() {
 }
 
 function applyActiveDataRefresh(id) {
-    if (id !== state.id) return 'skipped';
+    if (id !== state.id || !['index', 'stock'].includes(state.mode)) return 'skipped';
     const rd = getActiveData();
     if (!rd || !rd.length) return 'no-data';
 
@@ -1764,14 +1755,14 @@ function scheduleCachedFetchRefreshApply(id) {
 
         const perfTrace = PERF.start('cachedFetchRefreshApply', { id: applyId, activeId: state.id, mode: state.mode });
         requestAnimationFrame(() => {
-            if (applyId !== state.id) {
+            if (applyId !== state.id || !['index', 'stock'].includes(state.mode)) {
                 PERF.end(perfTrace, { status: 'skipped' });
                 return;
             }
             if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
                 cachedFetchRefreshApplyTimer = window.setTimeout(() => {
                     cachedFetchRefreshApplyTimer = 0;
-                    if (applyId !== state.id) return;
+                    if (applyId !== state.id || !['index', 'stock'].includes(state.mode)) return;
                     scheduleCachedFetchRefreshApply(applyId);
                 }, 120);
                 PERF.end(perfTrace, { status: 'deferred-interaction' });
@@ -1914,160 +1905,93 @@ function buildDataRefreshResult(id, oldConfirmed, oldVisible, freshConfirmed, ne
 const cachedFetchInFlight = new Map();
 
 function getCachedFetchKey(id) {
-    return `${id}:${globalSelectionSeq}:${state.mode}:${state.period}:${state.strategy}`;
+    return `${id}:${globalSelectionSeq}:${state.tab}:${state.mode}`;
 }
 
 function clearCachedFetchInFlight(key, task) {
     if (cachedFetchInFlight.get(key) === task) cachedFetchInFlight.delete(key);
 }
 
-async function cachedFetch(id) {
+async function cachedFetch(id, options = {}) {
     const key = getCachedFetchKey(id);
     if (cachedFetchInFlight.has(key)) return cachedFetchInFlight.get(key);
-    const task = performCachedFetch(id).finally(() => clearCachedFetchInFlight(key, task));
+    const task = performCachedFetch(id, options).finally(() => clearCachedFetchInFlight(key, task));
     cachedFetchInFlight.set(key, task);
     return task;
 }
 
-async function performCachedFetch(id) {
+async function performCachedFetch(id, options = {}) {
     const perfTrace = PERF.start('cachedFetch', { id, activeId: state.id, mode: state.mode });
-    const fetchStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
-    const fetchSelectionSeq = globalSelectionSeq;
-    const isActiveFetch = () => id === state.id &&
-        fetchStateKey === `${state.mode}_${state.id}_${state.period}_${state.strategy}` &&
-        fetchSelectionSeq === globalSelectionSeq;
-    const cachedResult = await dbGet(id);
-    if (cachedResult && cachedResult.data) cachedResult.data = normalizeConfirmedHistoryData(cachedResult.data, id);
-    PERF.mark(perfTrace, 'dbGet');
-    if (cachedResult && cachedResult.data && cachedResult.data.length > 0 && isActiveFetch() && state.rawData[id]?.length) {
-        scheduleCachedFetchRefresh(id);
-        const hasActiveChartView = !!(state.charts && (state.charts.main || state.charts.vol || state.charts.macd || state.charts.kdj));
-        if (!hasActiveChartView) {
-            tryApplyCachedLiveOverlay(id, state.rawData[id]);
-            const rd = getActiveData();
-            setLockIdx(rd?.length ? rd.length - 1 : -1);
-            resetViewportToLatest(rd);
-            PERF.mark(perfTrace, 'active-data', { source: 'memory', points: rd?.length || 0 });
-            updateAllIndicators();
-            PERF.mark(perfTrace, 'indicators');
-            hideLoading();
-            renderMASelector();
-            const leftTxn = beginRefreshTransaction('leftList', { source: 'cachedFetch-memory', id });
-            const rightTxn = beginRefreshTransaction('rightPanel', { source: 'cachedFetch-memory', id });
-            if (typeof renderActiveLeftListAfterDataApply === 'function') renderActiveLeftListAfterDataApply(leftTxn, { id });
-            PERF.mark(perfTrace, 'left-list');
-            requestAnimationFrame(() => {
-                const currentStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
-                if (currentStateKey !== fetchStateKey || !isActiveFetch()) return;
-                draw();
-                safeUpdateSidebar();
-                markRefreshTime(rightTxn, { path: 'restore-memory-chart', id });
-            });
-            PERF.mark(perfTrace, 'schedule-draw');
-            PERF.mark(perfTrace, 'restore-memory-chart', { points: state.rawData[id].length });
-            PERF.end(perfTrace, { status: 'active-memory-render', firstLoad: false });
-            return;
-        }
-        PERF.mark(perfTrace, 'skip-cache-first-active', { points: state.rawData[id].length });
-        PERF.end(perfTrace, { status: 'active-memory-refresh', firstLoad: false });
-        return;
-    }
-    if (cachedResult && cachedResult.data && cachedResult.data.length > 0 && isActiveFetch()) {
-        setRawData(id, cachedResult.data);
+    const selectionSeq = globalSelectionSeq;
+    const workspace = state.tab;
+    const mode = state.mode;
+    const isActiveFetch = () => id === state.id && workspace === state.tab && mode === state.mode && selectionSeq === globalSelectionSeq;
+    const memory = state.rawData[id];
+    const cached = memory?.length ? memory : await getCachedData(id);
+    PERF.mark(perfTrace, memory?.length ? 'memory' : 'dbGet');
+    const applySelection = (data, source) => {
+        if (!isActiveFetch()) return;
+        if (state.rawData[id] !== data) setRawData(id, data);
         tryApplyCachedLiveOverlay(id, state.rawData[id]);
-        setLockIdx(getActiveData()?.length - 1 || -1);
-        PERF.mark(perfTrace, 'active-data', { source: 'cache', points: cachedResult.data.length });
+        const quote = getQuoteBar(id);
+        if (quote && !quote._isCachedLive && isMarketOpen()) applyRealtimeQuoteForSeries(id, state.rawData[id], quote);
+        const rd = getActiveData();
+        PERF.mark(perfTrace, 'active-data', { source, points: rd?.length || 0 });
+        setLockIdx(rd?.length ? rd.length - 1 : -1);
+        resetViewportToLatest(rd);
         updateAllIndicators();
         PERF.mark(perfTrace, 'indicators');
         hideLoading();
         renderMASelector();
-        const leftTxn = beginRefreshTransaction('leftList', { source: 'cachedFetch-cache', id });
-        const rightTxn = beginRefreshTransaction('rightPanel', { source: 'cachedFetch-cache', id });
+        const leftTxn = beginRefreshTransaction('leftList', { source: `cachedFetch-${source}`, id });
+        const rightTxn = beginRefreshTransaction('rightPanel', { source: `cachedFetch-${source}`, id });
         if (typeof renderActiveLeftListAfterDataApply === 'function') renderActiveLeftListAfterDataApply(leftTxn, { id });
         PERF.mark(perfTrace, 'left-list');
         requestAnimationFrame(() => {
-            const currentStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
-            if (currentStateKey !== fetchStateKey || !isActiveFetch()) return;
+            if (!isActiveFetch()) return;
+            // 周期/策略是展示偏好，不是历史请求的身份；绘制读取此刻的偏好。
             draw();
             safeUpdateSidebar();
-            markRefreshTime(rightTxn, { path: 'cache-first', id });
+            state.renderedSelectionId = id;
+            markRefreshTime(rightTxn, { path: source === 'cache' ? 'cache-first' : (source === 'memory' ? 'restore-memory-chart' : 'apply-fresh'), id });
         });
         PERF.mark(perfTrace, 'schedule-draw');
-        PERF.mark(perfTrace, 'use-cache', { points: cachedResult.data.length });
-        PERF.end(perfTrace, { status: 'cache-first', firstLoad: false });
-        scheduleCachedFetchRefresh(id);
+    };
+    const startRefresh = async () => {
+        if (options.beforeNetwork && !await options.beforeNetwork()) return;
+        if (isActiveFetch()) await scheduleCachedFetchRefresh(id);
+    };
+    if (cached?.length && isActiveFetch()) {
+        const hasChart = !!(state.charts && Object.values(state.charts).some(Boolean));
+        if (!hasChart || options.forceRender || (state.renderedSelectionId && state.renderedSelectionId !== id)) applySelection(cached, memory?.length ? 'memory' : 'cache');
+        PERF.end(perfTrace, { status: memory?.length ? 'active-memory-render' : 'cache-first', firstLoad: false });
+        void startRefresh().catch(error => console.error('[DailyGlance] background refresh failed', error));
         return;
     }
-
-    const oldVisible = isActiveFetch() ? getActiveData() : null;
-    const fresh = await syncData(id);
-    PERF.mark(perfTrace, 'syncData', { points: fresh?.length || 0 });
-    if (!fresh || fresh.length === 0) {
-        if (isActiveFetch()) {
-            if (typeof clearCharts === 'function') clearCharts('error');
-            if (typeof renderActiveSelectionStatus === 'function') renderActiveSelectionStatus('unavailable');
-        }
-        PERF.end(perfTrace, { status: 'no-fresh-data', firstLoad: true });
+    if (!isActiveFetch() || (options.beforeNetwork && !await options.beforeNetwork()) || !isActiveFetch()) {
+        PERF.end(perfTrace, { status: 'superseded' });
         return;
     }
-
-    const old = state.rawData[id];
-    const refreshResult = buildDataRefreshResult(id, old, oldVisible, fresh, isActiveFetch() ? getActiveData() : oldVisible);
-    const hasUpdate = refreshResult.confirmedChanged;
-    const visibleHasUpdate = isActiveFetch() && refreshResult.visibleChanged;
-    const shouldApplyFresh = !old || !old.length || refreshResult.confirmedChanged;
-    const leftTxn = beginRefreshTransaction('leftList', { source: 'cachedFetch', id });
-    const rightTxn = beginRefreshTransaction('rightPanel', { source: 'cachedFetch', id });
-    
-    if (shouldApplyFresh) {
-        setRawData(id, fresh);
-        PERF.mark(perfTrace, 'active-data', { source: 'fresh', points: fresh.length });
-        if (typeof syncWatchlistSignalSnapshotFast === 'function') {
-            const matched = (state.watchlist || []).find(stock => normalizeSecurityTarget(stock).secid === id);
-            if (matched) syncWatchlistSignalSnapshotFast(matched.code, fresh);
-            PERF.mark(perfTrace, 'watchlist');
-        }
+    const fresh = await syncConfirmedData(id);
+    PERF.mark(perfTrace, 'confirmed-history', { points: fresh?.length || 0 });
+    if (!fresh?.length) {
         if (isActiveFetch()) {
-            setLockIdx(getActiveData()?.length - 1 || -1);
-            hideLoading();
-            renderMASelector();
-            updateAllIndicators();
-            PERF.mark(perfTrace, 'indicators');
-            requestAnimationFrame(() => {
-                const currentStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
-                if (currentStateKey !== fetchStateKey || !isActiveFetch()) return;
-                draw();
-                safeUpdateSidebar();
-                markRefreshTime(rightTxn, { path: 'apply-fresh', id });
-            });
-            PERF.mark(perfTrace, 'schedule-draw');
+            clearCharts('error');
+            renderActiveSelectionStatus('unavailable');
         }
-        PERF.mark(perfTrace, 'apply-fresh', { hasUpdate, firstLoad: !old || !old.length });
-    } else if (isActiveFetch() && visibleHasUpdate) {
-        renderMASelector();
-        updateAllIndicators();
-        requestAnimationFrame(() => {
-            const currentStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
-            if (currentStateKey !== fetchStateKey || !isActiveFetch()) return;
-            applyActiveDataRefresh(id);
-            markRefreshTime(rightTxn, { path: 'apply-live-overlay', id });
-        });
-        PERF.mark(perfTrace, 'apply-live-overlay', { points: getActiveData()?.length || 0 });
-    } else if (isActiveFetch()) {
-        hideLoading();
-        renderMASelector();
-        requestAnimationFrame(() => {
-            const currentStateKey = `${state.mode}_${state.id}_${state.period}_${state.strategy}`;
-            if (currentStateKey !== fetchStateKey || !isActiveFetch()) return;
-            draw();
-            safeUpdateSidebar();
-            markRefreshTime(rightTxn, { path: 'reuse-state', id });
-        });
-        PERF.mark(perfTrace, 'reuse-state', { points: old.length });
+        PERF.end(perfTrace, { status: 'no-fresh-data' });
+        return;
     }
-    if (typeof renderActiveLeftListAfterDataApply === 'function') renderActiveLeftListAfterDataApply(leftTxn, { id });
-    PERF.mark(perfTrace, 'left-list');
-    PERF.end(perfTrace, { status: shouldApplyFresh ? (hasUpdate ? 'updated' : 'initial') : 'unchanged', firstLoad: !old || !old.length });
+    // 失效请求只保留数据，不提交当前选择的 DOM。
+    setRawData(id, fresh);
+    if (isActiveFetch()) {
+        applySelection(fresh, 'fresh');
+        const oldVisible = getActiveData();
+        void syncRealtimeForSeries(id, fresh).then(() => {
+            if (isActiveFetch() && getDataMutationMeta(oldVisible, getActiveData()).mode !== 'unchanged') scheduleCachedFetchRefreshApply(id);
+        }).catch(error => console.error('[DailyGlance] quote refresh failed', error));
+    }
+    PERF.end(perfTrace, { status: 'initial', firstLoad: true });
 }
 
 function scheduleCachedFetchRefresh(id) {
@@ -2118,8 +2042,8 @@ function scheduleCachedFetchRefresh(id) {
 }
 
 async function preloadCacheOnly(options = {}) {
-    const symbols = [...INDEX_IDS];
-    if (state.watchlist && state.watchlist.length > 0) {
+    const symbols = options.ids ? [...options.ids] : [...INDEX_IDS];
+    if (!options.ids && state.watchlist && state.watchlist.length > 0) {
         const watchlistSymbols = state.watchlist
             .map(stock => normalizeSecurityTarget(stock))
             .filter(target => isSupportedWatchlistSecurity(target))
@@ -2127,11 +2051,12 @@ async function preloadCacheOnly(options = {}) {
         symbols.push(...watchlistSymbols.filter(id => !symbols.includes(id)));
     }
     for (let i = 0; i < symbols.length; i++) {
+        if (options.isCurrent && !options.isCurrent()) break;
         const id = symbols[i];
         try {
-            const c = await dbGet(id);
+            const c = state.rawData[id]?.length ? null : await dbGet(id);
             const cachedData = normalizeConfirmedHistoryData(c?.data, id);
-            if (cachedData && cachedData.length >= 30 && isValidPrice(cachedData[cachedData.length - 1].close, id)) {
+            if (!state.rawData[id]?.length && cachedData && cachedData.length >= 30 && isValidPrice(cachedData[cachedData.length - 1].close, id)) {
                 setRawData(id, cachedData);
             }
         } catch(e) {}
@@ -2157,7 +2082,7 @@ function persistDerivedDecisionCache(secid, payload) {
     } catch (error) {}
 }
 
-async function hydrateWatchlistDecisionCache() {
+async function hydrateWatchlistDecisionCache(options = {}) {
     if (!DB || typeof derivedIndicatorCache === 'undefined') return 0;
     if (typeof isReusableDecisionCacheRecord !== 'function') return 0;
     const targets = (typeof getSupportedWatchlistTargets === 'function')
@@ -2165,6 +2090,7 @@ async function hydrateWatchlistDecisionCache() {
         : (state.watchlist || []).map(stock => normalizeSecurityTarget(stock)).filter(target => isSupportedWatchlistSecurity(target));
     let hydrated = 0;
     for (const target of targets) {
+        if (options.isCurrent && !options.isCurrent()) break;
         const secid = target.secid;
         if (!secid) continue;
         try {
@@ -2191,17 +2117,23 @@ function shouldEnsureMarketTemperatureData(id) {
     return !isConfirmedSeriesFreshEnough(data);
 }
 
-async function ensureMarketTemperatureData() {
+async function ensureMarketTemperatureData(options = {}) {
+    const isCurrent = options.isCurrent || (() => true);
+    const ids = options.ids || INDEX_IDS;
+    if (!isCurrent()) return;
+    const owner = {};
+    state.indexHydrationOwner = owner;
     state.indexHydrationPending = true;
     if (state.mode === 'index' && typeof renderIndexList === 'function') renderIndexList();
     try {
-        await pLimit(INDEX_IDS.filter(shouldEnsureMarketTemperatureData), SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async id => {
-            const data = await syncData(id);
+        await pLimit(ids.filter(shouldEnsureMarketTemperatureData), SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async id => {
+            if (!isCurrent()) return;
+            const data = await syncConfirmedData(id);
             if (data && data.length >= 30) setRawData(id, data);
         });
     } finally {
-        state.indexHydrationPending = false;
-        if (state.mode === 'index' && typeof renderIndexList === 'function') {
+        if (state.indexHydrationOwner === owner) state.indexHydrationPending = false;
+        if (isCurrent() && state.mode === 'index' && typeof renderIndexList === 'function') {
             renderIndexList();
             const appliedCount = INDEX_IDS.filter(id => isConfirmedSeriesFreshEnough(state.rawData[id])).length;
             if (appliedCount) {
@@ -2213,6 +2145,7 @@ async function ensureMarketTemperatureData() {
             }
         }
     }
+    if (!isCurrent()) return;
     const activeData = getActiveData();
     if ((state.mode === 'index' || state.mode === 'stock') && activeData && activeData.length) {
         if (state.pendingIndicatorMutation) scheduleCachedFetchRefreshApply(state.id);

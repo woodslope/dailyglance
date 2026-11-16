@@ -26,6 +26,7 @@ function getStockDecisionSummary(meta, decision) {
     const waveExpiryB11TakeoverAdd = decision?.waveExpiryB11TakeoverAdd || { eligible: false, applied: false, active: false, status: 'none' };
     const waveMA20PullbackObservation = decision?.waveMA20PullbackObservation || { applied: false };
     const waveExpiryHandoff = decision?.waveExpiryHandoff || { applied: false };
+    const localGuard = decision?.waveContext?.lifecycle?.localDefenseGuard;
     const waveL10Handoff = decision?.waveL10TrendHandoff || { applied: false };
     const previousPosition = Number(decision?.prevAdv) || 0;
     const threshold = Number(STRATEGY?.buyThreshold);
@@ -109,8 +110,9 @@ function getStockDecisionSummary(meta, decision) {
         stateLabel = waveRejection.reentryRoute === 'new-entry' && position > 0 ? '新一轮建仓' : '风险解除';
         userAction = position > 0 ? (previousPosition === 0 ? '轻仓建仓' : '继续持有') : '继续观察';
     } else if (!hasCriticalExit && ['recovery_started', 'recovery_hold'].includes(waveRejection.status)) {
-        stateLabel = waveRejection.reentryRoute === 'new-entry' ? '新仓观察' : '分步恢复';
-        userAction = '轻仓观察';
+        const delayedReentryToday = waveRejection.delayedPullback?.applied === true && waveRejection.delayedPullback.confirmationDate === meta?.currentDate && position > 0;
+        stateLabel = delayedReentryToday ? '回踩确认再入场' : (waveRejection.reentryRoute === 'new-entry' ? '新仓观察' : '分步恢复');
+        userAction = delayedReentryToday && previousPosition === 0 ? '轻仓建仓' : '轻仓观察';
     } else if (!hasCriticalExit && waveExpiryB11TakeoverAdd.applied) {
         stateLabel = '回踩确认加仓';
         userAction = '提高仓位';
@@ -152,7 +154,7 @@ function getStockDecisionSummary(meta, decision) {
             : '提高仓位';
     } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
         stateLabel = waveMA20PullbackObservation.defenseType === 'standalone_l3'
-            ? 'MA20趋势防守'
+            ? (waveMA20PullbackObservation.oneDayL3Closure ? '动能转弱观察' : 'MA20趋势防守')
             : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
                 ? 'MA20回踩防守'
                 : (waveMA20PullbackObservation.defenseType === 'breakout_pullback' ? '突破后回踩观察' : 'MA20回踩观察'));
@@ -168,6 +170,17 @@ function getStockDecisionSummary(meta, decision) {
     } else if (!hasCriticalExit && waveExpiryHandoff.status === 'expired') {
         stateLabel = '到期观察结束';
         userAction = '离场观察';
+    }
+
+    // 恢复阶段只解释原因，动作始终服从最终前后仓位。
+    if (!hasCriticalExit && ['released', 'recovery_pending', 'recovery_started', 'recovery_hold'].includes(waveRejection.status)) {
+        userAction = isEntry ? '轻仓建仓' : isReduce ? (position > 0 ? '降低仓位' : '离场观察')
+            : isIncrease ? '提高仓位' : position > 0 ? '继续持有' : '继续观察';
+        if (position <= 0) stateLabel = '恢复待确认';
+    }
+    if (!hasCriticalExit && waveRejection.finalRejectionReason && Number(waveRejection.finalRejectionDay) === Number(meta?.currentDay)) {
+        stateLabel = previousPosition > 0 && position === 0 ? '恢复观察结束' : '建仓条件未满足';
+        userAction = previousPosition > 0 && position === 0 ? '离场观察' : position > 0 ? '持仓观察' : '暂时不买';
     }
 
     let reason = '';
@@ -186,7 +199,7 @@ function getStockDecisionSummary(meta, decision) {
         } else if (isStructureHardBreak) {
             reason = `${waveEvidence}，持仓结构失效，当前从${previousPosition}%降至${position}%并进入重入保护`;
         } else if (waveRejection.eventType === 'fresh_entry_hard_break') {
-            reason = `${waveEvidence}，新仓硬失效，风险日从${previousPosition}%降至${position}%`;
+            reason = `${waveEvidence}，${waveRejection.confirmedDay != null ? '首破观察期结束仍未收复，确认新仓硬失效，当前' : '新仓硬失效，风险日'}从${previousPosition}%降至${position}%`;
         } else if (waveRejection.eventType === 'fresh_entry_downside_failure') {
             reason = `${waveEvidence}，形成贴近防守位的大阴线，风险日从${previousPosition}%降至${position}%`;
         } else if (waveRejection.eventType === 'fresh_entry_failure') {
@@ -198,10 +211,13 @@ function getStockDecisionSummary(meta, decision) {
         const recoveryLevel = Number(waveRejection.recoveryCloseLevel ?? waveRejection.triggerClose);
         const currentClose = Number(meta?.currentClose);
         const levelName = isStructureHardBreak ? '原结构恢复参考价' : (isHardInvalidationProtection ? '信号失效位' : '风险日收盘');
+        const blockerText = getWaveRecoveryBlockText(meta, waveRejection);
         const recoveryState = Number.isFinite(currentClose) && Number.isFinite(recoveryLevel) && currentClose > recoveryLevel
-            ? `当前收盘${formatPriceLevel(currentClose)}虽已站回${levelName}${formatPriceLevel(recoveryLevel)}，但完整观察期尚未结束`
+            ? `当前收盘${formatPriceLevel(currentClose)}已站回${levelName}${formatPriceLevel(recoveryLevel)}，${Number(waveRejection.lockRemaining) > 0 ? '但完整观察期尚未结束' : '仍需可执行的入场依据与最终建仓检查'}`
             : `当前收盘${formatPriceLevel(currentClose)}尚未站回${levelName}${formatPriceLevel(recoveryLevel)}`;
-        reason = waveRejection.newEntry?.inScope
+        reason = blockerText
+            ? `${waveRejection.newEntry?.inScope && waveRejection.newEntry.reasonText !== blockerText ? waveRejection.newEntry.reasonText + '；' : ''}${blockerText}，当前保持${position}%；${previousPosition > 0 && position === 0 ? '本次观察仓位已退出' : '价格收复不等于已获准建仓'}`
+            : waveRejection.newEntry?.inScope
             ? `${waveRejection.triggerDate || '此前'}的风险事件后，${waveRejection.newEntry.reasonText}；原结构恢复仍按既有收复或回踩条件确认，新交易独立审查，不要求先收复旧止损位，当前保持${position}%`
             : `${waveRejection.triggerDate || '此前'}的风险事件仍在局部保护期；${recoveryState}，事件前旧积分不立即触发回补，当前保持${position}%防守仓位`;
     } else if (!hasCriticalExit && waveRejection.status === 'released') {
@@ -219,9 +235,13 @@ function getStockDecisionSummary(meta, decision) {
                 : `${recoveryText}，但尚未通过最终首次建仓检查，当前继续空仓；${decision.waveContext?.mainEvent || '等待本轮入场条件全部满足'}`)
             : `${waveRejection.reentryRoute === 'original-recovery' ? '原结构恢复：' : ''}${recoveryText}，局部保护解除，当前先恢复至${position}%仓位观察`;
     } else if (!hasCriticalExit && waveRejection.status === 'recovery_pending') {
-        reason = '冲高回落风险已局部解除，但当前尚无可执行的恢复仓位，继续空仓观察';
+        const blocker = getWaveRecoveryBlockText(meta, waveRejection);
+        reason = blocker ? `${blocker}，继续空仓观察`
+            : '风险价格条件已局部解除，但当前尚无可执行的恢复仓位，继续空仓观察';
     } else if (!hasCriticalExit && waveRejection.status === 'recovery_started') {
-        reason = `冲高回落事件后首次恢复，当前最多恢复至${position}%仓位`;
+        reason = waveRejection.delayedPullback?.applied === true && waveRejection.delayedPullback.confirmationDate === meta?.currentDate
+            ? `${waveRejection.delayedPullback.touchDate}回踩20日线附近后，今日收阳企稳且未再破回踩低点，恢复${position}%试探仓，并按本次确认日低点重新设置防守位`
+            : `冲高回落事件后首次恢复，当前最多恢复至${position}%仓位`;
     } else if (!hasCriticalExit && waveRejection.status === 'recovery_hold') {
         reason = waveRejection.reentryRoute === 'new-entry'
             ? `新一轮建仓后仍在低仓确认期，当前保持${position}%仓位，按本轮新防守位管理风险`
@@ -262,14 +282,16 @@ function getStockDecisionSummary(meta, decision) {
                 : `${triggerText}，当前${previousPosition === 0 ? '直接建立' : `从${previousPosition}%提高至`}${position}%确认仓`);
     } else if (!hasCriticalExit && waveMA20PullbackObservation.applied) {
         reason = waveMA20PullbackObservation.defenseType === 'standalone_l3'
-            ? `单独MACD死叉，价格仍在完整多头结构中，本日保留${position}%观察`
+            ? (waveMA20PullbackObservation.oneDayL3Closure
+                ? `单独MACD死叉，结构防守位尚未失守，本日保留${position}%观察，下一交易日必须确认能否续持`
+                : `单独MACD死叉，价格仍在完整多头结构中，本日保留${position}%观察`)
             : (waveMA20PullbackObservation.defenseType === 'limited_hard_invalidation'
                 ? `买点失效位虽被收盘跌破，但价格仍守住MA20，先保留${position}%观察`
                 : (waveMA20PullbackObservation.defenseType === 'breakout_pullback'
                     ? waveMA20PullbackObservation.reason
                     : `今日收盘仅小幅低于抬升中的${waveMA20PullbackObservation.movingAveragePeriod}日线，但下影线明显收回、结构防守位未破，当前保留${position}%轻仓观察一日，不加仓也不清仓`));
     } else if (!hasCriticalExit && waveMA20PullbackObservation.status === 'expired') {
-        reason = `MA20回踩观察只保留一日，但价格未重新站回20日线，也没有新的B6/B11信号接管，当前从${previousPosition}%降至${position}%`;
+        reason = `${getWaveMA20ObservationFailureText(waveMA20PullbackObservation, meta, decision?.exit)}，当前从${previousPosition}%降至${position}%`;
     } else if (!hasCriticalExit && waveExpiryHandoff.applied) {
         const momentumText = (waveExpiryHandoff.momentumSignals || []).join('、') || '短线动能继续改善';
         reason = waveExpiryHandoff.trendWashout
@@ -278,9 +300,13 @@ function getStockDecisionSummary(meta, decision) {
             ? `原买入积分仅因窗口到期由${waveExpiryHandoff.previousWindowScore}/${threshold}降至${scoreText}，但价格仍守住原买点防守位，且${momentumText}，当前保留${position}%轻仓防守观察一日`
             : `原买入积分仅因窗口到期由${waveExpiryHandoff.previousWindowScore}/${threshold}降至${scoreText}，但价格仍守住原买点防守位、重新站上${waveExpiryHandoff.shortMAPeriod}日线，且${momentumText}，当前保留${position}%轻仓等待接管`);
     } else if (!hasCriticalExit && waveExpiryHandoff.status === 'expired') {
-        reason = `买入积分自然到期后已多观察一日，但价格未重新站上短期与中期均线，也没有新的有效买入信号，当前从${previousPosition}%降至${position}%`;
+        reason = `${getWaveExpiryObservationFailureContext(waveExpiryHandoff, meta, decision?.exit).text}，当前从${previousPosition}%降至${position}%`;
     } else if (!hasCriticalExit && position === 0 && meta?.inCooldown) {
         reason = `当前是${getCooldownProgress(meta).label}；买入积分为${scoreText}，仓位保持0%，继续空仓`;
+    } else if (!hasCriticalExit && position > 0 && localGuard?.active) {
+        stateLabel = '局部防守观察';
+        userAction = isReduce ? '降低仓位' : '轻仓观察';
+        reason = `均线回踩局部防守位${formatPriceLevel(localGuard.localLevel)}尚未收复，${isReduce ? `当前由${previousPosition}%降至${position}%` : `当前最多保留${position}%试探仓`}，暂不加仓`;
     } else if (!hasCriticalExit && lifecycleTransition.text) {
         reason = lifecycleTransition.text;
     } else if (waveStructureExit && hasPositionExit && exitLevel === '无明确离场' && hasPreviousPosition) {
@@ -340,7 +366,7 @@ function getStockDecisionSummary(meta, decision) {
     }
     const why = getPlainDisplayText(reason);
     const wavePositionNote = resolveWavePositionNote({
-        decision, position, previousPosition, isEntry,
+        decision, meta, position, previousPosition, isEntry,
         waveL10Handoff, waveRejection, isSignalHardInvalidation, signalBreakKeepsStructure,
         waveExpiryB11TakeoverAdd, waveB6TrendAdd, waveShortRepair, multiTimeframeProbe,
         wavePositionStage, wavePeak, waveMA20PullbackObservation, waveExpiryHandoff, waveEntryBlocked
@@ -357,18 +383,22 @@ function getStockDecisionSummary(meta, decision) {
         : lockRemaining > 0
         ? `当前是风险事件后的第${Math.max(1, Number(waveRejection.lockAge) || 1)}个观察交易日，还需等待${lockRemaining}个交易日；最早下一个交易日重新评估30%试探仓。`
         : (isHardInvalidationProtection
-            ? `观察期已结束。恢复最多30%试探仓需满足其一：事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分，且来自至少${Number(waveRejection.minimumPostEventGroups) || 2}类不同信号；或价格站回失效位。`
+            ? getWaveOriginalRecoveryNextFocus(waveRejection)
             : (freshScoreRecoveryAllowed
                 ? `完整观察期已结束；等事件后新积分达到${Number(waveRejection.minimumPostEventScore) || Number(STRATEGY?.buyThreshold) || 4}分且至少来自${Number(waveRejection.minimumPostEventGroups) || 2}个独立计分组，风险稳定后可恢复最多30%试探仓，不要求先收复风险日收盘价。`
                 : '完整观察期已结束；若是已有浮盈减仓，新的缩量/均线回踩企稳并守住风险日低点时可先补回一档；否则待价格收复关键压力。'));
+    const displayedDefense = getDecisionDefenseDisplay(decision);
+    const layerDefenseText = displayedDefense ? displayedDefense.label + formatPriceLevel(displayedDefense.level) : '本轮有效防守位';
     const nextFocus = waveRejection.status === 'entry_blocked'
         ? '至少观察一个完整交易日；后续需站回风险日收盘，或收复风险日高点且事件后新的有效修复信号仍然有效，才重新考虑30%试探仓。'
         : (waveRejection.status === 'locked'
             ? lockedNextFocus
             : (waveExpiryB11TakeoverAdd.applied || waveExpiryB11TakeoverAdd.active
-        ? `若出现压力回落、预警或仓位上限收紧，先由确认仓降回30%轻仓。若原有轻仓条件失效、跌破防守位${formatPriceLevel(decision?.risk?.stop)}或出现离场信号，再按规则降至0%。`
+        ? `若出现压力回落、预警或仓位上限收紧，先由确认仓降回30%轻仓。若原有轻仓条件失效、收盘跌破${layerDefenseText}或出现离场信号，再按规则降至0%。`
         : (waveMA20PullbackObservation.applied
-            ? `下一交易日需重新站回MA20，或出现新的B6/B11确认。若到期仍未满足上述条件，或收盘跌破观察日低点${formatPriceLevel(waveMA20PullbackObservation.triggerLow)}、结构防守位${formatPriceLevel(waveMA20PullbackObservation.defenseLevel)}，或出现离场信号，仓位降至0%。`
+            ? (waveMA20PullbackObservation.oneDayL3Closure
+                ? `下一交易日需站回20日线，或出现新的有效回踩确认；同时守住防守位${formatPriceLevel(waveMA20PullbackObservation.defenseLevel)}，且没有离场、预警、冷静期或当日信号失效阻断。未通过则降至0%；通过后仍按原仓位规则判断，不自动加仓。`
+                : `下一交易日需重新站回MA20，或出现新的B6/B11确认。若到期仍未满足上述条件，或收盘跌破观察日低点${formatPriceLevel(waveMA20PullbackObservation.triggerLow)}、结构防守位${formatPriceLevel(waveMA20PullbackObservation.defenseLevel)}，或出现离场信号，仓位降至0%。`)
             : (waveExpiryHandoff.applied
                 ? (waveExpiryHandoff.trendWashout
                     ? `洗盘观察最多保留${waveExpiryHandoff.maxTradingDays || 2}个交易日；期间需重新站回MA20或出现新的有效买入信号接管。若MA20转弱、收盘跌破原买点防守位或出现离场信号，仓位降至0%。`

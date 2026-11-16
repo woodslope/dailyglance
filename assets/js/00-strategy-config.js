@@ -1,8 +1,8 @@
 /* DailyGlance [0] - production strategy configuration. Keep classic script order. */
 // Strategy parameters live here so ordinary UI changes do not imply a strategy-file change.
 
-const APP_BUILD = '2026-11-10-02';
-const SIGNAL_VERSION = 'v4.2.43';
+const APP_BUILD = '2026-11-16-01';
+const SIGNAL_VERSION = 'v4.2.44';
 const WAVE_GOVERNANCE_VERSION = 'wave-regime-v14';
 window.__DG_BUILD__ = APP_BUILD;
 
@@ -118,6 +118,14 @@ STRATEGIES['波段抄底型'].waveRejectionProtection.strongFreshRecovery.eventT
     'structure_hard_break'
 ];
 STRATEGIES['波段抄底型'].waveRejectionProtection.strongFreshRecovery.minimumEventAgeTradingDays = 5;
+
+// 上涨趋势止盈后：允许此前两根K线回踩、当日企稳确认，只恢复30%，不改变原始B6/B11。
+STRATEGIES['波段抄底型'].waveRejectionProtection.delayedPullbackRecovery = {
+    "confirmationDays": 2,
+    "touchToleranceAtr": 0.5,
+    "targetPosition": 30,
+    "requireExistingTarget": false
+};
 
 // 指数与个股共用“新仓冲高失败”语义，但按指数波动特征使用独立阈值。
 STRATEGIES['波段抄底型'].waveRejectionProtection.indexFreshEntryFailure = {
