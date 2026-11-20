@@ -200,6 +200,19 @@ function getWaveContext(idx, full, ind, strategy = STRATEGY) {
     };
 }
 
+// 本轮实际结构防守只有一个来源；观察、风险事件、恢复和展示共用，冻结记录不因此下移。
+function getWaveEffectiveDefense(waveContext, lifecycle, strategy = STRATEGY) {
+    if (!waveContext?.inScope || !lifecycle) return null;
+    const valid = value => typeof value === 'number' && Number.isFinite(value) && value > 0;
+    if (strategy?.waveRegimePolicy?.range?.defenseUsesBoxLowerEdge === true
+        && waveContext.regime === 'range' && waveContext.box?.valid === true && valid(waveContext.boxSupport)) {
+        return { type: 'box-lower-edge', level: waveContext.boxSupport, source: 'box-support' };
+    }
+    return valid(lifecycle.hardDefense)
+        ? { type: 'frozen-hard', level: lifecycle.hardDefense, source: lifecycle.supportSource || 'frozen-hard' }
+        : null;
+}
+
 function getWaveShortRepairContext(idx, full, meta, rawSignals, exit, prevPos, waveContext, strategy = STRATEGY) {
     const config = strategy?.wavePositionStages?.shortRepair;
     const empty = { qualified: false, triggerSignal: '', triggerSignals: [], reason: '' };

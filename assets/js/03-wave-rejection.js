@@ -7,7 +7,9 @@ function getWaveRecoveryRiskContext(idx, full, meta, recoveryPosition, strategy 
     const blockedByRiskSignal = (strategy.waveRejectionProtection?.blockingSignals || ['W2', 'W3'])
         .some(signal => rawSignals.includes(signal));
     const hardInvalidation = getTodaySignalInvalidations(meta, 'price-break').length > 0;
-    const hardDefense = full?.[idx - 1]?._decision?.waveContext?.lifecycle?.hardDefense;
+    const lifecycle = full?.[idx - 1]?._decision?.waveContext?.lifecycle;
+    const effectiveDefense = getWaveEffectiveDefense(decisionContext.waveContext || getWaveContext(idx, full, state.indicators, strategy), lifecycle, strategy);
+    const hardDefense = effectiveDefense?.level ?? lifecycle?.hardDefense;
     const structureBroken = hardDefense != null && Number.isFinite(Number(hardDefense))
         && Number(full?.[idx]?.close) < Number(hardDefense);
     const blockedByDecision = !!decisionContext.isCriticalExit || !!meta?.inCooldown
@@ -192,7 +194,7 @@ function getWaveBaseRejectionProtectionContext(idx, full, meta, prevPos, targetP
     const continuingPendingBreak = previous?.status === 'pending_hard_break'
         && currentEvent.status === 'pending_hard_break' && previous.entryDay === currentEvent.entryDay;
     if (!continuingPendingBreak && ['triggered', 'pending_hard_break'].includes(currentEvent.status)) return currentEvent;
-    if (currentEvent.status === 'ma20_hold') targetPosition = Math.min(targetPosition, currentEvent.targetPosition);
+    if (['ma20_hold', 'pressure_hold'].includes(currentEvent.status)) targetPosition = Math.min(targetPosition, currentEvent.targetPosition);
     // 首破确认缓冲期：上一日首次破位只降到 pending 仓位并锁定，这里判定是否收复或最终确认清仓。
     if (previous?.status === 'pending_hard_break') {
         if (!isValidWavePendingBreakRecord(previous) || previous.triggerDay >= idx) {
@@ -565,10 +567,12 @@ function getWaveCurrentRejectionEventContext(idx, full, meta, prevPos, targetPos
     }
     const entryAge = Number.isInteger(entryDay) ? idx - entryDay : null;
     const entrySignalLow = Number.isInteger(entryDay) ? Number(full?.[entryDay]?.low) : null;
-    const frozenHardDefense = Number(full?.[idx - 1]?._decision?.waveContext?.lifecycle?.hardDefense);
-    const holdsFrozenDefense = Number.isFinite(frozenHardDefense)
+    const effectiveDefense = getWaveEffectiveDefense(decisionContext.waveContext || getWaveContext(idx, full, state.indicators, strategy),
+        full?.[idx - 1]?._decision?.waveContext?.lifecycle, strategy);
+    const currentHardDefense = effectiveDefense?.level ?? Number(full?.[idx - 1]?._decision?.waveContext?.lifecycle?.hardDefense);
+    const holdsStructureDefense = Number.isFinite(currentHardDefense)
         && Number.isFinite(close)
-        && close >= frozenHardDefense;
+        && close >= currentHardDefense;
     const intradayProfitRatio = high / entryClose - 1;
     const givebackRatio = high > entryClose ? (high - close) / (high - entryClose) : 0;
     const upperShadowRangeRatio = range > 0 ? upperShadow / range : 0;
@@ -632,7 +636,7 @@ function getWaveCurrentRejectionEventContext(idx, full, meta, prevPos, targetPos
         && (!ma20RejectionConfig.requireUpperShadowDominance || upperShadow > lowerShadow)
         && freshEntryPressure.matched
         && freshPressureAttack;
-    const classicFreshEntryFailureTriggered = freshEntryConfig
+    const classicFreshEntryFailureMatched = freshEntryConfig
         && (!isStock || decisionContext?.waveContext?.regime === 'down')
         && (!freshEntryConfig.requireBearishClose || close < open)
         && (!Number.isFinite(Number(freshEntryConfig.maximumCloseDefenseGapRatio))
@@ -650,9 +654,12 @@ function getWaveCurrentRejectionEventContext(idx, full, meta, prevPos, targetPos
         && closeLocation <= Number(freshEntryConfig.maximumCloseLocation)
         && freshEntryPressure.matched
         && freshPressureAttack
-        && stockFreshEntryCloseAllowed
-        && (!freshEntryConfig.requireFrozenDefenseBreakForPressureFailure || !holdsFrozenDefense);
-    const freshEntryFailureTriggered = stockMa20RejectionTriggered || classicFreshEntryFailureTriggered;
+        && stockFreshEntryCloseAllowed;
+    const classicFreshEntryFailureTriggered = classicFreshEntryFailureMatched
+        && (!freshEntryConfig.requireFrozenDefenseBreakForPressureFailure || !holdsStructureDefense);
+    const pressureStructureHold = isStock && holdsStructureDefense
+        && (stockMa20RejectionTriggered || (classicFreshEntryFailureMatched && freshEntryConfig.requireFrozenDefenseBreakForPressureFailure));
+    const freshEntryFailureTriggered = (stockMa20RejectionTriggered && !holdsStructureDefense) || classicFreshEntryFailureTriggered;
     const downsideCloseGapRatio = Number.isFinite(entrySignalLow) && entrySignalLow > 0 && Number.isFinite(close)
         ? close / entrySignalLow - 1
         : Infinity;
@@ -673,7 +680,7 @@ function getWaveCurrentRejectionEventContext(idx, full, meta, prevPos, targetPos
         && prevPos > 0
         && targetPosition <= 0
         && hardSignalInvalidations.length > 0
-        && !holdsFrozenDefense;
+        && !holdsStructureDefense;
     const freshEntryHardBreakTriggered = downsideConfig
         && downsideConfig.exitOnCloseBelowEntryLow !== false
         && Number.isInteger(entryAge)
@@ -705,13 +712,14 @@ function getWaveCurrentRejectionEventContext(idx, full, meta, prevPos, targetPos
         && closeLocation <= Number(config.maximumCloseLocation);
     const triggered = freshEntryHardBreakTriggered || freshEntryDownsideFailureTriggered || freshEntryFailureTriggered
         || signalHardInvalidationExitTriggered || matureProfitRejectionTriggered;
-    if (!triggered && !stockMa20HoldTriggered) return empty;
+    if (!triggered && !stockMa20HoldTriggered && !pressureStructureHold) return empty;
     if (!triggered) {
-        const holdPositionCap = Math.max(0, Number(ma20RejectionConfig.holdPositionCap) || 30);
+        const holdPositionCap = Math.max(0, Number(ma20RejectionConfig?.holdPositionCap) || 30);
         return {
             active: false,
-            status: 'ma20_hold',
-            eventType: 'fresh_entry_ma20_hold',
+            status: pressureStructureHold ? 'pressure_hold' : 'ma20_hold',
+            eventType: pressureStructureHold ? 'fresh_entry_pressure_hold' : 'fresh_entry_ma20_hold',
+            structureDefense: effectiveDefense || null,
             triggerDay: idx,
             triggerDate: item.date || '',
             triggerHigh: high,

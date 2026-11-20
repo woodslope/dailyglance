@@ -15,9 +15,9 @@
 <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="assets/icons/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icons/favicon.png">
-<script src="assets/vendor/chart.umd.min.js?v=20261116-01"></script>
+<script src="assets/vendor/chart.umd.min.js?v=20261120-01"></script>
 <script>window.Chart || document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"><\/script>')</script>
-<link rel="stylesheet" href="assets/css/dailyglance.css?v=20261116-01">
+<link rel="stylesheet" href="assets/css/dailyglance.css?v=20261120-01">
 </head>
 <body class="dailyglance-app">
 
@@ -47,9 +47,12 @@
             <div class="terminal-block no-bg">
                 <div class="block-title help-title">每日使用</div>
                 <ul class="text-dim help-steps">
+                    <li><strong>先核对日期：</strong> 确认正在看当前结论还是历史日期；标注“临时”或 B?/S? 时，仍需等待历史 K 线确认。</li>
                     <li><strong>先看状态：</strong> 判断大盘或个股处于什么阶段。</li>
                     <li><strong>再看动作：</strong> 关注右侧每日结论和参考仓位。</li>
                     <li><strong>最后看风险：</strong> 阅读结论下方的主要依据、风险和防守位。</li>
+                    <li><strong>标记不是成交：</strong> B 表示模型首次建仓，S 表示模型清仓，“加/减”表示中途调仓；标记位置不代表能按当日最低价买入或最高价卖出。</li>
+                    <li><strong>没有跟上历史 B 时：</strong> 系统不记录你的真实持仓和成交。“继续持有/提高仓位”是模型建议变化，不是要求你现在补买；请结合自己的实际持仓和当前结论查看。</li>
                     <li><strong>需要核对策略时：</strong> 打开独立策略页查看信号列表、积分门槛和原始配置，不把配置当作完整执行规则。</li>
                 </ul>
                 <div class="help-link-row"><a class="strategy-page-link" href="strategy-inspector.html" target="_blank" rel="noopener">查看策略配置参考 ↗</a></div>
@@ -296,19 +299,19 @@
 </main>
 
 <div id="toastContainer"></div>
-<script src="assets/js/00-strategy-config.js?v=20261116-01"></script>
-<script src="assets/js/01-config-ui.js?v=20261116-01"></script>
-<script src="assets/js/02-data.js?v=20261116-01"></script>
-<script src="assets/js/02-observation-data.js?v=20261116-01"></script>
-<script src="assets/js/03-calculations.js?v=20261116-01"></script>
-<script src="assets/js/03-explain.js?v=20261116-01"></script>
-<script src="assets/js/03-summary.js?v=20261116-01"></script>
-<script src="assets/js/03-wave-regime.js?v=20261116-01"></script>
-<script src="assets/js/03-wave-rejection.js?v=20261116-01"></script>
-<script src="assets/js/03-decision.js?v=20261116-01"></script>
-<script src="assets/js/04-render.js?v=20261116-01"></script>
-<script src="assets/js/05-app.js?v=20261116-01"></script>
-<script src="assets/js/06-settings.js?v=20261116-01"></script>
-<script src="assets/js/07-refresh-controller.js?v=20261116-01"></script>
+<script src="assets/js/00-strategy-config.js?v=20261120-01"></script>
+<script src="assets/js/01-config-ui.js?v=20261120-01"></script>
+<script src="assets/js/02-data.js?v=20261120-01"></script>
+<script src="assets/js/02-observation-data.js?v=20261120-01"></script>
+<script src="assets/js/03-calculations.js?v=20261120-01"></script>
+<script src="assets/js/03-explain.js?v=20261120-01"></script>
+<script src="assets/js/03-summary.js?v=20261120-01"></script>
+<script src="assets/js/03-wave-regime.js?v=20261120-01"></script>
+<script src="assets/js/03-wave-rejection.js?v=20261120-01"></script>
+<script src="assets/js/03-decision.js?v=20261120-01"></script>
+<script src="assets/js/04-render.js?v=20261120-01"></script>
+<script src="assets/js/05-app.js?v=20261120-01"></script>
+<script src="assets/js/06-settings.js?v=20261120-01"></script>
+<script src="assets/js/07-refresh-controller.js?v=20261120-01"></script>
 </body>
 </html>
