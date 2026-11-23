@@ -795,6 +795,42 @@ function getLatestDecisionFromData(full) {
 }
 
 function computeWatchlistDecisionSnapshot(full, code) {
+    const steps = computeWatchlistSnapshotSteps(full, code);
+    let result;
+    do { result = steps.next(); } while (!result.done);
+    return result.value;
+}
+
+async function computeWatchlistDecisionSnapshotAsync(full, code) {
+    if (!full || full.length < 60) return null;
+    const owner = state;
+    const selectionSeq = globalSelectionSeq;
+    const taskState = { ...owner };
+    const sourceId = normalizeSecurityTarget(owner.watchlist.find(stock => stock.code === code) || { code }).secid;
+    const rawSource = owner.rawData[sourceId];
+    const liveSource = owner.liveBars[sourceId];
+    const key = buildIndicatorKeyForData(codeToSecid(code), 'daily', owner.strategy, full);
+    const steps = computeWatchlistSnapshotSteps(full, code, 12);
+    // 每个时间片仅临时使用本任务的指标上下文；让出页面前恢复主应用状态。
+    const run = method => {
+        const current = state;
+        state = taskState;
+        try { return steps[method](); } finally { state = current; }
+    };
+    try {
+        while (state === owner && globalSelectionSeq === selectionSeq && state.strategy === taskState.strategy
+            && state.watchlist.some(stock => stock.code === code)
+            && state.rawData[sourceId] === rawSource && state.liveBars[sourceId] === liveSource
+            && key === buildIndicatorKeyForData(codeToSecid(code), 'daily', state.strategy, full)) {
+            const result = run('next');
+            if (result.done) return result.value;
+            await yieldCalculationTurn();
+        }
+        return null;
+    } finally { run('return'); }
+}
+
+function* computeWatchlistSnapshotSteps(full, code, sliceMs = 0) {
     if (!full || full.length < 60) return null;
 
     const cachedDecision = getLatestDecisionFromData(full);
@@ -845,6 +881,7 @@ function computeWatchlistDecisionSnapshot(full, code) {
                 || isCurrentDecisionGovernanceVersion(priorDecision, { waveStockDaily: state.strategy === '波段抄底型' }));
         const startIdx = canUseTailRebuild ? tailStartIdx : 0;
         const weeklySignalContexts = buildWeeklySignalContexts(full);
+        let sliceStarted = performance.now();
         prevPos = canUseTailRebuild ? (priorDecision.position || 0) : 0;
         for (let i = startIdx; i < full.length; i++) {
             if (!full[i]) continue;
@@ -853,6 +890,10 @@ function computeWatchlistDecisionSnapshot(full, code) {
             full[i]._strategy = state.strategy;
             full[i]._decision = computeDecisionForIndex(i, full, prevPos);
             prevPos = full[i]._decision.position;
+            if (sliceMs && performance.now() - sliceStarted >= sliceMs) {
+                yield i;
+                sliceStarted = performance.now();
+            }
         }
         if (cacheId && typeof storeDerivedIndicatorCache === 'function') {
             storeDerivedIndicatorCache(cacheId, 'daily', state.strategy, full, localIndicators);
@@ -865,47 +906,70 @@ function computeWatchlistDecisionSnapshot(full, code) {
     }
 }
 
-function flushWatchlistSnapshotQueue(deadline) {
+let watchlistSnapshotFlushInFlight = false;
+async function flushWatchlistSnapshotQueue(deadline) {
+    if (watchlistSnapshotFlushInFlight) return;
     watchlistSnapshotFlushHandle = 0;
-    const startedAt = Date.now();
-    const budgetMs = 8;
-    let processed = 0;
-    // 单只快照计算不可中断，一只冷缓存标的可能吃掉 ~40ms。调度目标：
-    // 1) 繁忙帧（rIC 未超时且 timeRemaining<=4）一只都不塞，把整帧让给鼠标交互（十字光标重绘）；
-    // 2) 兜底帧（rIC didTimeout）或空闲帧才推进，且用 8ms 时间片截断，避免一次灌完整队列把某一帧撑爆；
-    // 3) 至少推进一只，防止队列饿死——配合 rIC 的 timeout:240，最迟 240ms 内必被兜底触发。
-    const canContinue = () => {
-        // 8ms 时间片：已处理过至少一只后，超片即停，剩余留到下一次调度。
-        if (processed > 0 && Date.now() - startedAt >= budgetMs) return false;
-        if (deadline) {
-            // 繁忙且未超时：让位交互，本帧不推进（processed 保持 0，稍后重新排程）。
-            return deadline.didTimeout || deadline.timeRemaining() > 4;
-        }
-        // setTimeout 退化路径无空闲信息：靠“至少一只 + 8ms 时间片”保证前进又不长阻塞。
-        return true;
-    };
-    while (watchlistSnapshotQueue.size && canContinue()) {
-        const [code, full] = watchlistSnapshotQueue.entries().next().value;
-        watchlistSnapshotQueue.delete(code);
-        syncWatchlistSignalSnapshot(code, full);
-        processed++;
-    }
-    if (watchlistSnapshotQueue.size) {
+    if (typeof activeIndicatorUpdate !== 'undefined' && activeIndicatorUpdate && !activeIndicatorUpdate.cancelled) {
         scheduleWatchlistSnapshotQueue();
         return;
     }
-    const waiters = watchlistSnapshotQueueWaiters;
-    watchlistSnapshotQueueWaiters = [];
-    waiters.forEach(resolve => resolve());
-    if (watchlistSnapshotBatchDepth > 0) {
-        return;
+    watchlistSnapshotFlushInFlight = true;
+    try {
+        let spentMs = 0;
+        const budgetMs = 8;
+        let processed = 0;
+        // 冷快照也按逐日时间片让出页面；队列仍受空闲预算控制。调度目标：
+        // 1) 繁忙帧（rIC 未超时且 timeRemaining<=4）一只都不塞，把整帧让给鼠标交互（十字光标重绘）；
+        // 2) 兜底帧（rIC didTimeout）或空闲帧才推进，且用 8ms 时间片截断，避免一次灌完整队列把某一帧撑爆；
+        // 3) 至少推进一只，防止队列饿死——配合 rIC 的 timeout:240，最迟 240ms 内必被兜底触发。
+        const canContinue = () => {
+            // 只累计本轮同步工作，不把等待分段任务/其他事件的时间计入空闲预算。
+            if (processed > 0 && spentMs >= budgetMs) return false;
+            if (deadline) {
+                // 繁忙且未超时：让位交互，本帧不推进（processed 保持 0，稍后重新排程）。
+                return deadline.didTimeout || deadline.timeRemaining() > 4;
+            }
+            // setTimeout 退化路径无空闲信息：靠“至少一只 + 8ms 时间片”保证前进又不长阻塞。
+            return true;
+        };
+        while (watchlistSnapshotQueue.size && canContinue()) {
+            const [code, full] = watchlistSnapshotQueue.entries().next().value;
+            watchlistSnapshotQueue.delete(code);
+            const startedAt = Date.now();
+            const pending = computeWatchlistDecisionSnapshotAsync(full, code);
+            spentMs += Date.now() - startedAt;
+            const decision = await pending;
+            const applyStartedAt = Date.now();
+            if (decision) applyWatchlistDecisionSnapshot(code, decision, full.at(-1)?.date, full);
+            else {
+                const target = state.watchlist.find(stock => stock.code === code);
+                const latest = target && getMergedLiveDailyData(normalizeSecurityTarget(target).secid);
+                if (latest?.length >= 60) watchlistSnapshotQueue.set(code, latest);
+            }
+            spentMs += Date.now() - applyStartedAt;
+            processed++;
+        }
+        if (watchlistSnapshotQueue.size) {
+            scheduleWatchlistSnapshotQueue();
+            return;
+        }
+        const waiters = watchlistSnapshotQueueWaiters;
+        watchlistSnapshotQueueWaiters = [];
+        waiters.forEach(resolve => resolve());
+        if (watchlistSnapshotBatchDepth > 0) {
+            return;
+        }
+        scheduleWatchlistRender();
+    } finally {
+        watchlistSnapshotFlushInFlight = false;
+        if (watchlistSnapshotQueue.size) scheduleWatchlistSnapshotQueue();
     }
-    scheduleWatchlistRender();
 }
 
 function scheduleWatchlistSnapshotQueue() {
     if (watchlistSnapshotBatchDepth > 0) return;
-    if (watchlistSnapshotFlushHandle) return;
+    if (watchlistSnapshotFlushHandle || watchlistSnapshotFlushInFlight) return;
     if (typeof window.requestIdleCallback === 'function') {
         watchlistSnapshotFlushHandle = window.requestIdleCallback(flushWatchlistSnapshotQueue, { timeout: 240 });
         return;
@@ -914,7 +978,7 @@ function scheduleWatchlistSnapshotQueue() {
 }
 
 function waitForWatchlistSnapshotQueue() {
-    if (!watchlistSnapshotQueue.size && !watchlistSnapshotFlushHandle) return Promise.resolve();
+    if (!watchlistSnapshotQueue.size && !watchlistSnapshotFlushHandle && !watchlistSnapshotFlushInFlight) return Promise.resolve();
     return new Promise(resolve => watchlistSnapshotQueueWaiters.push(resolve));
 }
 

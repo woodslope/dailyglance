@@ -1,3 +1,65 @@
+// 内部状态是稳定协议；中文/emoji仅用于兼容显示，不再承担生产交易身份。
+const SIGNAL_STATE = Object.freeze({ EXIT:'exit', STRONG_EXIT:'strong-exit', COOLDOWN:'cooldown',
+    CAUTIOUS:'cautious', READY:'ready', WATCH:'watch', HOLD:'hold', WEAK:'weak', UNKNOWN:'unknown' });
+const EXIT_STATE = Object.freeze({ NONE:'none', REDUCE:'reduce', DEFENSIVE:'defensive', HARD:'hard', STRONG:'strong', UNKNOWN:'unknown' });
+const ACTION_STATE = Object.freeze({ FLAT:'flat', AVOID:'avoid', HARD_EXIT:'hard-exit', EXIT:'exit', REDUCE:'reduce',
+    ENTER_TRIAL:'enter-trial', ENTER:'enter', ADD_TRIAL:'add-trial', ADD:'add',
+    CAUTIOUS_HOLD:'cautious-hold', TRIAL_HOLD:'trial-hold', TREND_HOLD:'trend-hold', HOLD:'hold' });
+const SIGNAL_STATE_LEGACY = Object.freeze({ '🛑 清仓规避':SIGNAL_STATE.EXIT, '🚪 趋势破位':SIGNAL_STATE.STRONG_EXIT,
+    '⏸️ 离场观望':SIGNAL_STATE.COOLDOWN, '⚠️ 谨慎看多':SIGNAL_STATE.CAUTIOUS, '✅ 明确转强':SIGNAL_STATE.READY,
+    '👀 关注异动':SIGNAL_STATE.WATCH, '📈 趋势抱单':SIGNAL_STATE.HOLD, '👀 弱势震荡':SIGNAL_STATE.WEAK });
+const EXIT_STATE_LEGACY = Object.freeze({ '无明确离场':EXIT_STATE.NONE, '减仓观察':EXIT_STATE.REDUCE,
+    '延续防守':EXIT_STATE.DEFENSIVE, '清仓防守':EXIT_STATE.HARD, '强离场':EXIT_STATE.STRONG });
+const ACTION_STATE_LEGACY = Object.freeze({ '持币观望':ACTION_STATE.FLAT,'规避风险':ACTION_STATE.AVOID,
+    '清仓离场':ACTION_STATE.HARD_EXIT,'执行离场':ACTION_STATE.EXIT,'防守减仓':ACTION_STATE.REDUCE,
+    '轻仓建仓':ACTION_STATE.ENTER_TRIAL,'积极建仓':ACTION_STATE.ENTER,'缓慢加仓':ACTION_STATE.ADD_TRIAL,
+    '顺势加仓':ACTION_STATE.ADD,'谨慎持有':ACTION_STATE.CAUTIOUS_HOLD,'轻仓持有':ACTION_STATE.TRIAL_HOLD,
+    '顺势抱单':ACTION_STATE.TREND_HOLD,'积极持有':ACTION_STATE.HOLD });
+const SIGNAL_STATE_DISPLAY = Object.freeze({ exit:'🛑 清仓规避','strong-exit':'🚪 趋势破位',cooldown:'⏸️ 离场观望',
+    cautious:'⚠️ 谨慎看多',ready:'✅ 明确转强',watch:'👀 关注异动',hold:'📈 趋势抱单',weak:'👀 弱势震荡' });
+const EXIT_STATE_DISPLAY = Object.freeze({ none:'无明确离场',reduce:'减仓观察',defensive:'延续防守',hard:'清仓防守',strong:'强离场' });
+function createExitState(stateCode, detail) {
+    return Object.defineProperty({ level:EXIT_STATE_DISPLAY[stateCode], detail }, 'stateCode', { value:stateCode, enumerable:false });
+}
+function getDecisionExitStateCode(decision) {
+    return decision?.exitStateCode || decision?.waveState?.exitStateCode || getExitStateCode(decision?.exit);
+}
+function hasDecisionActionFlag(decision, flag) {
+    if (decision?.actionCode != null || decision?.actionHint != null) {
+        const code=getDecisionActionCode(decision);
+        if (flag==='reduce') return code===ACTION_STATE.REDUCE;
+        if (flag==='hard-or-avoid') return [ACTION_STATE.HARD_EXIT,ACTION_STATE.AVOID].includes(code);
+        return code===ACTION_STATE.EXIT;
+    }
+    const label=decision?.simpleAction || '';
+    if(flag==='reduce')return label.includes('减仓');
+    if(flag==='hard-or-avoid')return ['清仓离场','规避风险'].includes(label);
+    return label==='执行离场';
+}
+function getSignalStateCode(meta) {
+    if (meta?.stateCode != null) return Object.values(SIGNAL_STATE).includes(meta.stateCode) ? meta.stateCode : SIGNAL_STATE.UNKNOWN;
+    return SIGNAL_STATE_LEGACY[meta?.type] || SIGNAL_STATE.UNKNOWN;
+}
+function hasSignalStateFlag(meta, flag) {
+    if (meta?.stateCode != null) {
+        const code = getSignalStateCode(meta);
+        return flag === 'avoid-or-break' ? [SIGNAL_STATE.EXIT,SIGNAL_STATE.STRONG_EXIT].includes(code) : code === SIGNAL_STATE.EXIT;
+    }
+    // 只用于旧接口/研究输入的导入适配；生产getSignalMeta始终提供stateCode。
+    const type = String(meta?.type || '');
+    if (flag === 'avoid-or-break') return type.includes('规避') || type.includes('破位');
+    if (flag === 'unconditional') return type.includes('清仓规避');
+    if (flag === 'liquidation') return type.includes('清仓');
+    return type.includes('清仓') || type.includes('规避');
+}
+function getExitStateCode(exit) {
+    if (exit?.stateCode != null) return Object.values(EXIT_STATE).includes(exit.stateCode) ? exit.stateCode : EXIT_STATE.UNKNOWN;
+    return EXIT_STATE_LEGACY[exit?.level] || EXIT_STATE.UNKNOWN;
+}
+function getDecisionActionCode(decision) {
+    return decision?.actionHint || decision?.actionCode || ACTION_STATE_LEGACY[decision?.simpleAction] || ACTION_STATE.FLAT;
+}
+
 /* DailyGlance [3] - split from dailyglance.html. Keep classic script order. */
 // ==========================================
 // [3] 核心算法层 (Core Algorithms)
@@ -643,7 +705,7 @@ function getStrongExitSignals(strategy = STRATEGY) {
 function isWaveStandaloneL3Observation(meta, strategy = STRATEGY) {
     const exits = meta?.exitSignals || [];
     if (exits.length !== 1 || exits[0] !== 'L3') return false;
-    if ((meta?.type || '').includes('清仓') || (meta?.type || '').includes('规避')) return false;
+    if (hasSignalStateFlag(meta, 'clear-or-avoid')) return false;
     const rawSignals = Object.keys(meta?.allSignals || {});
     const blockingSignals = new Set(['L4', 'L9', 'L10']);
     const structureBreak = getTodaySignalInvalidations(meta, 'price-break')
@@ -1007,20 +1069,29 @@ function checkUnconditionalExit(idx, full, ind) {
     return false;
 }
 
-function getSignalMeta(idx, full, ind) {
+function getSignalMeta(idx, full, ind, options = {}) {
+    // 仅在有策略视图覆盖时复制当前行；不修改原始信号或已裁定历史。
+    if (options.currentSignals !== undefined && !Array.isArray(options.currentSignals)) {
+        throw new Error('信号视图必须是数组');
+    }
+    if (options.currentSignals) {
+        const view = full.slice();
+        view[idx] = { ...full[idx], _signals: options.currentSignals };
+        full = view;
+    }
     const sigs = calculateAllSignals(idx, full, ind), S = STRATEGY, windowSignals = sigs.windowSignals || [], hasUncond = checkUnconditionalExit(idx, full, ind);
     const strongExitSet = getStrongExitSignals(S);
     const warns = Object.keys(sigs.allSignals).filter(s => S.warningSignals?.includes(s)), strongExits = sigs.exitSignals.filter(s => strongExitSet.has(s));
-    
-    let type, cls, detail, logic;
-    if (hasUncond) { type = '🛑 清仓规避'; cls = 'core'; detail = '顶背离后MACD死叉'; logic = '触发高危清仓信号'; } 
-    else if (strongExits.length > 0) { type = '🚪 趋势破位'; cls = 'core'; detail = '触发核心破位防守'; logic = '防守: ' + strongExits.join(','); } 
-    else if (sigs.inCooldown) { type = '⏸️ 离场观望'; cls = 'regular'; detail = getCooldownProgress(sigs).label; logic = `动能清零，需重新积攒`; }
-    else if (sigs.windowScore >= S.buyThreshold && warns.length) { type = '⚠️ 谨慎看多'; cls = 'core'; detail = '买入积分达标但伴随过热风险'; logic = warns.join(','); } 
-    else if (sigs.windowScore >= S.buyThreshold) { type = '✅ 明确转强'; cls = 'core'; detail = `积分:${sigs.windowScore} 达到买入条件`; logic = '做多信号: ' + (sigs.buySignals.join(',') || '历史积分'); } 
-    else if (sigs.windowScore >= Math.max(3, S.buyThreshold - 2)) { type = '👀 关注异动'; cls = 'regular'; detail = `当前积分:${sigs.windowScore}，即将达标`; logic = '接近转强，可列入观察'; } 
-    else if (full[idx]?.close > (ind.ma?.[20]?.[idx] || Infinity)) { type = '📈 趋势抱单'; cls = 'regular'; detail = '依托均线多头结构持仓'; logic = '虽无新买点，但大趋势完好'; } 
-    else { type = '👀 弱势震荡'; cls = 'regular'; detail = '积分不足，缺乏上行动能'; logic = '耐心等待放量或信号确认'; }
-    
-    return { ...sigs, windowSignals, type, cls, detail, logic, warningSignals: warns, windowBuyCount: windowSignals.filter(w => w.signal.startsWith('B')).length, windowExitCount: windowSignals.filter(w => w.signal.startsWith('L')).length, triggeredSignals: [...sigs.buySignals, ...sigs.exitSignals] };
+
+    let cls, detail, logic, stateCode;
+    if (hasUncond) { stateCode = SIGNAL_STATE.EXIT; cls = 'core'; detail = '顶背离后MACD死叉'; logic = '触发高危清仓信号'; }
+    else if (strongExits.length > 0) { stateCode = SIGNAL_STATE.STRONG_EXIT; cls = 'core'; detail = '触发核心破位防守'; logic = '防守: ' + strongExits.join(','); }
+    else if (sigs.inCooldown) { stateCode = SIGNAL_STATE.COOLDOWN; cls = 'regular'; detail = getCooldownProgress(sigs).label; logic = `动能清零，需重新积攒`; }
+    else if (sigs.windowScore >= S.buyThreshold && warns.length) { stateCode = SIGNAL_STATE.CAUTIOUS; cls = 'core'; detail = '买入积分达标但伴随过热风险'; logic = warns.join(','); }
+    else if (sigs.windowScore >= S.buyThreshold) { stateCode = SIGNAL_STATE.READY; cls = 'core'; detail = `积分:${sigs.windowScore} 达到买入条件`; logic = '做多信号: ' + (sigs.buySignals.join(',') || '历史积分'); }
+    else if (sigs.windowScore >= Math.max(3, S.buyThreshold - 2)) { stateCode = SIGNAL_STATE.WATCH; cls = 'regular'; detail = `当前积分:${sigs.windowScore}，即将达标`; logic = '接近转强，可列入观察'; }
+    else if (full[idx]?.close > (ind.ma?.[20]?.[idx] || Infinity)) { stateCode = SIGNAL_STATE.HOLD; cls = 'regular'; detail = '依托均线多头结构持仓'; logic = '虽无新买点，但大趋势完好'; }
+    else { stateCode = SIGNAL_STATE.WEAK; cls = 'regular'; detail = '积分不足，缺乏上行动能'; logic = '耐心等待放量或信号确认'; }
+
+    return { ...sigs, windowSignals, stateCode, type:SIGNAL_STATE_DISPLAY[stateCode], cls, detail, logic, warningSignals: warns, windowBuyCount: windowSignals.filter(w => w.signal.startsWith('B')).length, windowExitCount: windowSignals.filter(w => w.signal.startsWith('L')).length, triggeredSignals: [...sigs.buySignals, ...sigs.exitSignals] };
 }

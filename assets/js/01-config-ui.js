@@ -431,7 +431,7 @@ function getRefreshSnapshot(scope) {
     return state.refreshSnapshots?.[scope] || null;
 }
 
-function getLeftListRefreshText() {
+function getLeftListRefreshParts() {
     const snapshot = getRefreshSnapshot('leftList');
     const meta = snapshot?.meta || {};
     const expected = Number(meta.expectedCount);
@@ -441,13 +441,20 @@ function getLeftListRefreshText() {
         : '';
     const cache = /cache|memory/.test(meta.source || '') ? ' · 本地缓存' : '';
     const loading = state.mode === 'index' && state.indexHydrationPending ? ' · 补数中' : '';
-    return `列表刷新于 ${formatLeftListRefreshTime(snapshot?.appliedAt || state.leftListRefreshAt)}${coverage}${cache}${loading}`;
+    const time = `列表刷新于 ${formatLeftListRefreshTime(snapshot?.appliedAt || state.leftListRefreshAt)}`;
+    return { time, status:[coverage, cache, loading].filter(Boolean).join('').replace(/^[ ·]+/, ''), full:`${time}${coverage}${cache}${loading}` };
+}
+
+function getLeftListRefreshText() { return getLeftListRefreshParts().full; }
+function getLeftListRefreshHTML() {
+    const parts = getLeftListRefreshParts();
+    return `${parts.status ? `<span class="left-list-refresh-status">${escapeHTML(parts.status)}</span>` : ''}<span class="left-list-refresh-clock">${escapeHTML(parts.time)}</span>`;
 }
 
 function renderLeftListHeader(title, options = {}) {
     const snapshot = getRefreshSnapshot('leftList') || {};
     const refreshHtml = options.showRefresh === false ? '' : `
-                <span class="left-list-refresh-time" data-left-list-refresh data-refresh-id="${escapeHTML(snapshot.id || '')}" data-refresh-version="${snapshot.version || 0}" data-refresh-applied-at="${snapshot.appliedAt || 0}" data-refresh-status="${escapeHTML(snapshot.meta?.status || '')}">${getLeftListRefreshText()}</span>`;
+                <span class="left-list-refresh-time" data-left-list-refresh data-refresh-id="${escapeHTML(snapshot.id || '')}" data-refresh-version="${snapshot.version || 0}" data-refresh-applied-at="${snapshot.appliedAt || 0}" data-refresh-status="${escapeHTML(snapshot.meta?.status || '')}" title="${escapeHTML(getLeftListRefreshText())}">${getLeftListRefreshHTML()}</span>`;
     return `
         <div class="stock-header">
             <div class="title-wrap">
@@ -461,7 +468,8 @@ function renderLeftListHeader(title, options = {}) {
 function updateLeftListRefreshLabels() {
     const snapshot = getRefreshSnapshot('leftList') || {};
     document.querySelectorAll('[data-left-list-refresh]').forEach(el => {
-        el.textContent = getLeftListRefreshText();
+        el.innerHTML = getLeftListRefreshHTML();
+        el.title = getLeftListRefreshText();
         el.dataset.refreshId = snapshot.id || '';
         el.dataset.refreshVersion = String(snapshot.version || 0);
         el.dataset.refreshAppliedAt = String(snapshot.appliedAt || 0);

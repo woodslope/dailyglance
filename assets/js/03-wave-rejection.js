@@ -14,7 +14,7 @@ function getWaveRecoveryRiskContext(idx, full, meta, recoveryPosition, strategy 
         && Number(full?.[idx]?.close) < Number(hardDefense);
     const blockedByDecision = !!decisionContext.isCriticalExit || !!meta?.inCooldown
         || (meta?.exitSignals || []).length > 0 || (meta?.warningSignals || []).length > 0
-        || (!!decisionContext.exit?.level && decisionContext.exit.level !== '无明确离场')
+        || ((decisionContext.exit?.stateCode != null || !!decisionContext.exit?.level) && getExitStateCode(decisionContext.exit) !== EXIT_STATE.NONE)
         || hardInvalidation || structureBroken;
     const marketCap = getMarketIncreaseCap(decisionContext.market, decisionContext.targetStrength?.tier);
     const blockedByPositionCap = Number.isFinite(decisionContext.positionCap?.limit)
@@ -265,7 +265,7 @@ function getWaveBaseRejectionProtectionContext(idx, full, meta, prevPos, targetP
         const recoveryRisk = getWaveRecoveryRiskContext(idx, full, meta, recoveryCap, strategy, decisionContext);
         const blockedByDecision = isStock ? recoveryRisk.blockedByDecision
             : !!meta?.inCooldown || (meta?.exitSignals || []).length > 0 || (meta?.warningSignals || []).length > 0
-                || (!!decisionContext.exit?.level && decisionContext.exit.level !== '无明确离场');
+                || ((decisionContext.exit?.stateCode != null || !!decisionContext.exit?.level) && getExitStateCode(decisionContext.exit) !== EXIT_STATE.NONE);
         const ma20RejectionRecoveryBlocked = previous.eventType === 'fresh_entry_failure'
             && previous.ma20RejectionExit === true;
         let strongFreshRecovery = isStock
@@ -288,12 +288,13 @@ function getWaveBaseRejectionProtectionContext(idx, full, meta, prevPos, targetP
                 : remainingDays > 0 ? 'waiting'
                 : postEvent.score < minimumPostEventScore || postEvent.signals.length < minimumPostEventGroups ? 'new-score'
                 : targetPosition <= 0 ? 'no-target' : '';
+            let entryDefense = null;
             if (!reason) {
                 const entryMeta = { ...meta, windowScore: postEvent.score, windowScoreSignals: postEvent.signals };
                 const qualification = getWaveRegimeQualification(idx, full, entryMeta, decisionContext.waveContext, rawSignals, strategy);
-                const defense = getWaveEntryDefenseContext(idx, full, decisionContext.waveContext, rawSignals, strategy, { freshEventRecovery: true });
+                entryDefense = getWaveEntryDefenseContext(idx, full, decisionContext.waveContext, rawSignals, strategy, { freshEventRecovery: true });
                 if (!isWaveEntryRegimeQualified(decisionContext.waveContext, qualification)) reason = 'entry-qualification';
-                else if (!defense.acceptable) reason = 'defense-distance';
+                else if (!entryDefense.acceptable) reason = 'defense-distance';
             }
             const reasonTexts = {
                 risk: '当前仍有离场、预警、冷静期或风险限制，暂不建立新交易',
@@ -301,7 +302,7 @@ function getWaveBaseRejectionProtectionContext(idx, full, meta, prevPos, targetP
                 'new-score': `止损后新积分为${postEvent.score}/${minimumPostEventScore}分，来自${postEvent.signals.length}/${minimumPostEventGroups}个独立计分组，尚未达标`,
                 'no-target': '当前没有可执行的建仓目标，不能仅凭收复旧价位买回',
                 'entry-qualification': `${decisionContext.waveContext.regimeLabel || '当前'}环境未满足本轮首次建仓资格`,
-                'defense-distance': '本轮新防守位距离建仓价过远，否决交易',
+                'defense-distance': getWaveEntryDefenseRejectionText(entryDefense),
                 ready: '止损后新信号、首次建仓资格与防守距离均已通过'
             };
             newEntry = { inScope: true, eligible: !reason, reason: reason || 'ready', reasonText: reasonTexts[reason || 'ready'],

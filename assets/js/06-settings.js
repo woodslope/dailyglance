@@ -1,34 +1,51 @@
 /* DailyGlance [6] - settings surface. Loaded after the main lifecycle script. */
 
+let strategySwitchSequence = 0;
 async function switchStrategy(name) {
     if (!STRATEGIES[name]) return;
     const confirmed = await customConfirm(`确定切换到 [${name}]？\n${STRATEGIES[name].desc}`);
     if (!confirmed) return;
+    const sequence = ++strategySwitchSequence;
     const perfTrace = PERF.start('switchStrategy', { strategy: name });
-
-    const canReuseCurrentIndicators = !!(getActiveData()?.length && state.indicators.macd && state.indicators.rsi && state.indicators.kdj && state.indicators.ma);
-    setActiveStrategy(name);
+    const selectedId = state.id;
+    const selectedPeriod = state.period;
+    const interactionToken = beginChartInteractionBlock();
+    cancelWorkspaceHydration();
+    showLoading('正在切换策略并计算完整历史…');
     try {
-        localStorage.setItem('quant_strategy', name);
-    } catch (error) {
-        showToast('策略已切换，但偏好保存失败；本次设置仅在当前页面生效。', 'warn', 6000);
+        await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+        if (sequence !== strategySwitchSequence || state.id !== selectedId || state.period !== selectedPeriod) return;
+        const canReuseCurrentIndicators = !!(getActiveData()?.length && state.indicators.macd && state.indicators.rsi && state.indicators.kdj && state.indicators.ma);
+        setActiveStrategy(name);
+        try {
+            localStorage.setItem('quant_strategy', name);
+        } catch (error) {
+            showToast('策略已切换，但偏好保存失败；本次设置仅在当前页面生效。', 'warn', 6000);
+        }
+        renderSettings();
+        if (getActiveData()) {
+            state.pendingIndicatorMutation = canReuseCurrentIndicators ? { mode:'strategy-only', startIdx:0 } : { mode:'full', startIdx:0 };
+            markIndicatorsDirty();
+            while (!await updateAllIndicatorsAsync()) {
+                if (sequence !== strategySwitchSequence || state.id !== selectedId || state.period !== selectedPeriod || state.strategy !== name) return;
+            }
+            PERF.mark(perfTrace, 'indicators');
+            draw();
+            PERF.mark(perfTrace, 'draw');
+            safeUpdateSidebar();
+            PERF.mark(perfTrace, 'sidebar');
+            refreshWatchlistSignalSnapshots();
+            PERF.mark(perfTrace, 'watchlist');
+            renderWatchlist();
+        }
+    } finally {
+        PERF.end(perfTrace, { selected:state.strategy });
+        if (sequence === strategySwitchSequence) {
+            hideLoading();
+            releaseChartInteractionAfterPaint(interactionToken);
+            requestVisibleWorkspaceRefresh();
+        }
     }
-    renderSettings();
-
-    if (getActiveData()) {
-        state.pendingIndicatorMutation = canReuseCurrentIndicators ? { mode: 'strategy-only', startIdx: 0 } : { mode: 'full', startIdx: 0 };
-        markIndicatorsDirty();
-        updateAllIndicators();
-        PERF.mark(perfTrace, 'indicators');
-        draw();
-        PERF.mark(perfTrace, 'draw');
-        safeUpdateSidebar();
-        PERF.mark(perfTrace, 'sidebar');
-        refreshWatchlistSignalSnapshots();
-        PERF.mark(perfTrace, 'watchlist');
-        renderWatchlist();
-    }
-    PERF.end(perfTrace, { selected: state.strategy });
 }
 
 function renderSettings() {

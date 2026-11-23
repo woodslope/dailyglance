@@ -121,6 +121,12 @@ function renderCompactConclusionContext(idx, full) {
     </div>`;
 }
 
+function renderWaveEnvironmentLabel(decision) {
+    if (state.strategy !== '波段抄底型' || state.mode !== 'stock' || state.period !== 'daily'
+        || !decision?.waveContext?.inScope) return '';
+    return `<div class="conclusion-environment text-dim">当前环境：<span class="text-main">${escapeHTML(decision.waveContext.regimeLabel || '未知')}</span></div>`;
+}
+
 function getConclusionTitleHTML(isIndexMode) {
     const titleText = isIndexMode ? '大盘每日结论' : '个股每日结论';
     const strategyLabel = getStrategyShortLabel();
@@ -301,6 +307,8 @@ const bsMarkerPlugin = {
                 }
             } 
             else if (d._decision.bsMark === 'S') { 
+                ctx.save();
+                ctx.font = 'bold 13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
                 ctx.fillStyle = colorDownHex; 
                 const py = y.getPixelForValue(d.high);
                 if (!isNaN(py)) {
@@ -309,6 +317,7 @@ const bsMarkerPlugin = {
                     ctx.strokeText(label, px, markerY);
                     ctx.fillText(label, px, markerY);
                 }
+                ctx.restore();
             } else {
                 const adjustment = getPositionAdjustment(d);
                 if (!adjustment || adjustment.temporary) return;
@@ -316,7 +325,7 @@ const bsMarkerPlugin = {
                 if (!Number.isFinite(py)) return;
                 const markerY = adjustment.increase ? Math.min(py + 14, bottom - 8) : Math.max(py - 14, top + 8);
                 ctx.save();
-                ctx.font = '500 9px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+                ctx.font = `${adjustment.increase ? '500 9px' : '700 10px'} system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
                 ctx.lineWidth = 3;
                 ctx.fillStyle = adjustment.increase ? colorUpHex : colorDownHex;
                 ctx.strokeText(adjustment.label, px, markerY);
@@ -1007,10 +1016,13 @@ function generateAnalysisHTML(idx, full, meta) {
 
     const cooldownHtml = meta.inCooldown ? '<div class="cooldown-ribbon">防守冷静期</div>' : '';
     const titleHtml = getConclusionTitleHTML(isIndexMode);
-    const adjustment = getPositionAdjustment(full[idx]);
+    const previousPosition = decision.prevAdv;
+    const showPreviousPosition = Number.isFinite(previousPosition) && previousPosition > 0 && previousPosition <= 100
+        && Number.isFinite(decision.position) && decision.position >= 0 && decision.position <= 100
+        && previousPosition !== decision.position;
     const positionLabel = (isIndexMode ? '当前风险仓位' : '策略参考仓位') + (full[idx]?._isLive ? '（临时）' : '');
-    const previousPositionHtml = adjustment
-        ? `<span class="position-change-from">${escapeHTML(`${adjustment.from}%`)} → </span>`
+    const previousPositionHtml = showPreviousPosition
+        ? `<span class="position-change-from">${escapeHTML(`${previousPosition}%`)} → </span>`
         : '';
     const positionWhyLabel = `为什么是${noviceSummary.positionText}`;
     const whyText = noviceSummary.why || noviceSummary.reason;
@@ -1034,7 +1046,7 @@ function generateAnalysisHTML(idx, full, meta) {
                 <div class="conclusion-title-row">
                     <div class="block-title conclusion-block-title">${titleHtml}</div>
                 </div>
-                <div class="kicker text-main conclusion-state-kicker">${escapeHTML(noviceSummary.state)}</div>
+                <div class="kicker conclusion-state-kicker">${escapeHTML(noviceSummary.state)}</div>
             </div>
             <div class="action-line">
                 <div class="action-name ${decision.simpleColorClass}">${escapeHTML(noviceSummary.action)}</div>
@@ -1043,6 +1055,7 @@ function generateAnalysisHTML(idx, full, meta) {
                     <strong class="mono text-main">${previousPositionHtml}${escapeHTML(noviceSummary.positionText)}</strong>
                 </div>
             </div>
+            ${renderWaveEnvironmentLabel(decision)}
             <div class="decision-reason-block">
                 <div class="decision-reason-row">
                     <span>为什么这么做：</span>
@@ -1519,6 +1532,19 @@ function getDataFreshnessNotice(id = state.id, statusLabel = '') {
     return { text: parts.join(' · '), warn: !!(failed || stale || state.quoteRefreshFailures?.[id]) };
 }
 
+function getStrategyPreparationNotice(item, id = state.id) {
+    if (typeof activeIndicatorUpdate !== 'undefined' && activeIndicatorUpdate && !activeIndicatorUpdate.cancelled
+        && activeIndicatorUpdate.id === id) return '策略计算中';
+    if (state.mode !== 'index' || !item?.date || typeof CORE_MARKET_INDEX_IDS === 'undefined') return '';
+    const market = typeof getMarketContext === 'function' ? getMarketContext(item.date) : null;
+    if (market && market.trends.length < CORE_MARKET_INDEX_IDS.length) {
+        return state.indexHydrationPending ? '策略背景补齐中' : '策略背景未就绪';
+    }
+    if (item._decision && typeof isCurrentDecisionMarketContext === 'function'
+        && !isCurrentDecisionMarketContext(item._decision)) return '策略更新中';
+    return '';
+}
+
 function updateDataStatusRefreshBadge(item = null, id = state.id, full = null) {
     const bar = document.getElementById('lastRefreshBar');
     if (!bar) return;
@@ -1541,12 +1567,13 @@ function updateDataStatusRefreshBadge(item = null, id = state.id, full = null) {
     const freshness = document.getElementById('refreshFreshness');
     if (freshness) {
         const notice = getDataFreshnessNotice(id, status.label);
-        freshness.className = `refresh-freshness ${notice.warn ? 'text-warn' : 'text-dim'}`;
-        freshness.textContent = notice.text;
-        freshness.hidden = !notice.text;
+        const preparation = getStrategyPreparationNotice(currentItem, id);
+        freshness.className = `refresh-freshness ${notice.warn || preparation ? 'text-warn' : 'text-dim'}`;
+        freshness.textContent = [notice.text, preparation].filter(Boolean).join(' · ');
+        freshness.hidden = !freshness.textContent;
     }
     const detail = document.getElementById('refreshDataDetail');
-    if (detail) detail.textContent = `${status.detail}\n${getDataFreshnessText(id)}`;
+    if (detail) detail.textContent = `${status.detail}\n${getDataFreshnessText(id)}${getStrategyPreparationNotice(currentItem, id) ? '\n行情已确认不等于策略背景已就绪；结论和买卖标记仍待背景补齐后重新计算。' : ''}`;
     const html = renderDataStatusRefreshBadge(currentItem, id, data).trim();
     if (existing) {
         if (existing.outerHTML !== html) existing.outerHTML = html;

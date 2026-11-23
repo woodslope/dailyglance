@@ -22,7 +22,15 @@ function cancelIdleTask(handle) {
 function applyActivePanelAfterMarketPreload() {
     if (!state.pendingIndicatorMutation || typeof scheduleCachedFetchRefreshApply !== 'function') return;
     if (!['index', 'stock'].includes(state.mode) || !getActiveData()?.length) return;
-    scheduleCachedFetchRefreshApply(state.id);
+    if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
+        updateDataStatusRefreshBadge();
+        scheduleCachedFetchRefreshApply(state.id);
+        return;
+    }
+    // 背景缓存已落入内存后，在同一帧提交图表/标记/结论，再展示新的环境卡。
+    const txn = beginRefreshTransaction('rightPanel', { source:'market-preload', id:state.id });
+    const status = applyActiveDataRefresh(state.id);
+    if (status !== 'no-data' && status !== 'skipped') markRefreshTime(txn, { path:status, id:state.id });
 }
 
 let workspaceHydrationGeneration = 0;
@@ -49,11 +57,11 @@ function requestVisibleWorkspaceRefresh() {
         await preloadCacheOnly({ ids, isCurrent });
         if (!isCurrent()) return;
         const txn = beginRefreshTransaction('leftList', { source: 'visible-cache-preload', area: getSidebarRealtimeArea() });
+        applyActivePanelAfterMarketPreload();
         if (tab === 'index') renderIndexList();
         else renderWatchlist();
         const appliedCount = ids.filter(key => state.rawData[key]?.length || state.liveQuotes[key]).length;
         if (appliedCount) markLeftListRefreshForActiveTab(txn, { area: getSidebarRealtimeArea(), expectedCount: ids.length, appliedCount, status: appliedCount === ids.length ? 'full' : 'partial' });
-        applyActivePanelAfterMarketPreload();
         // 先让用户选中的标的就绪，再占用历史请求槽位。
         const pendingSelection = activeSelectionLoad;
         if (pendingSelection?.selectionSeq === selectionSeq) {
@@ -67,6 +75,7 @@ function requestVisibleWorkspaceRefresh() {
         if (!isCurrent()) return;
         await ensureMarketTemperatureData({ ids: coreIds, isCurrent });
         if (!isCurrent()) return;
+        applyActivePanelAfterMarketPreload();
         if (tab === 'stock') {
             await hydrateWatchlistDecisionCache({ isCurrent });
             if (!isCurrent()) return;

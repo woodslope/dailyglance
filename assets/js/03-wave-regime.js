@@ -222,7 +222,7 @@ function getWaveShortRepairContext(idx, full, meta, rawSignals, exit, prevPos, w
     if (!waveContext?.inScope || !['down', 'transition'].includes(waveContext.regime)) return empty;
     if (![0, 30].includes(Number(prevPos))) return empty;
     if (meta?.inCooldown || (meta?.exitSignals || []).length || (meta?.warningSignals || []).length
-        || !exit || exit.level !== '无明确离场') return empty;
+        || !exit || getExitStateCode(exit) !== EXIT_STATE.NONE) return empty;
 
     const shortPeriod = Math.max(1, Number(config.shortMovingAveragePeriod) || 5);
     const trendPeriod = Math.max(1, Number(config.trendMovingAveragePeriod) || 20);
@@ -304,7 +304,7 @@ function getTargetStrengthTier(meta, idx, full, ind, risk, exit) {
     const ma20Prev = Number(ind?.ma?.[20]?.[Math.max(0, idx - 5)]);
     const close = Number(full?.[idx]?.close);
     const hasTrendData = [close, ma20, ma60, ma20Prev].every(Number.isFinite);
-    const independent = meta?.type === '✅ 明确转强'
+    const independent = getSignalStateCode(meta) === SIGNAL_STATE.READY
         && hasTrendData
         && close > ma20
         && ma20 > ma60
@@ -312,7 +312,7 @@ function getTargetStrengthTier(meta, idx, full, ind, risk, exit) {
         && !(meta?.warningSignals || []).length
         && !(meta?.exitSignals || []).length
         && !meta?.inCooldown
-        && exit?.level === '无明确离场';
+        && getExitStateCode(exit) === EXIT_STATE.NONE;
     return {
         tier: independent ? 'independent' : 'ordinary',
         label: independent ? '标的独立走强' : '普通机会',
@@ -367,7 +367,7 @@ function getSoftSignalGraceContext(meta, prevPos, basePosition, exit, idx, strat
     const softSignals = invalidatedToday.filter(item => item?.reason === 'kdj-dead-cross');
     const hardSignals = invalidatedToday.filter(item => item?.reason === 'price-break');
     const scoreBelowHold = Number.isFinite(holdThreshold) && (meta?.windowScore ?? 0) < holdThreshold;
-    const exitIsClear = !exit || exit.level === '无明确离场';
+    const exitIsClear = !exit || getExitStateCode(exit) === EXIT_STATE.NONE;
     const applied = graceDays > 0
         && watchPosition > 0
         && prevPos > 0
@@ -390,7 +390,7 @@ function getSoftSignalGraceContext(meta, prevPos, basePosition, exit, idx, strat
 function getLocalStructureDefenseContext(meta, b11Defense, prevPos, exit, strategy = STRATEGY) {
     const localBreaks = b11Defense?.localBreak ? [b11Defense] : [];
     const watchPosition = Number(strategy?.watchPosition) || 0;
-    const exitIsClear = !exit || exit.level === '无明确离场';
+    const exitIsClear = !exit || getExitStateCode(exit) === EXIT_STATE.NONE;
     const applied = localBreaks.length > 0
         && watchPosition > 0
         && prevPos > 0
