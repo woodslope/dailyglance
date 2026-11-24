@@ -526,6 +526,7 @@ function scheduleChartDragSidebarUpdate() {
 function isMismatchedChartDragEvent(event) {
     if (!chartDragPan || !event) return false;
     if (chartDragPan.inputKind === 'pointer' && event.type === 'mousemove') return true;
+    if (chartDragPan.pointerId != null && event.pointerId != null && chartDragPan.pointerId !== event.pointerId) return true;
     if (chartDragPan.inputKind === 'mouse' && event.pointerId != null) return true;
     return false;
 }
@@ -565,10 +566,13 @@ function startChartDragPan(event) {
     if (shouldIgnoreChartInteractionEvent(event)) return;
     if (event?.button != null && event.button !== 0) return;
     const inputKind = event?.pointerId != null ? 'pointer' : 'mouse';
+    const compact = shouldRenderCompactMainChartOnly();
+    const sourceCanvas = state.charts.main?.canvas;
+    if (compact && (inputKind === 'mouse' || event?.isPrimary === false || event?.target !== sourceCanvas)) return;
     if (chartDragPan && chartDragPan.inputKind === 'pointer' && inputKind === 'mouse') return;
     if (chartDragPan && chartDragPan.inputKind === inputKind) return;
     const activeData = getActiveData();
-    if (!activeData || activeData.length <= getViewportLength()) return;
+    if (!activeData?.length || (!compact && activeData.length <= getViewportLength())) return;
     const barWidth = getChartPanBarWidth();
     if (!barWidth) return;
 
@@ -584,6 +588,12 @@ function startChartDragPan(event) {
         target: event.currentTarget || null,
         pointerId: event.pointerId,
         pointerCaptured: false,
+        sourceCanvas,
+        canPan: activeData.length > getViewportLength(),
+        startLockIdx: state.lockIdx,
+        startFrozen: state.isFrozen,
+        startViewport: { ...state.viewport },
+        startedAtLatest: state.lockIdx === activeData.length - 1 && state.viewport.mode === 'latest',
         inputKind
     };
 }
@@ -595,10 +605,13 @@ function moveChartDragPan(event) {
     const deltaY = event.clientY - chartDragPan.startY;
     const threshold = Math.max(8, chartDragPan.barWidth / 3);
     if (!chartDragPan.pointerCaptured && Math.abs(deltaY) >= 8 && Math.abs(deltaY) > Math.abs(deltaX)) {
-        chartDragPan = null;
+        cancelChartDragPan('vertical-scroll');
+        if (shouldRenderCompactMainChartOnly()) suppressChartHoverSelection();
         return;
     }
     if (!chartDragPan.pointerCaptured && Math.abs(deltaX) >= threshold) {
+        if (shouldRenderCompactMainChartOnly() && Math.abs(deltaX) <= Math.abs(deltaY) * 1.5) return;
+        if (!chartDragPan.canPan) { chartDragPan.didMove = true; return; }
         chartDragPan.didMove = true;
         chartDragPan.pointerCaptured = true;
         if (chartDragPan.target?.setPointerCapture && chartDragPan.pointerId != null) {
@@ -613,26 +626,54 @@ function moveChartDragPan(event) {
 
 function finishChartDragPan(event) {
     if (shouldIgnoreChartInteractionEvent(event) || !chartDragPan || isMismatchedChartDragEvent(event)) return;
-    const target = chartDragPan.target || event?.currentTarget;
+    const drag = chartDragPan;
+    const target = drag.target || event?.currentTarget;
+    const compact = shouldRenderCompactMainChartOnly();
+    // 触摸有隐式canvas捕获；转交给拖拽容器产生的lost并不是手势取消。
+    if (compact && event?.type === 'lostpointercapture' && drag.pointerCaptured
+        && event.target !== target && target?.hasPointerCapture?.(drag.pointerId)) return;
+    const cancelled = /^(pointercancel|lostpointercapture)$/.test(event?.type || '');
     cancelChartDragPanFrame();
     cancelChartDragSidebarUpdate();
     chartDragSecondaryLastAt = 0;
-    applyChartDragPan(true);
-    if (chartDragPan.pointerCaptured && target?.releasePointerCapture && event?.pointerId != null) {
+    // 手机页面滚动会取消pointer；未判定为横拖的抖动不能被force结算。
+    if (!compact || (drag.pointerCaptured && !cancelled)) applyChartDragPan(true);
+    if (compact && cancelled && drag.didPan) {
+        const data = getActiveData();
+        if (drag.startedAtLatest) {
+            applyHistoryNavigationState({lockIdx:data.length-1,isFrozen:false});
+            resetViewportToLatest(data);
+        } else {
+            applyHistoryNavigationState({lockIdx:drag.startLockIdx,isFrozen:drag.startFrozen});
+            state.viewport = drag.startViewport;
+        }
+        drawViewport({interaction:true,updateSecondary:true});
+    }
+    chartDragPan = null;
+    if (drag.pointerCaptured && target?.releasePointerCapture && event?.pointerId != null) {
         try { target.releasePointerCapture(event.pointerId); } catch(e) {}
     }
     getChartDragMainBox(target)?.classList?.remove('drag-panning');
     clearChartDragPreview();
-    if (chartDragPan.didPan) {
+    if (drag.didPan) {
         suppressChartHoverSelection();
         chartDragSidebarLastAt = Date.now();
         safeUpdateSidebar();
         updateFreezeBadge();
         updateCrosshairOverlay();
-    } else if (chartDragPan.didMove) {
+    } else if (compact && !cancelled && !drag.didMove && event?.type === 'pointerup') {
+        suppressChartHoverSelection();
+        const rect = drag.sourceCanvas?.getBoundingClientRect?.();
+        const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+        if (rect && distance < 8 && event.clientX >= rect.left && event.clientX <= rect.right
+            && event.clientY >= rect.top && event.clientY <= rect.bottom) {
+            const chart = state.charts.main;
+            const elements = chart?.getElementsAtEventForMode?.(event,'index',{intersect:false},false) || [];
+            selectChartElements(elements);
+        }
+    } else if (drag.didMove || (compact && cancelled)) {
         suppressChartHoverSelection();
     }
-    chartDragPan = null;
 }
 
 function getChartDragMainBox(target) {
@@ -686,15 +727,19 @@ function bindChartPointerReset() {
     const container = document.querySelector('.integrated-container');
     if (!container) return;
     container.addEventListener('mouseleave', () => {
-        resetHoverSelectionToLatest();
+        if (!shouldRenderCompactMainChartOnly()) resetHoverSelectionToLatest();
     });
     chartPointerResetBound = true;
 }
 
 function handleChartHover(e, els) {
-    if (chartInteractionBlocked || chartDragPan) return;
+    // 窄屏不把touchmove、兼容鼠标事件或Chart更新重放当作日期选择。
+    if (shouldRenderCompactMainChartOnly() || chartInteractionBlocked || chartDragPan) return;
     if (Date.now() < chartHoverSuppressUntil) return;
-    
+    selectChartElements(els);
+}
+
+function selectChartElements(els) {
     if (els && els.length) {
         const activeData = getActiveData(); if (!activeData) return;
         const ti = resolveVisibleDataIndex(activeData, els[0].index);
@@ -771,6 +816,7 @@ function renderChartViewport(perfTrace, options = {}) {
         normalized: true,
         layout: getLayout(), 
         interaction: { mode: 'index', intersect: false },
+        ...(shouldRenderCompactMainChartOnly() ? {events:[]} : {}),
         onHover: handleChartHover
     });
     
@@ -1423,6 +1469,8 @@ function applySidebarHTML(bundle, cacheKey = '', options = {}) {
 }
 
 function getDataStatusBadge(item, id = state.id, full = getActiveData()) {
+    const calendar = getTradingCalendarInfo();
+    if (!calendar.covered) return { tone:'warn', label:'日历待更新', detail:`${calendar.year}年休市表未维护，确认日期暂按周末推断；请核对交易所交易日。` };
     const display = state.displayStatus?.[id] || {};
     const confirmed = state.confirmedStatus?.[id] || {};
     const effectiveMode = getEffectiveDisplayModeForItem(item, id);

@@ -218,60 +218,25 @@ function searchLocalStocks(q) {
 }
 
 function jsonpSearchEastmoney(query) {
-    return new Promise(resolve => {
-        const cb = 'em_search_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        const url = `https://searchadapter.eastmoney.com/api/suggest/get?input=${encodeURIComponent(query)}&type=14&token=${STOCK_TOKEN}&cb=${cb}`;
-        let cl = false;
-        const cleanup = () => {
-            if (cl) return;
-            cl = true; clearTimeout(timer); delete window[cb];
-            const s = document.getElementById('jq_' + cb);
-            if (s) s.remove();
-        };
-        const timer = setTimeout(() => { cleanup(); resolve([]); }, 5000);
-        window[cb] = data => {
-            cleanup();
-            const list = data?.QuotationCodeTable?.Data || [];
-            resolve(list.filter(x => /^\d{6}$/.test(x.Code)).map(x => ({
-                Code: x.Code,
-                Name: x.Name || x.SecurityName || x.Code,
-                QuoteID: x.QuoteID,
-                Classify: x.Classify,
-                SecurityTypeName: x.SecurityTypeName,
-                SecurityType: x.SecurityType
-            })));
-        };
-        const script = document.createElement('script');
-        script.id = 'jq_' + cb;
-        script.src = url;
-        script.onerror = () => { cleanup(); resolve([]); };
-        document.head.appendChild(script);
-    });
+    const cb = 'em_search_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    const url = `https://searchadapter.eastmoney.com/api/suggest/get?input=${encodeURIComponent(query)}&type=14&token=${STOCK_TOKEN}&cb=${cb}`;
+    return requestJsonp({url,id:'jq_'+cb,callback:cb,globals:[cb],timeoutMs:5000,parse:data => {
+        const list = data?.QuotationCodeTable?.Data;
+        return Array.isArray(list) ? list.filter(item => item && /^\d{6}$/.test(item.Code)).map(item => ({
+            Code:item.Code,Name:item.Name || item.SecurityName || item.Code,QuoteID:item.QuoteID,
+            Classify:item.Classify,SecurityTypeName:item.SecurityTypeName,SecurityType:item.SecurityType
+        })) : [];
+    }}).then(rows => rows || []);
 }
 
 function jsonpSearchSina(query) {
-    return new Promise(resolve => {
-        const cb = 'sina_search_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        const url = `https://suggest.sinajs.cn/suggest/type=11&key=${encodeURIComponent(query)}&callback=${cb}`;
-        let cl = false;
-        const cleanup = () => {
-            if (cl) return;
-            cl = true; clearTimeout(timer); delete window[cb];
-            const s = document.getElementById('jq_' + cb);
-            if (s) s.remove();
-        };
-        const timer = setTimeout(() => { cleanup(); resolve([]); }, 5000);
-        window[cb] = data => {
-            cleanup();
-            const list = data?.result?.items || [];
-            resolve(list.map(i => ({ Code: i.code, Name: i.name })).filter(x => /^\d{6}$/.test(x.Code)));
-        };
-        const script = document.createElement('script');
-        script.id = 'jq_' + cb;
-        script.src = url;
-        script.onerror = () => { cleanup(); resolve([]); };
-        document.head.appendChild(script);
-    });
+    const cb = 'sina_search_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    const url = `https://suggest.sinajs.cn/suggest/type=11&key=${encodeURIComponent(query)}&callback=${cb}`;
+    return requestJsonp({url,id:'jq_'+cb,callback:cb,globals:[cb],timeoutMs:5000,parse:data => {
+        const list = data?.result?.items;
+        return Array.isArray(list) ? list.filter(Boolean).map(item => ({Code:item.code,Name:item.name}))
+            .filter(item => /^\d{6}$/.test(item.Code)) : [];
+    }}).then(rows => rows || []);
 }
 
 async function jsonpSearch(query) {
@@ -455,8 +420,10 @@ async function loadWatchlist() {
     try { 
         const w = await dbGet('watchlist_list'); 
         const rawWatchlist = (w && w.data) || [];
-        state.watchlist = rawWatchlist.map(stock => normalizeSecurityTarget(stock));
-        if (JSON.stringify(state.watchlist) !== JSON.stringify(rawWatchlist)) {
+        const normalized = rawWatchlist.map(stock => normalizeSecurityTarget(stock));
+        const needsNormalization = JSON.stringify(normalized) !== JSON.stringify(rawWatchlist);
+        state.watchlist = overlayPendingWatchlistMutations(normalized);
+        if (needsNormalization) {
             try {
                 await saveWatchlist();
             } catch(e) {}
@@ -466,11 +433,50 @@ async function loadWatchlist() {
     } 
 }
 
-async function saveWatchlist() { 
-    await dbSet('watchlist_list', state.watchlist);
-    try {
-        localStorage.setItem(SYS_CONFIG.WATCHLIST_SYNC_KEY, JSON.stringify({ owner: PAGE_SESSION_ID, at: Date.now() }));
-    } catch(e) {}
+const pendingWatchlistMutations = [];
+let watchlistSaveQueue = Promise.resolve();
+function overlayPendingWatchlistMutations(list) {
+    const pendingRemove = new Set((state.watchlist || []).filter(row => row._pendingRemove).map(row => row.code));
+    let rows = list;
+    for (const entry of pendingWatchlistMutations) rows = applyStoredWatchlistMutation(rows,entry.operation);
+    const currentByCode = new Map((state.watchlist || []).map(row => [row.code,row]));
+    // 保留撤销回调引用和本页状态快照，不把UI私有字段写回数据库。
+    return rows.map(row => {
+        const current = currentByCode.get(row.code);
+        const next = current ? Object.assign(current,row) : row;
+        if (pendingRemove.has(row.code)) next._pendingRemove = true;
+        return next;
+    });
+}
+async function saveWatchlist(operation = { type:'normalize' }) {
+    const entry = { operation };
+    pendingWatchlistMutations.push(entry);
+    const save = async () => {
+        let saved;
+        try {
+            saved = await mutateStoredWatchlist(operation);
+        } catch (error) {
+            // 跨页新增可能在事务内才触及上限；恢复真实列表，不能假装已保存。
+            const record = await dbGet('watchlist_list');
+            if (Array.isArray(record?.data)) {
+                const remaining = pendingWatchlistMutations.filter(item => item !== entry);
+                let rows = record.data.map(normalizeSecurityTarget);
+                for (const item of remaining) rows = applyStoredWatchlistMutation(rows,item.operation);
+                state.watchlist = rows;
+                renderWatchlist();
+            }
+            showToast(error.message || '自选修改未保存，请重试。','warn',4000);
+            throw error;
+        } finally {
+            const index = pendingWatchlistMutations.indexOf(entry);
+            if (index >= 0) pendingWatchlistMutations.splice(index,1);
+        }
+        if (saved) state.watchlist = overlayPendingWatchlistMutations(saved);
+        try { localStorage.setItem(SYS_CONFIG.WATCHLIST_SYNC_KEY, JSON.stringify({ owner:PAGE_SESSION_ID, at:Date.now() })); } catch(error) {}
+    };
+    const task = watchlistSaveQueue.then(save,save);
+    watchlistSaveQueue = task.catch(() => {});
+    return task;
 }
 
 let watchlistDragCode = '';
@@ -533,12 +539,12 @@ function updateWatchlistDragTarget(event, targetCode) {
     watchlistDropTargetRow = row;
 }
 
-async function applyWatchlistOrder(nextWatchlist) {
+async function applyWatchlistOrder(nextWatchlist, operation) {
     const previousWatchlist = state.watchlist;
     state.watchlist = nextWatchlist;
     renderWatchlist();
     try {
-        await saveWatchlist();
+        await saveWatchlist(operation);
     } catch(e) {
         state.watchlist = previousWatchlist;
         renderWatchlist();
@@ -556,7 +562,7 @@ async function moveWatchlistItem(sourceCode, targetCode, insertAfter = false) {
     let targetIndex = nextWatchlist.findIndex(item => item.code === targetCode);
     if (insertAfter) targetIndex += 1;
     nextWatchlist.splice(targetIndex, 0, moved);
-    await applyWatchlistOrder(nextWatchlist);
+    await applyWatchlistOrder(nextWatchlist, { type:'move', sourceCode, targetCode, insertAfter });
     return true;
 }
 
@@ -809,8 +815,21 @@ async function computeWatchlistDecisionSnapshotAsync(full, code) {
     const sourceId = normalizeSecurityTarget(owner.watchlist.find(stock => stock.code === code) || { code }).secid;
     const rawSource = owner.rawData[sourceId];
     const liveSource = owner.liveBars[sourceId];
-    const key = buildIndicatorKeyForData(codeToSecid(code), 'daily', owner.strategy, full);
-    const steps = computeWatchlistSnapshotSteps(full, code, 12);
+    const guard = createCalculationInputGuard(codeToSecid(code),'daily',owner.strategy,full);
+    const ownerCurrent = () => globalSelectionSeq === selectionSeq && owner.strategy === taskState.strategy
+        && owner.watchlist.some(stock => stock.code === code)
+        && owner.rawData[sourceId] === rawSource && owner.liveBars[sourceId] === liveSource;
+    const isCurrent = () => state === owner && ownerCurrent();
+    const clearOwnInvalidRows = () => {
+        // 活跃主图已经接管相同数组时，不清理另一个写者的结果。
+        if (!activeIndicatorUpdate || activeIndicatorUpdate.full !== full) clearCancelledCalculationRows(full);
+    };
+    const canCommit = () => {
+        if (!ownerCurrent()) return false;
+        if (!isCalculationInputCurrent(guard,true)) { clearOwnInvalidRows();return false; }
+        return true;
+    };
+    const steps = computeWatchlistSnapshotSteps(full,code,12,canCommit);
     // 每个时间片仅临时使用本任务的指标上下文；让出页面前恢复主应用状态。
     const run = method => {
         const current = state;
@@ -818,19 +837,17 @@ async function computeWatchlistDecisionSnapshotAsync(full, code) {
         try { return steps[method](); } finally { state = current; }
     };
     try {
-        while (state === owner && globalSelectionSeq === selectionSeq && state.strategy === taskState.strategy
-            && state.watchlist.some(stock => stock.code === code)
-            && state.rawData[sourceId] === rawSource && state.liveBars[sourceId] === liveSource
-            && key === buildIndicatorKeyForData(codeToSecid(code), 'daily', state.strategy, full)) {
+        while (isCurrent() && isCalculationInputCurrent(guard)) {
             const result = run('next');
             if (result.done) return result.value;
             await yieldCalculationTurn();
         }
+        if (isCurrent() && !isCalculationInputCurrent(guard)) clearOwnInvalidRows();
         return null;
     } finally { run('return'); }
 }
 
-function* computeWatchlistSnapshotSteps(full, code, sliceMs = 0) {
+function* computeWatchlistSnapshotSteps(full, code, sliceMs = 0, canCommit = null) {
     if (!full || full.length < 60) return null;
 
     const cachedDecision = getLatestDecisionFromData(full);
@@ -895,6 +912,7 @@ function* computeWatchlistSnapshotSteps(full, code, sliceMs = 0) {
                 sliceStarted = performance.now();
             }
         }
+        if (canCommit && !canCommit()) return null;
         if (cacheId && typeof storeDerivedIndicatorCache === 'function') {
             storeDerivedIndicatorCache(cacheId, 'daily', state.strategy, full, localIndicators);
         }
@@ -1059,7 +1077,7 @@ async function addToWatchlist(code, name, meta = {}) {
         const next = { ...existing, ...target, name: displayName };
         if (JSON.stringify(existing) !== JSON.stringify(next)) {
             Object.assign(existing, next);
-            await saveWatchlist();
+            await saveWatchlist({ type:'upsert', target });
             if (state.mode === 'stock') renderWatchlist();
         }
         return true;
@@ -1069,7 +1087,7 @@ async function addToWatchlist(code, name, meta = {}) {
         return false;
     }
     state.watchlist.push(target);
-    await saveWatchlist();
+    await saveWatchlist({ type:'upsert', target });
     if (state.mode === 'stock') renderWatchlist();
     return true;
 }
@@ -1138,7 +1156,7 @@ async function removeStock(code) {
     setTimeout(async function() {
         if (!stock._pendingRemove) return;
         state.watchlist = state.watchlist.filter(s => s.code !== code); 
-        await saveWatchlist(); 
+        await saveWatchlist({ type:'remove', code });
         renderWatchlist();
         
         if(state.stockId === code) {
@@ -1151,6 +1169,8 @@ async function removeStock(code) {
         } else if (!state.watchlist.length && state.tab === 'stock') {
             showEmptyWatchlistView();
         }
+        watchlistSnapshotQueue.delete(code);
+        retireSecurityData(normalizeSecurityTarget(stock).secid);
     }, 3000);
 }
 
@@ -2317,7 +2337,7 @@ function formatExternalLeadTradingDate(timestamp) {
 }
 
 function formatSectorTrendSigned(value, decimals = 2, suffix = '') {
-    const number = Number(value);
+    const number = finiteMarketNumber(value);
     if (!Number.isFinite(number)) return '--';
     const normalized = Math.abs(number) < Math.pow(10, -decimals) / 2 ? 0 : number;
     return `${normalized > 0 ? '+' : ''}${normalized.toFixed(decimals)}${suffix}`;
@@ -2417,7 +2437,7 @@ function renderSectorTrendOverview() {
         { label: '上涨趋势', value: summary.uptrendCount || 0, note: '多周期同向且上涨家数扩散', tone: 'is-positive' },
         { label: '刚刚转强', value: summary.turningCount || 0, note: '短中期改善，仍需继续确认', tone: 'is-mixed' },
         { label: '单日异动', value: summary.momentumCount || 0, note: '当日强势，尚未构成趋势', tone: 'is-warning' },
-        { label: '当前最强', value: summary.strongest || '--', note: `行业扫描 ${summary.totalCount || 0} 个 · ${sectorTrendState.conceptStatus === 'loading' ? '概念热点加载中' : `概念热点取前 ${summary.conceptCount || 0} 个`}`, tone: 'is-info', textValue: true }
+        { label: '当前最强', value: summary.strongest || '--', note: `行业扫描 ${summary.totalCount || 0} 个${summary.insufficientCount ? `（${summary.insufficientCount}个数据不足）` : ''} · ${sectorTrendState.conceptStatus === 'loading' ? '概念热点加载中' : `概念热点取前 ${summary.conceptCount || 0} 个`}`, tone: 'is-info', textValue: true }
     ];
     container.innerHTML = items.map(item => `
         <article class="sector-summary-card">
@@ -2478,17 +2498,17 @@ function renderSectorTrendCards(targetId, boards, emptyCopy) {
         const breadthText = board.memberCount
             ? `${board.upCount}涨 / ${board.downCount}跌 / ${board.flatCount}平`
             : '成分广度暂缺';
-        const flowText = Number.isFinite(Number(board.mainFlowPct))
+        const flowText = Number.isFinite(board.mainFlowPct)
             ? `主力净流入占比 ${formatSectorTrendSigned(board.mainFlowPct, 2, '%')}`
             : '资金数据暂缺';
         return `
-            <article class="sector-trend-card" aria-label="${escapeHTML(`${board.name}，${board.trendLabel}，趋势分 ${board.score}`)}">
+            <article class="sector-trend-card" aria-label="${escapeHTML(`${board.name}，${board.trendLabel}，趋势分 ${Number.isFinite(board.score) ? board.score : '暂缺'}`)}">
                 <div class="sector-trend-card-head">
                     <div class="sector-trend-identity">
                         <div class="sector-trend-eyebrow"><span>${escapeHTML(board.typeLabel)}</span><span class="mono">${escapeHTML(board.code)}</span></div>
                         <h3>${index + 1}. ${escapeHTML(board.name)}</h3>
                     </div>
-                    <div class="sector-trend-score"><strong class="mono">${board.score}</strong><span>趋势分</span></div>
+                    <div class="sector-trend-score"><strong class="mono">${Number.isFinite(board.score) ? board.score : '--'}</strong><span>趋势分</span></div>
                 </div>
                 <div class="sector-trend-metrics">
                     <div><span>今日</span><strong class="mono ${getSectorTrendMetricClass(board.changePct)}">${formatSectorTrendSigned(board.changePct, 2, '%')}</strong></div>
@@ -2496,7 +2516,7 @@ function renderSectorTrendCards(targetId, boards, emptyCopy) {
                     <div><span>10日</span><strong class="mono ${getSectorTrendMetricClass(board.return10)}">${formatSectorTrendSigned(board.return10, 2, '%')}</strong></div>
                     <div><span>60日</span><strong class="mono ${getSectorTrendMetricClass(board.return60)}">${formatSectorTrendSigned(board.return60, 2, '%')}</strong></div>
                     <div><span>5日相对</span><strong class="mono ${getSectorTrendMetricClass(board.relative5)}">${formatSectorTrendSigned(board.relative5, 2, '%')}</strong></div>
-                    <div><span>上涨覆盖</span><strong class="mono">${Number(board.breadthPct).toFixed(0)}%</strong></div>
+                    <div><span>上涨覆盖</span><strong class="mono">${Number.isFinite(board.breadthPct) ? `${board.breadthPct.toFixed(0)}%` : '--'}</strong></div>
                 </div>
                 <div class="sector-trend-evidence">
                     <span>${escapeHTML(breadthText)}</span>

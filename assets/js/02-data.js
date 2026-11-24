@@ -166,6 +166,41 @@ function getActiveSecurityTarget() {
     if (found) return normalizeSecurityTarget(found);
     return normalizeSecurityTarget({ Code: state.stockId, Name: state.stockId, secid: state.id });
 }
+const retiredSecurityIds = new Set();
+function isRetiredSecurity(id) {
+    return retiredSecurityIds.has(id) && state.id !== id
+        && !(state.watchlist || []).some(stock => normalizeSecurityTarget(stock).secid === id);
+}
+function releaseRetiredSecurityData() {
+    for (const id of retiredSecurityIds) {
+        if (getIndexConfig(id) || (state.watchlist || []).some(stock => normalizeSecurityTarget(stock).secid === id)) {
+            retiredSecurityIds.delete(id);
+            continue;
+        }
+        if (state.id === id || historySyncInFlight.has(id) || syncDataInFlight.has(id) || confirmedDataInFlight.has(id)
+            || [...cachedFetchInFlight.keys()].some(key => key.startsWith(id + ':')) || requestManager.limiters.get(id)?.isFetching) continue;
+        let released = false;
+        for (const key of ['rawData','weeklyData','liveBars','liveQuotes','liveDailyData','liveWeeklyData','historyChecks',
+            'quoteRefreshFailures','confirmedStatus','displayStatus','realtimeBatchAt','activeHistoryRefreshAt']) {
+            if (state[key] && Object.prototype.hasOwnProperty.call(state[key],id)) { delete state[key][id]; released = true; }
+        }
+        clearLiveOverlayCache(id);
+        historyRefreshMeta.delete(id);
+        requestManager.limiters.delete(id);
+        lastUpdateClicks.delete(id);
+        _lastPersistedDecisionCacheKey.delete(id);
+        for (const key of derivedIndicatorCache.keys()) if (key.startsWith(id + '_')) { derivedIndicatorCache.delete(key); released = true; }
+        if (released) { renderCache.clear(); clearLookupCacheOnly(); }
+        // 保留有界的退休标记，拒绝晚到消费者再次填回已移除标的。
+    }
+}
+function retireSecurityData(id) {
+    if (!id) return;
+    retiredSecurityIds.add(id);
+    while (retiredSecurityIds.size > 64) retiredSecurityIds.delete(retiredSecurityIds.values().next().value);
+    releaseRetiredSecurityData();
+}
+
 const cachedFetchRefreshJobs = new Map();
 let cachedFetchRefreshApplyTimer = 0;
 let pendingCachedFetchRefreshApplyId = '';
@@ -192,7 +227,22 @@ const CN_MARKET_HOLIDAYS = new Set([
 ]);
 
 function getBJDate() { return new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Shanghai"})); }
-function isValidPrice(price, id) { return !isNaN(price) && price > 0; }
+function finiteMarketNumber(value, fallback = NaN) {
+    if (typeof value !== 'number' && typeof value !== 'string') return fallback;
+    if (typeof value === 'string' && !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())) return fallback;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+function isValidPrice(price, id) { return finiteMarketNumber(price) > 0; }
+function isValidMarketDate(date) {
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+    const parsed = new Date(`${date}T00:00:00Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+}
+function getTradingCalendarInfo(date = getTodayDate()) {
+    const year = isValidMarketDate(date) ? Number(date.slice(0, 4)) : 0;
+    return { year, covered: year === 2026, inferred: year !== 2026 };
+}
 function formatBJDate(date = getBJDate()) { return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; }
 function getTodayDate() { return formatBJDate(getBJDate()); }
 
@@ -264,9 +314,9 @@ function normalizeTencentQuoteAmount(rawAmount) {
         : 0;
 }
 function isTradingDay(dateStr) {
-    if (!dateStr) return false;
-    const d = new Date(dateStr + 'T00:00:00+08:00');
-    const day = d.getDay();
+    if (!isValidMarketDate(dateStr)) return false;
+    // 日期字符串代表交易所日历日，不得用电脑所在地的星期解释。
+    const day = new Date(dateStr + 'T00:00:00Z').getUTCDay();
     return day !== 0 && day !== 6 && !CN_MARKET_HOLIDAYS.has(dateStr);
 }
 function isMarketOpen() {
@@ -306,26 +356,26 @@ function getConfirmedHistoryCutoffDate() {
     return getExpectedConfirmedDate();
 }
 function normalizeConfirmedHistoryData(rows, id) {
-    if (!rows || !rows.length) return [];
+    if (!Array.isArray(rows) || !rows.length) return [];
     const cutoffDate = getConfirmedHistoryCutoffDate();
     const byDate = new Map();
     rows.forEach(row => {
-        if (!row || !row.date || row.date > cutoffDate) return;
-        const open = parseFloat(row.open);
-        const close = parseFloat(row.close);
-        const high = parseFloat(row.high);
-        const low = parseFloat(row.low);
-        const vol = parseFloat(row.vol);
-        const amt = parseFloat(row.amt);
-        if (!isValidPrice(open, id) || !isValidPrice(close, id) || !isValidPrice(high, id) || !isValidPrice(low, id)) return;
-        const fixedHigh = Math.max(high, open, close, low);
-        const fixedLow = Math.min(low, open, close, high);
+        if (!row || !isValidMarketDate(row.date) || row.date > cutoffDate) return;
+        const open = finiteMarketNumber(row.open);
+        const close = finiteMarketNumber(row.close);
+        const high = finiteMarketNumber(row.high);
+        const low = finiteMarketNumber(row.low);
+        const vol = finiteMarketNumber(row.vol, 0);
+        const amt = finiteMarketNumber(row.amt, 0);
+        if (![open, close, high, low].every(price => isValidPrice(price, id))) return;
+        // 不把异常OHLC静默修成可信历史；缺成交量/额沿用既有未知值0口径。
+        if (high < Math.max(open, close, low) || low > Math.min(open, close, high) || vol < 0 || amt < 0) return;
         byDate.set(row.date, {
             date: row.date,
             open,
             close,
-            high: fixedHigh,
-            low: fixedLow,
+            high,
+            low,
             vol: Number.isFinite(vol) && vol >= 0 ? vol : 0,
             amt: Number.isFinite(amt) && amt >= 0 ? amt : 0
         });
@@ -572,16 +622,19 @@ function tryApplyCachedLiveOverlay(id, series) {
 }
 
 function setDisplayStatus(id, patch = {}) {
+    if (isRetiredSecurity(id)) return;
     if (!state.displayStatus) state.displayStatus = {};
     state.displayStatus[id] = { ...(state.displayStatus[id] || {}), ...patch };
 }
 
 function setConfirmedStatus(id, patch = {}) {
+    if (isRetiredSecurity(id)) return;
     if (!state.confirmedStatus) state.confirmedStatus = {};
     state.confirmedStatus[id] = { ...(state.confirmedStatus[id] || {}), ...patch };
 }
 
 function setLiveQuote(id, bar, quality = 'quote-only', reason = '', meta = {}) {
+    if (isRetiredSecurity(id)) return false;
     if (!id || !bar || !isValidPrice(bar.close, id)) return false;
     if (!state.liveQuotes) state.liveQuotes = {};
     state.liveQuotes[id] = {
@@ -604,6 +657,7 @@ function setLiveQuote(id, bar, quality = 'quote-only', reason = '', meta = {}) {
 }
 
 function setLiveBar(id, bar, source = 'api', meta = {}) {
+    if (isRetiredSecurity(id)) return false;
     if (!id || !bar || !isValidPrice(bar.close, id)) return false;
     if (!state.liveBars) state.liveBars = {};
     if (!state.liveDailyData) state.liveDailyData = {};
@@ -789,11 +843,14 @@ function getVisibleRange(data = getActiveData()) {
     return { start, end, length: end - start + 1 };
 }
 
+const dateLookupArrayIds = new WeakMap();
+let dateLookupArraySeq = 0;
 function findDateIndex(data, date, id = '') {
     if(!data || !data.length) return -1;
     const firstDate = data[0]?.date || '';
     const lastDate = data[data.length - 1]?.date || '';
-    const cacheKey = `${id}_${data.length}_${firstDate}_${lastDate}_${date}`;
+    if (!dateLookupArrayIds.has(data)) dateLookupArrayIds.set(data, ++dateLookupArraySeq);
+    const cacheKey = `${id}_${dateLookupArrayIds.get(data)}_${data.length}_${firstDate}_${lastDate}_${date}`;
     if (dateIndexCache.has(cacheKey)) return dateIndexCache.get(cacheKey);
     let l = 0, r = data.length - 1, res = -1;
     while (l <= r) {
@@ -802,7 +859,6 @@ function findDateIndex(data, date, id = '') {
         else if (data[m].date < date) { res = m; l = m + 1; }
         else r = m - 1;
     }
-    if (res === -1) res = data.length - 1; 
     dateIndexCache.set(cacheKey, res); 
     // hover/切换日期会产生大量短生命周期 key，限制上限避免长时间盘中运行持续增长。
     const maxEntries = Math.max(128, Number(SYS_CONFIG.RENDER_CACHE_SIZE || 50) * 4);
@@ -813,7 +869,7 @@ function findDateIndex(data, date, id = '') {
 function alignLockToPeriod(targetPeriod, anchorDate) {
     const data = targetPeriod === 'weekly' ? state.weeklyData[state.id] : state.rawData[state.id];
     if(!data || !data.length) return -1;
-    if(anchorDate) return findDateIndex(data, anchorDate, state.id);
+    if(anchorDate) return Math.max(0, findDateIndex(data, anchorDate, state.id));
     const saved = getPeriodLock(targetPeriod);
     if(saved >= 0 && saved < data.length) return saved;
     return data.length - 1;
@@ -872,6 +928,7 @@ function mergePendingIndicatorMutation(nextMutation) {
 }
 
 function setRawData(id, data) {
+    if (isRetiredSecurity(id)) return { changed:false, mutation:{mode:'unchanged',startIdx:0} };
     data = normalizeConfirmedHistoryData(data, id);
     const prevData = state.rawData[id];
     const mutation = prevData ? getDataMutationMeta(prevData, data) : { mode: 'full', startIdx: 0 };
@@ -1012,6 +1069,7 @@ const requestManager = {
                 current.isFetching = false;
                 this.limiters.set(id, current);
             }
+            releaseRetiredSecurityData();
         }
     }
 };
@@ -1074,128 +1132,121 @@ async function fetchTickFlowKline(id) {
     }
 }
 
+function requestJsonp({ url, id, charset, timeoutMs = SYS_CONFIG.REQ_TIMEOUT, callback, parse,
+    globals = [], onResponse, onTransportFailure, onCleanup }) {
+    return new Promise(resolve => {
+        const script = document.createElement('script');
+        let settled = false, timer = 0;
+        const finish = (value, transportFailure = false) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            _unregisterJsonpCleanup(cancel);
+            try { if (transportFailure) onTransportFailure?.(); } catch (error) {}
+            try { script.remove(); } catch (error) {}
+            globals.forEach(name => { try { delete window[name]; } catch (error) {} });
+            try { onCleanup?.(); } catch (error) {}
+            resolve(value);
+        };
+        const cancel = () => finish(null);
+        const receive = payload => {
+            if (settled) return;
+            try {
+                const value = parse(payload);
+                onResponse?.();
+                finish(value);
+            } catch (error) {
+                // 非法响应不是传输失败，但不能清掉超时后把Promise永远留在进行中。
+                finish(null);
+            }
+        };
+        _registerJsonpCleanup(cancel);
+        try {
+            globals.forEach(name => { delete window[name]; });
+            if (id) script.id = id;
+            script.src = url;
+            if (charset) script.charset = charset;
+            if (callback) window[callback] = receive;
+            script.onload = () => { if (callback && !settled) finish(null); else if (!callback) receive(undefined); };
+            script.onerror = () => finish(null, true);
+            timer = setTimeout(() => finish(null, true), timeoutMs);
+            document.head.appendChild(script);
+        } catch (error) { finish(null, true); }
+    });
+}
+
 function jsonpFetchEastmoneyKline(id) {
     if (isHistorySourceCircuitOpen('eastmoney')) return Promise.resolve([]);
-    return new Promise(resolve => {
-        const secid = resolveSecid(id), cb = 'em_kline_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
-        const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=1000&cb=${cb}`;
-        let cl = false, timer = 0, cancel = null;
-        const cleanup = () => { if(cl) return; cl=true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
-        cancel = () => { if (cl) return; cleanup(); resolve([]); };
-        _registerJsonpCleanup(cancel);
-        const fail = () => { if (cl) return; recordHistorySourceTransportFailure('eastmoney'); cleanup(); resolve([]); };
-        timer = setTimeout(fail, 8000);
-        window[cb] = data => { 
-            recordHistorySourceSuccess('eastmoney'); cleanup();
-            if(data && data.data && data.data.klines) resolve(normalizeConfirmedHistoryData(data.data.klines.map(l => { const p = l.split(','); return { date: p[0], open: p[1], close: p[2], high: p[3], low: p[4], vol: p[5], amt: p[6] }; }), id)); 
-            else resolve([]);
-        };
-        const script = document.createElement('script'); script.id = cb; script.src = url; script.onerror = fail; document.head.appendChild(script);
-    });
+    const secid = resolveSecid(id), cb = 'em_kline_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=1000&cb=${cb}`;
+    return requestJsonp({ url, id:cb, callback:cb, globals:[cb], timeoutMs:8000,
+        onResponse:() => recordHistorySourceSuccess('eastmoney'),
+        onTransportFailure:() => recordHistorySourceTransportFailure('eastmoney'),
+        parse:payload => {
+            const rows = payload?.data?.klines;
+            if (!Array.isArray(rows)) return [];
+            return normalizeConfirmedHistoryData(rows.filter(row => typeof row === 'string').map(row => {
+                const p = row.split(',');
+                return { date:p[0], open:p[1], close:p[2], high:p[3], low:p[4], vol:p[5], amt:p[6] };
+            }), id);
+        }
+    }).then(rows => rows || []);
 }
 
 let tencentKlineRequestSeq = 0;
 function jsonpFetchTencentKline(id) {
     if (isHistorySourceCircuitOpen('tencent')) return Promise.resolve([]);
-    return new Promise(resolve => {
-        let symbol = resolveTencentSymbol(id);
-        const cb = 'tx_kline_' + Date.now() + '_' + (++tencentKlineRequestSeq), url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,1000,qfq&_var=${cb}`;
-        let cl = false, timer = 0, cancel = null;
-        const cleanup = () => { if(cl) return; cl = true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); delete window[cb]; const s = document.getElementById(cb); if(s) s.remove(); };
-        cancel = () => { if (cl) return; cleanup(); resolve([]); };
-        _registerJsonpCleanup(cancel);
-        const fail = () => { if (cl) return; recordHistorySourceTransportFailure('tencent'); cleanup(); resolve([]); };
-        timer = setTimeout(fail, 5000); window[cb] = undefined;
-        const script = document.createElement('script'); script.id = cb; script.src = url;
-        script.onload = () => { 
-            if (cl) return;
-            const payload = window[cb]; recordHistorySourceSuccess('tencent'); cleanup();
-            if(payload && payload.code === 0 && payload.data && payload.data[symbol]) { 
-                const klines = payload.data[symbol].qfqday || payload.data[symbol].day; 
-                if(!klines) { resolve([]); return; } 
-                resolve(normalizeConfirmedHistoryData(klines.map(p => ({ date: p[0], open: p[1], close: p[2], high: p[3], low: p[4], vol: p[5], amt: p.length > 6 ? p[6] : 0 })), id));
-            } else resolve([]); 
-        };
-        script.onerror = fail; document.head.appendChild(script);
-    });
+    const symbol = resolveTencentSymbol(id), cb = 'tx_kline_' + Date.now() + '_' + (++tencentKlineRequestSeq);
+    const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,1000,qfq&_var=${cb}`;
+    return requestJsonp({ url, id:cb, globals:[cb], timeoutMs:5000,
+        onResponse:() => recordHistorySourceSuccess('tencent'),
+        onTransportFailure:() => recordHistorySourceTransportFailure('tencent'),
+        parse:() => {
+            const payload = window[cb];
+            if (payload?.code !== 0) return [];
+            const rows = payload.data?.[symbol]?.qfqday || payload.data?.[symbol]?.day;
+            if (!Array.isArray(rows)) return [];
+            return normalizeConfirmedHistoryData(rows.filter(Array.isArray).map(p => ({
+                date:p[0], open:p[1], close:p[2], high:p[3], low:p[4], vol:p[5], amt:p.length > 6 ? p[6] : 0
+            })), id);
+        }
+    }).then(rows => rows || []);
 }
 
 function jsonpFetchSinaBz50Kline(id) {
     if (id !== 'bz50' || isHistorySourceCircuitOpen('sina')) return Promise.resolve([]);
-    return new Promise(resolve => {
-        const cb = 'dg_sina_bz50_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        const callbackExpr = encodeURIComponent(`window[${JSON.stringify(cb)}]`);
-        const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/${callbackExpr}=/CN_MarketDataService.getKLineData?symbol=bj899050&scale=240&ma=no&datalen=1000`;
-        let cl = false;
-        const cleanup = () => {
-            if (cl) return;
-            cl = true;
-            clearTimeout(timer);
-            delete window[cb];
-            const current = document.getElementById(cb);
-            if (current) current.remove();
-        };
-        const fail = () => {
-            if (cl) return;
-            recordHistorySourceTransportFailure('sina');
-            cleanup();
-            resolve([]);
-        };
-        const timer = setTimeout(fail, 5000);
-        const script = document.createElement('script');
-        script.id = cb;
-        script.src = url;
-        script.onload = () => {
-            if (cl) return;
+    const cb = 'dg_sina_bz50_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    const callbackExpr = encodeURIComponent(`window[${JSON.stringify(cb)}]`);
+    const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/${callbackExpr}=/CN_MarketDataService.getKLineData?symbol=bj899050&scale=240&ma=no&datalen=1000`;
+    return requestJsonp({ url, id:cb, globals:[cb], timeoutMs:5000,
+        onResponse:() => recordHistorySourceSuccess('sina'),
+        onTransportFailure:() => recordHistorySourceTransportFailure('sina'),
+        parse:() => {
             const rows = window[cb];
-            recordHistorySourceSuccess('sina');
-            cleanup();
-            if (!Array.isArray(rows)) {
-                resolve([]);
-                return;
-            }
-            resolve(normalizeConfirmedHistoryData(rows.map(row => ({
-                date: row.day,
-                open: row.open,
-                close: row.close,
-                high: row.high,
-                low: row.low,
-                vol: Number(row.volume) / 100,
-                amt: 0
-            })), id));
-        };
-        script.onerror = fail;
-        document.head.appendChild(script);
-    });
+            return Array.isArray(rows) ? normalizeConfirmedHistoryData(rows.filter(row => row && typeof row === 'object').map(row => ({
+                date:row.day, open:row.open, close:row.close, high:row.high, low:row.low,
+                vol:finiteMarketNumber(row.volume, 0) / 100, amt:0
+            })), id) : [];
+        }
+    }).then(rows => rows || []);
+}
+
+function parseTencentRealtimeQuote(raw, id) {
+    if (typeof raw !== 'string') return null;
+    const fields = raw.split('~');
+    const price = finiteMarketNumber(fields[3]);
+    if (fields.length < 6 || !isValidPrice(price, id)) return null;
+    const priceOrClose = value => isValidPrice(value, id) ? Number(value) : price;
+    const quoteTime = getTencentQuoteTimeInfo(fields);
+    return { ...quoteTime, open:priceOrClose(fields[5]), high:priceOrClose(fields[33]), low:priceOrClose(fields[34]),
+        close:price, prevClose:finiteMarketNumber(fields[4],0), vol:Math.max(0,finiteMarketNumber(fields[36],0)),
+        amt:normalizeTencentQuoteAmount(fields[37]) };
 }
 
 function getRealtimePriceJSONP(id) {
-    return new Promise(resolve => {
-        const symbol = resolveTencentSymbol(id), varName = 'v_' + symbol;
-        const script = document.createElement('script'); script.src = `https://qt.gtimg.cn/q=${symbol}`; script.charset = 'GBK';
-        let cl = false, timer = 0, cancel = null;
-        const cleanup = () => { if(cl) return; cl = true; if(cancel) _unregisterJsonpCleanup(cancel); clearTimeout(timer); if(script.parentNode) script.remove(); };
-        cancel = () => { if (cl) return; cleanup(); resolve(null); };
-        _registerJsonpCleanup(cancel);
-        timer = setTimeout(() => { cleanup(); resolve(null); }, 5000);
-        script.onload = () => { 
-            cleanup(); 
-            if(typeof window[varName] !== 'undefined') { 
-                const fields = window[varName].split('~'); 
-                if(fields.length >= 6) { 
-                    const price = parseFloat(fields[3]) || 0; 
-                    if(price > 0) { 
-                        const prevClose = parseFloat(fields[4]) || 0;
-                        const quoteTime = getTencentQuoteTimeInfo(fields);
-                        resolve({ date: quoteTime.date, quoteTime: quoteTime.quoteTime, quoteDateSource: quoteTime.quoteDateSource, open: parseFloat(fields[5])||price, high: parseFloat(fields[33])||price, low: parseFloat(fields[34])||price, close: price, prevClose, vol: parseInt(fields[36])||0, amt: normalizeTencentQuoteAmount(fields[37]) });
-                        return; 
-                    } 
-                } 
-            } 
-            resolve(null); 
-        };
-        script.onerror = () => { cleanup(); resolve(null); }; document.head.appendChild(script);
-    });
+    const symbol = resolveTencentSymbol(id), varName = 'v_' + symbol;
+    return requestJsonp({ url:`https://qt.gtimg.cn/q=${symbol}`, charset:'GBK', globals:[varName], timeoutMs:5000,
+        parse:() => parseTencentRealtimeQuote(window[varName], id) });
 }
 
 // 受控并发：最多 concurrency 个 fn 同时执行
@@ -1216,57 +1267,31 @@ function pLimit(items, concurrency, fn) {
 
 // 批量实时行情：1 次 JSONP 拿多个标的的实时价格
 function batchGetRealtimePrices(ids) {
-    return new Promise(resolve => {
-        if (!ids || !ids.length) return resolve({});
-        if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return resolve({});
-        const requestToken = createRealtimeRequestToken('batch');
-        const now = Date.now();
-        const requestIds = ids.filter(id => {
-            const limiter = requestManager.limiters.get(id);
-            if (limiter?.isFetching || now - Number(limiter?.lastCall || 0) < SYS_CONFIG.THROTTLE_MS) return false;
-            requestManager.limiters.set(id, { ...(limiter || { lastCall: 0 }), isFetching: requestToken });
-            return true;
-        });
-        if (!requestIds.length) return resolve({});
-        const releaseBatchRequest = () => {
-            requestIds.forEach(id => {
-                const limiter = requestManager.limiters.get(id);
-                if (!limiter || limiter.isFetching !== requestToken) return;
-                requestManager.limiters.set(id, { ...limiter, isFetching: false });
-            });
-        };
-        const symToId = {}, symbols = [];
-        for (const id of requestIds) { const sym = resolveTencentSymbol(id); symToId[sym] = id; symbols.push(sym); }
-        const script = document.createElement('script');
-        script.src = `https://qt.gtimg.cn/q=${symbols.join(',')}`;
-        script.charset = 'GBK';
-        let cl = false;
-        const cleanup = () => { if (cl) return; cl = true; clearTimeout(timer); if (script.parentNode) script.remove(); };
-        const timer = setTimeout(() => { releaseBatchRequest(); cleanup(); resolve({}); }, 5000);
-        const results = {};
-        script.onload = () => {
-            cleanup();
-            for (const sym of symbols) {
-                const varName = 'v_' + sym, id = symToId[sym];
-                if (typeof window[varName] !== 'undefined') {
-                    const fields = window[varName].split('~');
-                    if (fields.length >= 6) {
-                        const price = parseFloat(fields[3]) || 0;
-                        if (price > 0) {
-                            const prevClose = parseFloat(fields[4]) || 0;
-                            const quoteTime = getTencentQuoteTimeInfo(fields);
-                            results[id] = { date: quoteTime.date, quoteTime: quoteTime.quoteTime, quoteDateSource: quoteTime.quoteDateSource, open: parseFloat(fields[5])||price, high: parseFloat(fields[33])||price, low: parseFloat(fields[34])||price, close: price, prevClose, vol: parseInt(fields[36])||0, amt: normalizeTencentQuoteAmount(fields[37]) };
-                        }
-                    }
-                    delete window[varName];
-                }
-            }
-            releaseBatchRequest();
-            resolve(results);
-        };
-        script.onerror = () => { releaseBatchRequest(); cleanup(); resolve({}); };
-        document.head.appendChild(script);
+    if (!ids?.length || (typeof canRequestMarketData === 'function' && !canRequestMarketData())) return Promise.resolve({});
+    const requestToken = createRealtimeRequestToken('batch'), now = Date.now();
+    const requestIds = [...new Set(ids)].filter(id => {
+        const limiter = requestManager.limiters.get(id);
+        if (limiter?.isFetching || now - Number(limiter?.lastCall || 0) < SYS_CONFIG.THROTTLE_MS) return false;
+        requestManager.limiters.set(id, { ...(limiter || { lastCall:0 }), isFetching:requestToken });
+        return true;
     });
+    if (!requestIds.length) return Promise.resolve({});
+    const release = () => { requestIds.forEach(id => {
+        const limiter = requestManager.limiters.get(id);
+        if (limiter?.isFetching === requestToken) requestManager.limiters.set(id, { ...limiter, isFetching:false });
+    }); releaseRetiredSecurityData(); };
+    const symbols = requestIds.map(resolveTencentSymbol);
+    return requestJsonp({ url:`https://qt.gtimg.cn/q=${symbols.join(',')}`, charset:'GBK',
+        globals:symbols.map(symbol => 'v_' + symbol), onCleanup:release, timeoutMs:5000,
+        parse:() => {
+            const results = {};
+            symbols.forEach((symbol,index) => {
+                const quote = parseTencentRealtimeQuote(window['v_' + symbol], requestIds[index]);
+                if (quote) results[requestIds[index]] = quote;
+            });
+            return results;
+        }
+    }).then(results => results || {});
 }
 
 function setHistoryCheckState(id, status) {
@@ -1307,6 +1332,7 @@ async function syncDataWithHistory(id) {
         throw error;
     }).finally(() => {
         if (historySyncInFlight.get(id) === task) historySyncInFlight.delete(id);
+        releaseRetiredSecurityData();
     });
     historySyncInFlight.set(id, task);
     drainHistorySyncQueue();
@@ -1376,6 +1402,21 @@ function shouldSkipHistoryRefresh(id, cached) {
     return false;
 }
 
+function mergeConfirmedHistory(id, cached, fresh) {
+    if (!cached?.length) return fresh;
+    if (!fresh?.length || fresh.at(-1).date < cached.at(-1).date) return cached;
+    const byDate = new Map(cached.map(row => [row.date,row]));
+    const overlap = fresh.filter(row => byDate.has(row.date));
+    const sameBasis = overlap.length && overlap.every(row => ['open','high','low','close'].every(field => {
+        const old = Number(byDate.get(row.date)[field]), next = Number(row[field]);
+        return Number.isFinite(old) && Number.isFinite(next) && Math.abs(old-next) <= 1e-8 * Math.max(1,Math.abs(old),Math.abs(next));
+    }));
+    // 重叠区价格修订或无重叠时，整段采用新确认快照，不能拼出旧复权前缀。
+    if (!sameBasis) return fresh;
+    fresh.forEach(row => byDate.set(row.date,row));
+    return normalizeConfirmedHistoryData([...byDate.values()],id);
+}
+
 async function syncDataIncremental(id) { 
     try { 
         const cachedData = await getCachedData(id);
@@ -1387,15 +1428,7 @@ async function syncDataIncremental(id) {
         if(!fresh || !fresh.length) return cachedData; 
         setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastDate: fresh[fresh.length - 1]?.date || '' });
 
-        const lastCached = cachedData[cachedData.length - 1];
-        const matchingFresh = fresh.find(d => d.date === lastCached.date);
-        
-        if (matchingFresh && Math.abs(matchingFresh.close - lastCached.close) / lastCached.close > SYS_CONFIG.EX_RIGHT_TOLERANCE) return fresh; 
-
-        const mergedMap = new Map(); 
-        cachedData.forEach(item => mergedMap.set(item.date, item)); 
-        fresh.forEach(item => mergedMap.set(item.date, item)); 
-        return normalizeConfirmedHistoryData(Array.from(mergedMap.values()).sort((a, b) => a.date.localeCompare(b.date)), id); 
+        return mergeConfirmedHistory(id,cachedData,fresh);
     } catch(e) { return await getCachedData(id) || null; } 
 }
 
@@ -1403,6 +1436,7 @@ const syncDataInFlight = new Map();
 
 function clearSyncDataInFlight(id, task) {
     if (syncDataInFlight.get(id) === task) syncDataInFlight.delete(id);
+    releaseRetiredSecurityData();
 }
 
 async function syncData(id) {
@@ -1420,6 +1454,7 @@ function syncConfirmedData(id) {
     if (confirmedDataInFlight.has(id)) return confirmedDataInFlight.get(id);
     const task = performConfirmedDataSync(id).finally(() => {
         if (confirmedDataInFlight.get(id) === task) confirmedDataInFlight.delete(id);
+        releaseRetiredSecurityData();
     });
     confirmedDataInFlight.set(id, task);
     return task;
@@ -1687,6 +1722,59 @@ function dbSet(id, data) {
         }
     });
 }
+// 每项自选操作都在同一读写事务中基于最新列表执行，避免多页面整表覆盖。
+function applyStoredWatchlistMutation(list, operation = { type:'normalize' }) {
+    const rows = Array.isArray(list) ? list.map(normalizeSecurityTarget) : [];
+    if (operation.type === 'upsert') {
+        const target = normalizeSecurityTarget(operation.target);
+        const index = rows.findIndex(row => row.code === target.code);
+        if (index >= 0) rows[index] = { ...rows[index], ...target };
+        else {
+            if (rows.length >= SYS_CONFIG.WATCHLIST_LIMIT) throw new Error(`最多只能添加 ${SYS_CONFIG.WATCHLIST_LIMIT} 只自选股。`);
+            rows.push(target);
+        }
+    } else if (operation.type === 'remove') {
+        return rows.filter(row => row.code !== operation.code);
+    } else if (operation.type === 'move') {
+        const index = rows.findIndex(row => row.code === operation.sourceCode);
+        if (index < 0 || !rows.some(row => row.code === operation.targetCode)) return rows;
+        const [moved] = rows.splice(index,1);
+        const target = rows.findIndex(row => row.code === operation.targetCode);
+        rows.splice(target + (operation.insertAfter ? 1 : 0),0,moved);
+    }
+    return rows;
+}
+
+function mutateStoredWatchlist(operation) {
+    if (!DB) return Promise.resolve(null);
+    return new Promise((resolve,reject) => {
+        let tx, result, settled = false, semanticError = null;
+        const fail = () => {
+            if (settled) return;
+            settled = true;
+            if (semanticError) reject(semanticError);
+            else { disablePersistentStorage(tx?.error?.message || '自选保存失败，本次仅保留在当前页面'); resolve(null); }
+        };
+        try {
+            tx = DB.transaction(STORE,'readwrite');
+            tx.onabort = tx.onerror = fail;
+            tx.oncomplete = () => { if (!settled) { settled = true; resolve(result); } };
+            const store = tx.objectStore(STORE), request = store.get('watchlist_list');
+            request.onerror = fail;
+            request.onsuccess = event => {
+                try {
+                    result = applyStoredWatchlistMutation(event.target.result?.data || [],operation);
+                    store.put(buildPersistentCacheRecord('watchlist_list',result));
+                } catch (error) {
+                    semanticError = error;
+                    try { tx.abort(); } catch (abortError) {}
+                    fail();
+                }
+            };
+        } catch (error) { fail(); }
+    });
+}
+
 async function getCachedData(id) {
     const memory = state.rawData[id];
     if (memory?.length) return memory;
@@ -1862,9 +1950,12 @@ function getHoldingDiagnosis(idx, full, ind, meta, decision) {
 
 async function clearAllCache() { 
     if(DB) { 
-        const tx = DB.transaction(STORE, 'readwrite'); 
-        tx.objectStore(STORE).clear(); 
-        await new Promise(r => tx.oncomplete = r); 
+        await new Promise((resolve, reject) => {
+            const tx = DB.transaction(STORE, 'readwrite');
+            tx.oncomplete = resolve;
+            tx.onerror = tx.onabort = () => reject(tx.error || new Error('本地数据重置未完成，请重试。'));
+            tx.objectStore(STORE).clear();
+        });
     } 
     state.rawData = {}; 
     state.weeklyData = {}; 
@@ -1880,7 +1971,7 @@ async function clearAllCache() {
         try { localStorage.removeItem(key); } catch(e) {}
     });
     derivedIndicatorCache.clear();
-    localStorage.removeItem('quant_strategy'); 
+    try { localStorage.removeItem('quant_strategy'); } catch (error) {}
     location.reload(); 
 }
 
@@ -1910,6 +2001,7 @@ function getCachedFetchKey(id) {
 
 function clearCachedFetchInFlight(key, task) {
     if (cachedFetchInFlight.get(key) === task) cachedFetchInFlight.delete(key);
+    releaseRetiredSecurityData();
 }
 
 async function cachedFetch(id, options = {}) {

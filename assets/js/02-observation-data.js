@@ -80,9 +80,9 @@ function createObservationRequestScope(parentSignal, timeoutMs) {
 
 function sanitizeExternalLeadStripItem(key, item, options = {}) {
     const config = EXTERNAL_LEAD_STRIP_CONFIG.ITEMS[key];
-    const value = Number(item?.value ?? item?.f2);
-    const changePct = Number(item?.changePct ?? item?.f3);
-    if (!config || !Number.isFinite(value) || !Number.isFinite(changePct)) return null;
+    const value = finiteMarketNumber(item?.value ?? item?.f2);
+    const changePct = finiteMarketNumber(item?.changePct ?? item?.f3);
+    if (!config || !Number.isFinite(value) || value <= 0 || !Number.isFinite(changePct)) return null;
     return {
         key,
         code: config.code,
@@ -354,8 +354,7 @@ function normalizeSectorQuoteAt(value) {
 }
 
 function getFiniteSectorNumber(value, fallback = 0) {
-    const number = Number(value);
-    return Number.isFinite(number) ? number : fallback;
+    return finiteMarketNumber(value, fallback);
 }
 
 function sanitizeSectorCandidate(item) {
@@ -365,8 +364,8 @@ function sanitizeSectorCandidate(item) {
     return {
         code,
         name,
-        price: getFiniteSectorNumber(item?.price ?? item?.f2, 0),
-        changePct: getFiniteSectorNumber(item?.changePct ?? item?.f3, 0),
+        price: getFiniteSectorNumber(item?.price ?? item?.f2, null),
+        changePct: getFiniteSectorNumber(item?.changePct ?? item?.f3, null),
         market: String(item?.market ?? item?.f13 ?? ''),
         stale: !!item?.stale
     };
@@ -377,10 +376,13 @@ function sanitizeSectorTrendBoard(item, options = {}) {
     const name = String(item?.name ?? item?.f14 ?? '').trim();
     const type = item?.type === 'concept' ? 'concept' : 'industry';
     if (!/^BK\d{4}$/.test(code) || !name) return null;
-    const upCount = Math.max(0, Math.round(getFiniteSectorNumber(item?.upCount ?? item?.f104, 0)));
-    const downCount = Math.max(0, Math.round(getFiniteSectorNumber(item?.downCount ?? item?.f105, 0)));
-    const flatCount = Math.max(0, Math.round(getFiniteSectorNumber(item?.flatCount ?? item?.f106, 0)));
-    const memberCount = upCount + downCount + flatCount;
+    const upCountValue = getFiniteSectorNumber(item?.upCount ?? item?.f104, null);
+    const upCount = upCountValue === null ? null : Math.max(0,Math.round(upCountValue));
+    const downCountValue = getFiniteSectorNumber(item?.downCount ?? item?.f105, null);
+    const downCount = downCountValue === null ? null : Math.max(0,Math.round(downCountValue));
+    const flatCountValue = getFiniteSectorNumber(item?.flatCount ?? item?.f106, null);
+    const flatCount = flatCountValue === null ? null : Math.max(0,Math.round(flatCountValue));
+    const memberCount = [upCount,downCount,flatCount].every(Number.isFinite) ? upCount + downCount + flatCount : null;
     const candidates = Array.isArray(item?.candidates)
         ? item.candidates.map(candidate => sanitizeSectorCandidate({ ...candidate, stale: options.stale ?? candidate?.stale })).filter(Boolean).slice(0, SECTOR_TREND_CONFIG.COMPONENT_LIMIT)
         : [];
@@ -391,34 +393,33 @@ function sanitizeSectorTrendBoard(item, options = {}) {
         stale: options.stale ?? item?.stale
     });
     if (!candidates.length && leader) candidates.push(leader);
-    return {
+    const board = {
         key: `${type}:${code}`,
         code,
         name,
         type,
         typeLabel: SECTOR_TREND_CONFIG.TYPES[type].label,
-        price: getFiniteSectorNumber(item?.price ?? item?.f2, 0),
-        changePct: getFiniteSectorNumber(item?.changePct ?? item?.f3, 0),
-        return5: getFiniteSectorNumber(item?.return5 ?? item?.f109, 0),
-        return10: getFiniteSectorNumber(item?.return10 ?? item?.f160, 0),
-        return60: getFiniteSectorNumber(item?.return60 ?? item?.f24, 0),
-        ytdReturn: getFiniteSectorNumber(item?.ytdReturn ?? item?.f25, 0),
-        turnoverRate: getFiniteSectorNumber(item?.turnoverRate ?? item?.f8, 0),
+        price: getFiniteSectorNumber(item?.price ?? item?.f2, null),
+        changePct: getFiniteSectorNumber(item?.changePct ?? item?.f3, null),
+        return5: getFiniteSectorNumber(item?.return5 ?? item?.f109, null),
+        return10: getFiniteSectorNumber(item?.return10 ?? item?.f160, null),
+        return60: getFiniteSectorNumber(item?.return60 ?? item?.f24, null),
+        ytdReturn: getFiniteSectorNumber(item?.ytdReturn ?? item?.f25, null),
+        turnoverRate: getFiniteSectorNumber(item?.turnoverRate ?? item?.f8, null),
         amount: Math.max(0, getFiniteSectorNumber(item?.amount ?? item?.f6, 0)),
         marketCap: Math.max(0, getFiniteSectorNumber(item?.marketCap ?? item?.f20, 0)),
-        mainFlow: getFiniteSectorNumber(item?.mainFlow ?? item?.f62, 0),
-        mainFlowPct: getFiniteSectorNumber(item?.mainFlowPct ?? item?.f184, 0),
+        mainFlow: getFiniteSectorNumber(item?.mainFlow ?? item?.f62, null),
+        mainFlowPct: getFiniteSectorNumber(item?.mainFlowPct ?? item?.f184, null),
         upCount,
         downCount,
         flatCount,
         memberCount,
-        breadthPct: Number.isFinite(Number(item?.breadthPct))
-            ? Number(item.breadthPct)
-            : (memberCount ? upCount / memberCount * 100 : 0),
-        relative5: getFiniteSectorNumber(item?.relative5, 0),
-        relative10: getFiniteSectorNumber(item?.relative10, 0),
+        breadthPct: getFiniteSectorNumber(item?.breadthPct, null)
+            ?? (memberCount ? upCount / memberCount * 100 : null),
+        relative5: getFiniteSectorNumber(item?.relative5, null),
+        relative10: getFiniteSectorNumber(item?.relative10, null),
         score: Math.max(0, Math.min(100, Math.round(getFiniteSectorNumber(item?.score, 0)))),
-        trendState: ['uptrend', 'turning', 'momentum', 'neutral'].includes(item?.trendState) ? item.trendState : 'neutral',
+        trendState: ['uptrend', 'turning', 'momentum', 'neutral', 'insufficient'].includes(item?.trendState) ? item.trendState : 'neutral',
         trendLabel: String(item?.trendLabel || '待判定'),
         tone: String(item?.tone || 'is-neutral'),
         invalidCondition: String(item?.invalidCondition || ''),
@@ -426,6 +427,11 @@ function sanitizeSectorTrendBoard(item, options = {}) {
         quoteAt: normalizeSectorQuoteAt(item?.quoteAt ?? item?.f124),
         stale: options.stale ?? !!item?.stale
     };
+    if (![board.changePct,board.return5,board.return10,board.return60,board.breadthPct].every(Number.isFinite)) {
+        Object.assign(board,{score:null,trendState:'insufficient',trendLabel:'数据不足',tone:'is-neutral',
+            invalidCondition:'多周期涨幅或上涨家数缺失，暂不参与完整趋势排名。'});
+    }
+    return board;
 }
 
 function getIndustryEtfMapping(board) {
@@ -445,7 +451,7 @@ function applyIndustryEtfMappings(boards = []) {
 
 function getSectorMedian(values) {
     const valid = values.filter(Number.isFinite).sort((a, b) => a - b);
-    if (!valid.length) return 0;
+    if (!valid.length) return null;
     const middle = Math.floor(valid.length / 2);
     return valid.length % 2 ? valid[middle] : (valid[middle - 1] + valid[middle]) / 2;
 }
@@ -455,6 +461,11 @@ function clampSectorScore(value, min, max) {
 }
 
 function scoreSectorTrendBoard(board, medians) {
+    const complete = [board.changePct,board.return5,board.return10,board.return60,board.breadthPct].every(Number.isFinite);
+    if (!complete) return { ...board, score:null, trendState:'insufficient', trendLabel:'数据不足', tone:'is-neutral',
+        relative5:Number.isFinite(board.return5) && Number.isFinite(medians.return5) ? board.return5-medians.return5 : null,
+        relative10:Number.isFinite(board.return10) && Number.isFinite(medians.return10) ? board.return10-medians.return10 : null,
+        invalidCondition:'多周期涨幅或上涨家数缺失，暂不参与完整趋势排名。' };
     let score = 0;
     if (board.return5 > 0) score += 10;
     if (board.return5 >= 3) score += 5;
@@ -463,8 +474,8 @@ function scoreSectorTrendBoard(board, medians) {
     if (board.return10 >= 5) score += 5;
     if (board.return60 > 0) score += 5;
     if (board.return60 >= 10) score += 5;
-    if (board.return5 > medians.return5) score += 15;
-    if (board.return10 > medians.return10) score += 10;
+    if (Number.isFinite(medians.return5) && board.return5 > medians.return5) score += 15;
+    if (Number.isFinite(medians.return10) && board.return10 > medians.return10) score += 10;
     score += clampSectorScore((board.breadthPct - 45) / 40 * 20, 0, 20);
     if (board.mainFlowPct > 0) score += 5;
     if (board.mainFlowPct >= 5) score += 3;
@@ -494,8 +505,8 @@ function scoreSectorTrendBoard(board, medians) {
     }
     return {
         ...board,
-        relative5: board.return5 - medians.return5,
-        relative10: board.return10 - medians.return10,
+        relative5: Number.isFinite(board.return5) && Number.isFinite(medians.return5) ? board.return5 - medians.return5 : null,
+        relative10: Number.isFinite(board.return10) && Number.isFinite(medians.return10) ? board.return10 - medians.return10 : null,
         score,
         trendState,
         trendLabel,
@@ -515,8 +526,8 @@ function buildSectorTrendSnapshot(rawBoards = [], options = {}) {
     };
     const scored = sanitized.map(board => scoreSectorTrendBoard({
         ...board,
-        relative5: board.return5 - medians.return5,
-        relative10: board.return10 - medians.return10
+        relative5: Number.isFinite(board.return5) && Number.isFinite(medians.return5) ? board.return5 - medians.return5 : null,
+        relative10: Number.isFinite(board.return10) && Number.isFinite(medians.return10) ? board.return10 - medians.return10 : null
     }, medians));
     const byScore = (a, b) => b.score - a.score || b.return5 - a.return5 || b.changePct - a.changePct;
     const uptrend = scored.filter(item => item.trendState === 'uptrend').sort(byScore).slice(0, 10);
@@ -537,6 +548,7 @@ function buildSectorTrendSnapshot(rawBoards = [], options = {}) {
         groups: { uptrend, turning, momentum },
         summary: {
             totalCount: scored.length,
+            insufficientCount: scored.filter(item => item.trendState === 'insufficient').length,
             uptrendCount: scored.filter(item => item.trendState === 'uptrend').length,
             turningCount: scored.filter(item => item.trendState === 'turning').length,
             momentumCount: scored.filter(item => item.trendState === 'momentum').length,
@@ -570,6 +582,8 @@ function loadSectorTrendCache() {
     try {
         const raw = localStorage.getItem(SECTOR_TREND_CONFIG.CACHE_KEY);
         const cached = raw ? JSON.parse(raw) : null;
+        // 旧缓存已把缺失压成0，无法反向恢复真实性，不复用该派生快照。
+        if (cached?.qualityVersion !== 1) return sectorTrendState;
         const cachedBoards = Array.isArray(cached?.boards)
             ? cached.boards.map(item => sanitizeSectorTrendBoard(item, { stale: true })).filter(Boolean)
             : [];
@@ -598,6 +612,7 @@ function saveSectorTrendCache() {
     try {
         localStorage.setItem(SECTOR_TREND_CONFIG.CACHE_KEY, JSON.stringify({
             version: 1,
+            qualityVersion: 1,
             boards: sectorTrendState.boards,
             concepts: sectorTrendState.concepts,
             summary: sectorTrendState.summary,

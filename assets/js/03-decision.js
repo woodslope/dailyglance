@@ -2187,6 +2187,28 @@ function buildIndicatorKeyForData(id, period, strategy, data) {
     return `${id}_${period}_${strategy}_${data.length}_${last.date}_${last.close}_${hashString32(dataSig)}_strategy_${strategySignature}_market_${getMarketContextKey() || 'unknown'}`;
 }
 
+// 帧间检查只读引用与小依赖；完整内容指纹仍在起点和提交前核对。
+function getCalculationTailSignature(data) {
+    const row = data?.[data.length - 1] || {};
+    return JSON.stringify([row.date,row.open,row.high,row.low,row.close,row.vol,row.amt,row._isLive,row._isCachedLive]);
+}
+function createCalculationInputGuard(id, period, strategy, data) {
+    return { id,period,strategy,data,length:data.length,
+        key:buildIndicatorKeyForData(id,period,strategy,data),
+        policy:JSON.stringify(STRATEGIES[strategy] || {}),market:getMarketContextKey(),
+        tail:getCalculationTailSignature(data) };
+}
+function isCalculationInputCurrent(guard, verifyContents = false) {
+    if (guard.data.length !== guard.length || getCalculationTailSignature(guard.data) !== guard.tail
+        || JSON.stringify(STRATEGIES[guard.strategy] || {}) !== guard.policy || getMarketContextKey() !== guard.market) return false;
+    return !verifyContents || buildIndicatorKeyForData(guard.id,guard.period,guard.strategy,guard.data) === guard.key;
+}
+function clearCancelledCalculationRows(data) {
+    for (const row of data) if (row) {
+        delete row._signals;delete row._signalVersion;delete row._strategy;delete row._decision;
+    }
+}
+
 function getIndicatorKey(data = getActiveData()) {
     return buildIndicatorKeyForData(state.id, state.period, state.strategy, data);
 }
@@ -2284,20 +2306,31 @@ async function updateAllIndicatorsAsync(sliceMs = 12) {
     const full = getActiveData();
     if (!full?.length) return true;
     const task = { id:state.id, mode:state.mode, period:state.period, strategy:state.strategy,
-        full, indicators:state.indicators, key:getIndicatorKey(full), cancelled:false };
+        full, indicators:state.indicators, cancelled:false };
+    const guard = createCalculationInputGuard(task.id,task.period,task.strategy,full);
     activeIndicatorUpdate = task;
-    const steps = updateIndicatorSteps(-1, Math.max(1, sliceMs));
     const sameScope = () => state.id === task.id && state.mode === task.mode
         && state.period === task.period && state.strategy === task.strategy;
+    const validInput = verifyContents => getActiveData() === full && state.indicators === task.indicators
+        && isCalculationInputCurrent(guard,verifyContents);
+    const cancelChangedInput = () => {
+        // 不缓存部分链；原地价格修订即使只在提交前被发现，也不能复用旧信号。
+        clearCancelledCalculationRows(full);
+        state.indicatorKey = '';
+        state.pendingIndicatorMutation = {mode:'full',startIdx:0};
+        return false;
+    };
+    const canCommit = () => {
+        if (task.cancelled || !sameScope()) return false;
+        return validInput(true) || cancelChangedInput();
+    };
+    const steps = updateIndicatorSteps(-1,Math.max(1,sliceMs),canCommit);
     try {
         while (true) {
             if (task.cancelled || !sameScope()) return false;
-            if (getActiveData() !== full || state.indicators !== task.indicators || getIndicatorKey(full) !== task.key) {
-                state.indicatorKey = '';
-                state.pendingIndicatorMutation = { mode:'full', startIdx:0 };
-                return false;
-            }
-            if (steps.next().done) return true;
+            if (!validInput(false)) return cancelChangedInput();
+            const result = steps.next();
+            if (result.done) return result.value !== false;
             await yieldCalculationTurn();
         }
     } finally {
@@ -2306,7 +2339,7 @@ async function updateAllIndicatorsAsync(sliceMs = 12) {
     }
 }
 
-function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0) {
+function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = null) {
     const perfTrace = PERF.start('updateAllIndicators', { id: state.id, period: state.period, strategy: state.strategy, incrementalIdx });
     const full = getActiveData();
     if(!full || !full.length) {
@@ -2472,6 +2505,10 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0) {
         signalBreakdown
     });
 
+    if (canCommit && !canCommit()) {
+        PERF.end(perfTrace,{status:'cancelled-input',points:full.length});
+        return false;
+    }
     state.indicatorKey = nextKey;
     state.pendingIndicatorMutation = null;
     storeDerivedIndicatorCache(state.id, state.period, state.strategy, full, state.indicators);
