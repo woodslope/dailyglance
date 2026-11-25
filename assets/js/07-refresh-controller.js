@@ -19,7 +19,7 @@ function cancelIdleTask(handle) {
     refreshSchedulerRuntime.idles.delete(handle);
 }
 
-function applyActivePanelAfterMarketPreload() {
+async function applyActivePanelAfterMarketPreload() {
     if (!state.pendingIndicatorMutation || typeof scheduleCachedFetchRefreshApply !== 'function') return;
     if (!['index', 'stock'].includes(state.mode) || !getActiveData()?.length) return;
     if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
@@ -29,7 +29,7 @@ function applyActivePanelAfterMarketPreload() {
     }
     // 背景缓存已落入内存后，在同一帧提交图表/标记/结论，再展示新的环境卡。
     const txn = beginRefreshTransaction('rightPanel', { source:'market-preload', id:state.id });
-    const status = applyActiveDataRefresh(state.id);
+    const status = await applyActiveDataRefresh(state.id);
     if (status !== 'no-data' && status !== 'skipped') markRefreshTime(txn, { path:status, id:state.id });
 }
 
@@ -57,7 +57,8 @@ function requestVisibleWorkspaceRefresh() {
         await preloadCacheOnly({ ids, isCurrent });
         if (!isCurrent()) return;
         const txn = beginRefreshTransaction('leftList', { source: 'visible-cache-preload', area: getSidebarRealtimeArea() });
-        applyActivePanelAfterMarketPreload();
+        await applyActivePanelAfterMarketPreload();
+        if (!isCurrent()) return;
         if (tab === 'index') renderIndexList();
         else renderWatchlist();
         const appliedCount = ids.filter(key => state.rawData[key]?.length || state.liveQuotes[key]).length;
@@ -75,7 +76,8 @@ function requestVisibleWorkspaceRefresh() {
         if (!isCurrent()) return;
         await ensureMarketTemperatureData({ ids: coreIds, isCurrent });
         if (!isCurrent()) return;
-        applyActivePanelAfterMarketPreload();
+        await applyActivePanelAfterMarketPreload();
+        if (!isCurrent()) return;
         if (tab === 'stock') {
             await hydrateWatchlistDecisionCache({ isCurrent });
             if (!isCurrent()) return;
@@ -90,7 +92,9 @@ function scheduleStartupBackgroundHydration() {
     // 可见工作区水合由选择入口启动；搜索词库不占首屏准备路径。
     scheduleIdleTask(async () => {
         if (document.hidden) return;
+        const token=createDataTaskToken();
         const cached = await dbGet('stock_cache');
+        if(!isDataTaskCurrent(token))return;
         stockCache = Array.isArray(cached?.data) ? cached.data : [];
     }, 600);
 }
@@ -123,12 +127,14 @@ function registerRefreshTimeout(fn, delay) {
 }
 
 // 复用 30 秒调度器检查盘后缺口；每标的每天最多补确认 3 次，至少间隔 60 秒。
-const postCloseConfirmation = { date: '', attempts: new Map(), lastAttemptAt: 0, inFlight: null };
+const postCloseConfirmation = {date:'',attempts:new Map(),lastAttemptAt:0,inFlight:null,token:null};
 
 async function refreshPostCloseConfirmation() {
     if (document.hidden || !isAfterMarketClose() || !isTradingDay(getTodayDate())) return;
     if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) return;
-    if (postCloseConfirmation.inFlight) return postCloseConfirmation.inFlight;
+    if (postCloseConfirmation.inFlight && isDataTaskCurrent(postCloseConfirmation.token)) return postCloseConfirmation.inFlight;
+    const token=createDataTaskToken(true);
+    postCloseConfirmation.token=token;
     const today = getTodayDate();
     if (postCloseConfirmation.date !== today) {
         postCloseConfirmation.date = today;
@@ -148,11 +154,11 @@ async function refreshPostCloseConfirmation() {
         let activeChanged = false;
         try {
             await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async id => {
-                if (document.hidden || !canRequestMarketData()) return;
+                if (!isDataTaskCurrent(token) || document.hidden || !canRequestMarketData()) return;
                 postCloseConfirmation.attempts.set(id, (postCloseConfirmation.attempts.get(id) || 0) + 1);
                 const previousMode = state.displayStatus[id]?.mode;
                 const data = await syncData(id);
-                if (!data?.length) return;
+                if (!isDataTaskCurrent(token) || !data?.length) return;
                 const result = setRawData(id, data);
                 if (isConfirmedSeriesFreshEnough(data)) confirmedIds.push(id);
                 if (id === activeId && (result.changed || isConfirmedSeriesFreshEnough(data) || previousMode !== state.displayStatus[id]?.mode)) activeChanged = true;
@@ -165,7 +171,7 @@ async function refreshPostCloseConfirmation() {
             finishWatchlistSnapshotBatch();
         }
         await waitForWatchlistSnapshotQueue();
-        if (document.hidden || !isCurrentSidebarRealtimeBatch(area, targets)) return;
+        if (!isDataTaskCurrent(token) || document.hidden || !isCurrentSidebarRealtimeBatch(area,targets)) return;
         if (area === 'index-list') renderIndexList();
         else if (area === 'stock-list') renderWatchlist();
         if (confirmedIds.length) {
@@ -245,6 +251,7 @@ function startRefreshSchedulers() {
 }
 
 function stopRefreshSchedulers(reason = 'lifecycle') {
+    if (typeof cancelDataTasks === 'function') cancelDataTasks(reason);
     cancelWorkspaceHydration();
     if (typeof invalidatePendingSelection === 'function') invalidatePendingSelection();
     if (typeof releaseChartInteractionBlock === 'function') releaseChartInteractionBlock();
@@ -270,6 +277,7 @@ function handleRefreshPageHide(event) {
 
 function handleRefreshPageShow(event) {
     if (!event?.persisted) return;
+    if (typeof checkDataGenerationAfterResume==='function') void checkDataGenerationAfterResume();
     refreshSchedulerRuntime.restartCount++;
     if (typeof initMarketRefreshLeadership === 'function') initMarketRefreshLeadership();
     startRefreshSchedulers();

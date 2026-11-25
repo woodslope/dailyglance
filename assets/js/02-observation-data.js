@@ -164,6 +164,7 @@ function loadExternalLeadStripCache() {
     try {
         const raw = localStorage.getItem(EXTERNAL_LEAD_STRIP_CONFIG.CACHE_KEY);
         const cached = raw ? JSON.parse(raw) : null;
+        if ((cached?.generation ?? 0)!==(typeof dataTaskRuntime==='undefined'?0:dataTaskRuntime.generation)) return externalLeadStripState;
         const items = {};
         Object.keys(EXTERNAL_LEAD_STRIP_CONFIG.ITEMS).forEach(key => {
             const item = sanitizeExternalLeadStripItem(key, cached?.items?.[key], { stale: true });
@@ -182,9 +183,11 @@ function loadExternalLeadStripCache() {
 }
 
 function saveExternalLeadStripCache() {
+    if (typeof canPersistSessionData==='function' && !canPersistSessionData()) return;
     try {
         localStorage.setItem(EXTERNAL_LEAD_STRIP_CONFIG.CACHE_KEY, JSON.stringify({
             version: 1,
+            generation:typeof dataTaskRuntime==='undefined'?0:dataTaskRuntime.generation,
             items: externalLeadStripState.items,
             source: externalLeadStripState.source,
             fetchedAt: externalLeadStripState.fetchedAt,
@@ -582,6 +585,7 @@ function loadSectorTrendCache() {
     try {
         const raw = localStorage.getItem(SECTOR_TREND_CONFIG.CACHE_KEY);
         const cached = raw ? JSON.parse(raw) : null;
+        if ((cached?.generation ?? 0)!==(typeof dataTaskRuntime==='undefined'?0:dataTaskRuntime.generation)) return sectorTrendState;
         // 旧缓存已把缺失压成0，无法反向恢复真实性，不复用该派生快照。
         if (cached?.qualityVersion !== 1) return sectorTrendState;
         const cachedBoards = Array.isArray(cached?.boards)
@@ -609,9 +613,11 @@ function loadSectorTrendCache() {
 }
 
 function saveSectorTrendCache() {
+    if (typeof canPersistSessionData==='function' && !canPersistSessionData()) return;
     try {
         localStorage.setItem(SECTOR_TREND_CONFIG.CACHE_KEY, JSON.stringify({
             version: 1,
+            generation:typeof dataTaskRuntime==='undefined'?0:dataTaskRuntime.generation,
             qualityVersion: 1,
             boards: sectorTrendState.boards,
             concepts: sectorTrendState.concepts,

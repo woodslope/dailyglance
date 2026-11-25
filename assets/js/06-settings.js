@@ -1,10 +1,18 @@
 /* DailyGlance [6] - settings surface. Loaded after the main lifecycle script. */
 
+function readStoredStrategyPreference() {
+    const generation=Number(localStorage.getItem('quant_strategy_generation') || 0);
+    const name=localStorage.getItem('quant_strategy');
+    return generation===dataTaskRuntime.generation && STRATEGIES[name] ? name : null;
+}
+
 let strategySwitchSequence = 0;
 async function switchStrategy(name) {
     if (!STRATEGIES[name]) return;
+    const requestedGeneration=createDataTaskToken().generation;
     const confirmed = await customConfirm(`确定切换到 [${name}]？\n${STRATEGIES[name].desc}`);
-    if (!confirmed) return;
+    const dataToken=createDataTaskToken();
+    if (!confirmed || requestedGeneration!==dataToken.generation || !isDataTaskCurrent(dataToken)) return;
     const sequence = ++strategySwitchSequence;
     const perfTrace = PERF.start('switchStrategy', { strategy: name });
     const selectedId = state.id;
@@ -14,11 +22,12 @@ async function switchStrategy(name) {
     showLoading('正在切换策略并计算完整历史…');
     try {
         await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-        if (sequence !== strategySwitchSequence || state.id !== selectedId || state.period !== selectedPeriod) return;
+        if (!isDataTaskCurrent(dataToken) || sequence !== strategySwitchSequence || state.id !== selectedId || state.period !== selectedPeriod) return;
         const canReuseCurrentIndicators = !!(getActiveData()?.length && state.indicators.macd && state.indicators.rsi && state.indicators.kdj && state.indicators.ma);
         setActiveStrategy(name);
         try {
-            localStorage.setItem('quant_strategy', name);
+            localStorage.setItem('quant_strategy',name);
+            localStorage.setItem('quant_strategy_generation',String(dataToken.generation));
         } catch (error) {
             showToast('策略已切换，但偏好保存失败；本次设置仅在当前页面生效。', 'warn', 6000);
         }
@@ -26,9 +35,10 @@ async function switchStrategy(name) {
         if (getActiveData()) {
             state.pendingIndicatorMutation = canReuseCurrentIndicators ? { mode:'strategy-only', startIdx:0 } : { mode:'full', startIdx:0 };
             markIndicatorsDirty();
-            while (!await updateAllIndicatorsAsync()) {
-                if (sequence !== strategySwitchSequence || state.id !== selectedId || state.period !== selectedPeriod || state.strategy !== name) return;
+            while (!await ensureCurrentCalculation()) {
+                if (!isDataTaskCurrent(dataToken) || sequence !== strategySwitchSequence || state.id !== selectedId || state.period !== selectedPeriod || state.strategy !== name) return;
             }
+            if (!isDataTaskCurrent(dataToken)) return;
             PERF.mark(perfTrace, 'indicators');
             draw();
             PERF.mark(perfTrace, 'draw');
@@ -43,7 +53,7 @@ async function switchStrategy(name) {
         if (sequence === strategySwitchSequence) {
             hideLoading();
             releaseChartInteractionAfterPaint(interactionToken);
-            requestVisibleWorkspaceRefresh();
+            if (isDataTaskCurrent(dataToken)) requestVisibleWorkspaceRefresh();
         }
     }
 }

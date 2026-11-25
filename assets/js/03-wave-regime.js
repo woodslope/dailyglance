@@ -81,6 +81,9 @@ function getTrendRegimeContext(idx, full, ind) {
 }
 
 function getWaveAtr14At(idx, full) {
+    return getCalculationFact(full,'getWaveAtr14At',[idx],()=>computeWaveAtr14At(idx, full));
+}
+function computeWaveAtr14At(idx, full) {
     if (!Number.isInteger(idx) || idx < 1 || !full?.[idx]) return null;
     const start = Math.max(1, idx - 13);
     const ranges = [];
@@ -95,6 +98,9 @@ function getWaveAtr14At(idx, full) {
 }
 
 function getConfirmedWavePivots(idx, full, options = {}) {
+    return getCalculationFact(full,'getConfirmedWavePivots',[idx,options],()=>computeConfirmedWavePivots(idx, full, options));
+}
+function computeConfirmedWavePivots(idx, full, options = {}) {
     const pivotDays = Math.max(1, Number(options.pivotDays) || 2);
     const windowDays = Math.max(pivotDays * 2 + 1, Number(options.windowDays) || 40);
     const start = Math.max(pivotDays, idx - windowDays + 1);
@@ -130,6 +136,9 @@ function clusterWavePivotLevels(pivots, tolerance) {
 }
 
 function getWaveBoxContext(idx, full, policy = {}) {
+    return getCalculationFact(full,'getWaveBoxContext',[idx,policy],()=>computeWaveBoxContext(idx, full, policy));
+}
+function computeWaveBoxContext(idx, full, policy = {}) {
     const config = policy.box || {};
     const atr14 = getWaveAtr14At(idx, full);
     const pivots = getConfirmedWavePivots(idx, full, config);

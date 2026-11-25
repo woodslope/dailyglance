@@ -3,6 +3,101 @@
 // [2] 接口与数据层 (API & Data Layer)
 // ==========================================
 
+// 数据代次由数据库重置事务更新；会话代次阻止取消后迟到的任务提交。
+const DATA_GENERATION_RECORD_KEY = '__dg_data_generation__';
+const DATA_RESET_NOTIFICATION_KEY = 'dg_data_reset_generation_v1';
+const dataTaskRuntime = { generation:0, lifecycle:0, resetSerial:0, resetting:false, resetPromise:null, controllers:new Set() };
+function createDataTaskToken(requireOwnership = false) {
+    return { generation:dataTaskRuntime.generation, lifecycle:dataTaskRuntime.lifecycle,
+        requireOwnership, owner:typeof marketRefreshLeadershipStarted !== 'undefined' && marketRefreshLeadershipStarted ? PAGE_SESSION_ID : '' };
+}
+function createWatchlistMutationToken() {
+    return {...createDataTaskToken(),durable:true,resetSerial:dataTaskRuntime.resetSerial};
+}
+function isDataTaskCurrent(token) {
+    if (!token || dataTaskRuntime.resetting || token.generation !== dataTaskRuntime.generation) return false;
+    if (token.durable) return token.resetSerial===dataTaskRuntime.resetSerial;
+    if (token.lifecycle !== dataTaskRuntime.lifecycle) return false;
+    const lease = typeof readMarketRefreshLease === 'function' ? readMarketRefreshLease() : null;
+    return !token.requireOwnership || !token.owner || (!document.hidden && (marketRefreshLeaseUnavailable || (lease ? lease.owner===token.owner && lease.expiresAt>Date.now() : marketRefreshLeader)));
+}
+function cancelDataTasks(reason = 'lifecycle') {
+    dataTaskRuntime.lifecycle++;
+    if (reason==='reset' || reason==='cross-page-reset') {
+        dataTaskRuntime.resetSerial++;
+        for (const stock of state.watchlist || []) delete stock._pendingRemove;
+        if (typeof pendingWatchlistMutations!=='undefined') pendingWatchlistMutations.length=0;
+    }
+    dataTaskRuntime.controllers.forEach(controller => controller.abort());
+    dataTaskRuntime.controllers.clear();
+    for (const [id,limiter] of requestManager.limiters) if(limiter.isFetching) requestManager.limiters.set(id,{...limiter,isFetching:false});
+    _runJsonpCleanup();
+    while (historySyncQueue.length) historySyncQueue.shift().resolve(null);
+    // A resumed request must not join a promise owned by the cancelled session.
+    for (const map of [historySyncInFlight,syncDataInFlight,confirmedDataInFlight,cachedFetchInFlight,cachedFetchRefreshJobs]) map.clear();
+    if (typeof cancelCurrentCalculation === 'function') cancelCurrentCalculation(reason);
+}
+function canPersistSessionData() {
+    if(dataTaskRuntime.resetting)return false;
+    try {return !(JSON.parse(localStorage.getItem(DATA_RESET_NOTIFICATION_KEY) || 'null')?.generation>dataTaskRuntime.generation);} catch(error) {return true;}
+}
+
+function getStoredDataGeneration(record) {
+    const value = Number(record?.data);
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+async function initializeDataGeneration(apply = true) {
+    if (!DB) return dataTaskRuntime.generation;
+    const record=await new Promise(resolve=>{
+        let settled=false;
+        const timer=setTimeout(()=>finish(null,'本地数据代次读取超时'),1000);
+        function finish(value,reason='') {
+            if(settled)return;settled=true;clearTimeout(timer);
+            if(reason)disablePersistentStorage(reason);resolve(value);
+        }
+        try {
+            const request=DB.transaction(STORE,'readonly').objectStore(STORE).get(DATA_GENERATION_RECORD_KEY);
+            request.onsuccess=event=>finish(event.target.result);
+            request.onerror=()=>finish(null,'本地数据代次读取失败');
+        } catch(error) {finish(null,'本地数据代次不可读取');}
+    });
+    const generation=getStoredDataGeneration(record);
+    if(apply)dataTaskRuntime.generation=generation;
+    return generation;
+}
+async function checkDataGenerationAfterResume() {
+    if(!DB || dataTaskRuntime.resetting)return;
+    const generation=await initializeDataGeneration(false);
+    if(generation>dataTaskRuntime.generation)handleDataResetNotification({key:DATA_RESET_NOTIFICATION_KEY,
+        newValue:JSON.stringify({generation,owner:"storage-check"})});
+}
+
+function clearSessionDataAfterReset() {
+    for (const key of ['rawData','weeklyData','liveBars','liveQuotes','liveWeeklyData','liveDailyData','liveOverlayCache',
+        'confirmedStatus','displayStatus','historyChecks','quoteRefreshFailures','realtimeBatchAt','activeHistoryRefreshAt']) state[key] = {};
+    state.watchlist = []; stockCache = [];
+    state.indicatorKey = ''; state.indicators = {ma:{},macd:null,rsi:null,kdj:null};
+    state.pendingIndicatorMutation = {mode:'full',startIdx:0};
+    state.refreshSnapshots = {leftList:null,rightPanel:null};
+    state.leftListRefreshAt = 0; state.rightPanelRefreshAt = 0;
+    derivedIndicatorCache.clear(); clearDerivedCaches();
+    historyRefreshMeta.clear(); _lastPersistedDecisionCacheKey.clear();
+    if (typeof pendingWatchlistMutations !== 'undefined') pendingWatchlistMutations.length = 0;
+    if (typeof watchlistSnapshotQueue !== 'undefined') watchlistSnapshotQueue.clear();
+}
+function handleDataResetNotification(event) {
+    if (event.key !== DATA_RESET_NOTIFICATION_KEY || !event.newValue) return;
+    let payload; try { payload = JSON.parse(event.newValue); } catch (error) { return; }
+    if (payload.owner === PAGE_SESSION_ID || !Number.isSafeInteger(payload.generation) || payload.generation <= dataTaskRuntime.generation) return;
+    dataTaskRuntime.resetting = true;
+    if (typeof stopRefreshSchedulers === 'function') stopRefreshSchedulers('cross-page-reset');
+    cancelDataTasks('cross-page-reset');
+    dataTaskRuntime.generation = payload.generation;
+    clearSessionDataAfterReset();
+    if (typeof location !== 'undefined') location.reload();
+}
+if (typeof window !== 'undefined') window.addEventListener?.('storage',handleDataResetNotification);
+
 const INDEX_CONFIG = {
     sh: { name: '上证指数', tickflow: '000001.SH', eastmoney: '1.000001', tencent: 'sh000001', role: 'observe' },
     sz: { name: '深证成指', tickflow: '399001.SZ', eastmoney: '0.399001', tencent: 'sz399001', role: 'observe' },
@@ -307,11 +402,34 @@ function hasTrustedQuoteTime(bar) {
     return !!parsed && parsed.date === bar.date;
 }
 
+function getQuoteExchangeTime(bar) {
+    if (!hasTrustedQuoteTime(bar)) return 0;
+    const parsed=parseTencentQuoteTime(String(bar.quoteTime).replace(/[- :]/g,''));
+    const value = Date.parse(parsed.quoteTime.replace(' ','T') + '+08:00');
+    return Number.isFinite(value) ? value : 0;
+}
+function validateLiveBar(id, bar) {
+    if (!bar || !isValidMarketDate(bar.date) || !hasTrustedQuoteTime(bar)) return {ok:false,reason:'untrusted-quote-time'};
+    const [open,high,low,close] = ['open','high','low','close'].map(key => finiteMarketNumber(bar[key]));
+    if (![open,high,low,close].every(value => isValidPrice(value,id))) return {ok:false,reason:'incomplete-live-ohlc'};
+    if (high < Math.max(open,low,close) || low > Math.min(open,high,close)) return {ok:false,reason:'invalid-live-ohlc'};
+    if (finiteMarketNumber(bar.vol,0) < 0 || finiteMarketNumber(bar.amt,0) < 0) return {ok:false,reason:'invalid-live-volume'};
+    return {ok:true,reason:''};
+}
+function isOlderRealtimeQuote(id, bar) {
+    const today=getTodayDate();
+    const previous=[state.liveQuotes?.[id],state.liveBars?.[id],state.liveOverlayCache?.[id]?.bar]
+        .filter(row=>row?.date && row.date<=today);
+    if (!previous.length) return false;
+    const lastDate=previous.map(row=>row.date).sort().at(-1);
+    if(bar.date && bar.date<lastDate)return true;
+    const nextTime=getQuoteExchangeTime(bar),previousTime=Math.max(...previous.map(getQuoteExchangeTime));
+    return Boolean(previousTime && nextTime && nextTime<previousTime);
+}
+
 function normalizeTencentQuoteAmount(rawAmount) {
-    const amountInTenThousands = parseFloat(rawAmount);
-    return Number.isFinite(amountInTenThousands) && amountInTenThousands >= 0
-        ? amountInTenThousands * 10000
-        : 0;
+    const amountInTenThousands = finiteMarketNumber(rawAmount);
+    return Number.isFinite(amountInTenThousands) ? amountInTenThousands * 10000 : 0;
 }
 function isTradingDay(dateStr) {
     if (!isValidMarketDate(dateStr)) return false;
@@ -469,19 +587,21 @@ function hydrateLiveOverlayCacheState() {
 }
 
 function persistLiveOverlayCacheStateNow() {
+    if (!canPersistSessionData()) return;
     if (!state.liveOverlayCache) state.liveOverlayCache = {};
     try {
         // 合并同源页面在本批次期间写入的更新，避免批量行情覆盖其他页面的标的。
         let latest = {};
         const raw = localStorage.getItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY);
         if (raw) latest = JSON.parse(raw) || {};
-        const merged = { ...latest };
+        const merged=Object.fromEntries(Object.entries(latest).filter(([,entry])=>(entry?.generation ?? 0)===dataTaskRuntime.generation));
         liveOverlayCacheBatchDeletedIds.forEach(id => delete merged[id]);
         Object.entries(state.liveOverlayCache).forEach(([id, entry]) => {
-            if (liveOverlayCacheBatchDeletedIds.has(id)) return;
+            if (liveOverlayCacheBatchDeletedIds.has(id) || (entry?.generation ?? 0)!==dataTaskRuntime.generation) return;
             const latestAt = Number(merged[id]?.cachedAt) || 0;
             const localAt = Number(entry?.cachedAt) || 0;
-            if (!merged[id] || localAt >= latestAt) merged[id] = entry;
+            const latestTime=getQuoteExchangeTime(merged[id]?.bar),localTime=getQuoteExchangeTime(entry?.bar);
+            if (!merged[id] || localTime>latestTime || (localTime===latestTime && localAt>=latestAt)) merged[id]=entry;
         });
         state.liveOverlayCache = merged;
         localStorage.setItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY, JSON.stringify(merged));
@@ -518,27 +638,16 @@ function endLiveOverlayCacheBatch() {
 }
 
 function normalizeLiveOverlayCacheBar(id, bar) {
-    if (!id || !bar || !isValidPrice(bar.close, id)) return null;
-    return {
-        date: bar.date || getTodayDate(),
-        open: Number(bar.open) || Number(bar.close) || 0,
-        high: Number.isFinite(Number(bar.high)) ? Number(bar.high) : Number(bar.close) || 0,
-        low: Number.isFinite(Number(bar.low)) ? Number(bar.low) : Number(bar.close) || 0,
-        close: Number(bar.close),
-        prevClose: Number.isFinite(Number(bar.prevClose)) ? Number(bar.prevClose) : 0,
-        vol: Number.isFinite(Number(bar.vol)) ? Number(bar.vol) : 0,
-        amt: Number.isFinite(Number(bar.amt)) ? Number(bar.amt) : 0,
-        quoteTime: bar.quoteTime || '',
-        quoteDateSource: bar.quoteDateSource || '',
-        _isLive: true,
-        _isCachedLive: true
-    };
+    if (!validateLiveBar(id,bar).ok) return null;
+    return {date:bar.date, open:Number(bar.open),high:Number(bar.high),low:Number(bar.low),close:Number(bar.close),
+        prevClose:finiteMarketNumber(bar.prevClose,0),vol:finiteMarketNumber(bar.vol,0),amt:finiteMarketNumber(bar.amt,0),
+        quoteTime:bar.quoteTime,quoteDateSource:bar.quoteDateSource,_isLive:true,_isCachedLive:true};
 }
 
 function getLiveOverlayCacheEntry(id) {
     const store = hydrateLiveOverlayCacheState();
     const entry = store[id];
-    if (!entry || !entry.bar) return null;
+    if (!entry || !entry.bar || (entry.generation ?? 0)!==dataTaskRuntime.generation) return null;
     const cachedAt = Number(entry.cachedAt) || 0;
     // cacheAgeMs 只是写入时的快照，恢复时必须以 cachedAt 重新计算，避免盘中缓存重载后短暂显示为新鲜。
     const cacheAgeMs = cachedAt ? Math.max(0, Date.now() - cachedAt) : Infinity;
@@ -560,11 +669,12 @@ function getLiveOverlayCacheEntry(id) {
 }
 
 function setLiveOverlayCache(id, bar, meta = {}) {
-    if (!id) return false;
+    if (!id || dataTaskRuntime.resetting || isOlderRealtimeQuote(id,bar)) return false;
     const normalizedBar = normalizeLiveOverlayCacheBar(id, bar);
     if (!normalizedBar) return false;
     hydrateLiveOverlayCacheState();
     state.liveOverlayCache[id] = {
+        generation:dataTaskRuntime.generation,
         cachedAt: Number(meta.cachedAt) || Date.now(),
         cacheAgeMs: Number.isFinite(Number(meta.cacheAgeMs)) ? Math.max(0, Number(meta.cacheAgeMs)) : 0,
         source: meta.source || 'api',
@@ -586,7 +696,8 @@ function clearLiveOverlayCache(id) {
 
 function canUseCachedLiveOverlay(id, series, cacheEntry) {
     if (!cacheEntry || !cacheEntry.bar) return { ok: false, reason: 'missing-cache' };
-    if (!hasTrustedQuoteTime(cacheEntry.bar)) return { ok: false, reason: 'untrusted-quote-time' };
+    const quality = validateLiveBar(id,cacheEntry.bar);
+    if (!quality.ok) return quality;
     if (isAfterMarketClose() && cacheEntry.bar.date === getTodayDate()) {
         const lastBar = series?.length ? series[series.length - 1] : null;
         if (!lastBar || !isValidPrice(cacheEntry.bar.close, id)) return { ok: false, reason: 'invalid-price' };
@@ -634,6 +745,7 @@ function setConfirmedStatus(id, patch = {}) {
 }
 
 function setLiveQuote(id, bar, quality = 'quote-only', reason = '', meta = {}) {
+    if (dataTaskRuntime.resetting || isOlderRealtimeQuote(id,bar)) return false;
     if (isRetiredSecurity(id)) return false;
     if (!id || !bar || !isValidPrice(bar.close, id)) return false;
     if (!state.liveQuotes) state.liveQuotes = {};
@@ -657,6 +769,9 @@ function setLiveQuote(id, bar, quality = 'quote-only', reason = '', meta = {}) {
 }
 
 function setLiveBar(id, bar, source = 'api', meta = {}) {
+    if (dataTaskRuntime.resetting || !validateLiveBar(id,bar).ok || isOlderRealtimeQuote(id,bar)) return false;
+    const previous = state.liveBars?.[id];
+    const repeated = previous && getQuoteExchangeTime(previous) === getQuoteExchangeTime(bar) && barsEqual(previous,bar);
     if (isRetiredSecurity(id)) return false;
     if (!id || !bar || !isValidPrice(bar.close, id)) return false;
     if (!state.liveBars) state.liveBars = {};
@@ -669,6 +784,12 @@ function setLiveBar(id, bar, source = 'api', meta = {}) {
     const isPostClosePending = isCachedLive && isAfterMarketClose() && (bar.date || '') === getTodayDate();
     const displayMode = isPostClosePending ? 'post-close-pending' : (isCachedLive ? 'cached-live-overlay' : 'live-overlay');
     const displayReason = isPostClosePending ? '盘后待确认' : (isCachedLive ? (isSoftExpired ? '沿用盘中' : '短TTL缓存盘中') : '');
+    if (repeated && Boolean(previous._isCachedLive)===isCachedLive && state.displayStatus?.[id]?.mode===displayMode) {
+        previous._cacheAgeMs=cacheAgeMs;previous._isSoftExpiredLive=isSoftExpired;
+        setDisplayStatus(id,{mode:displayMode,reason:displayReason,repeated:!isCachedLive,quoteTime:previous.quoteTime,
+            quoteAt:state.displayStatus?.[id]?.quoteAt || Date.now(),cacheAgeMs,cachedAt});
+        return true;
+    }
     setLiveQuote(id, bar, 'valid-overlay', '', { isCachedLive, cachedAt });
     state.liveBars[id] = {
         ...bar,
@@ -684,6 +805,8 @@ function setLiveBar(id, bar, source = 'api', meta = {}) {
         mode: displayMode,
         reason: displayReason,
         quoteDate: bar.date || '',
+        quoteTime:bar.quoteTime || '',
+        repeated:false,
         quoteAt: Date.now(),
         cachedAt,
         cacheAgeMs
@@ -734,6 +857,9 @@ function clearLiveQuote(id) {
 }
 
 function canUseRealtimeOverlay(id, series, rtBar) {
+    const quality = validateLiveBar(id,rtBar);
+    if (!quality.ok) return quality;
+    if (isOlderRealtimeQuote(id,rtBar)) return {ok:false,reason:'quote-time-regression'};
     if (!rtBar || !series || !series.length) return { ok: false, reason: 'missing-data' };
     const lastBar = series[series.length - 1];
     if (!lastBar || !isValidPrice(rtBar.close, id)) return { ok: false, reason: 'invalid-price' };
@@ -754,10 +880,11 @@ function canUseRealtimeOverlay(id, series, rtBar) {
 }
 
 function applyRealtimeQuoteForSeries(id, series, rtBar) {
+    if (dataTaskRuntime.resetting) return 'skipped';
+    if (rtBar && isOlderRealtimeQuote(id,rtBar)) return state.liveBars?.[id]?._isCachedLive ? 'cached-overlay' : 'skipped';
     const overlayGate = canUseRealtimeOverlay(id, series, rtBar);
     if (overlayGate.ok) {
-        setLiveBar(id, rtBar);
-        return 'overlay';
+        return setLiveBar(id, rtBar) ? 'overlay' : 'skipped';
     }
     if (rtBar && isValidPrice(rtBar.close, id)) {
         if (overlayGate.reason === 'quote-date-not-today' && tryApplyCachedLiveOverlay(id, series)) return 'cached-overlay';
@@ -928,6 +1055,7 @@ function mergePendingIndicatorMutation(nextMutation) {
 }
 
 function setRawData(id, data) {
+    if (dataTaskRuntime.resetting) return {changed:false,mutation:{mode:'unchanged',startIdx:0}};
     if (isRetiredSecurity(id)) return { changed:false, mutation:{mode:'unchanged',startIdx:0} };
     data = normalizeConfirmedHistoryData(data, id);
     const prevData = state.rawData[id];
@@ -1095,6 +1223,8 @@ async function fetchTickFlowKline(id) {
     const symbol = resolveTickFlowSymbol(id);
     if (!symbol) return [];
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    if (controller) dataTaskRuntime.controllers.add(controller);
+    const token = createDataTaskToken(true);
     const timer = controller ? setTimeout(() => controller.abort(), SYS_CONFIG.REQ_TIMEOUT) : null;
     try {
         const url = `${TICKFLOW_HISTORY_URL}?symbol=${encodeURIComponent(symbol)}&period=1d&count=1000&adjust=forward_additive`;
@@ -1109,6 +1239,7 @@ async function fetchTickFlowKline(id) {
         }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
+        if (!isDataTaskCurrent(token)) return [];
         recordHistorySourceSuccess('tickflow');
         const columns = payload?.data;
         const fields = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'amount'];
@@ -1125,10 +1256,11 @@ async function fetchTickFlowKline(id) {
             amt: columns.amount[index]
         })), id);
     } catch (error) {
-        recordHistorySourceTransportFailure('tickflow');
+        if (isDataTaskCurrent(token)) recordHistorySourceTransportFailure('tickflow');
         return [];
     } finally {
         if (timer) clearTimeout(timer);
+        if (controller) dataTaskRuntime.controllers.delete(controller);
     }
 }
 
@@ -1236,10 +1368,10 @@ function parseTencentRealtimeQuote(raw, id) {
     const fields = raw.split('~');
     const price = finiteMarketNumber(fields[3]);
     if (fields.length < 6 || !isValidPrice(price, id)) return null;
-    const priceOrClose = value => isValidPrice(value, id) ? Number(value) : price;
+    const priceOrMissing = value => isValidPrice(value,id) ? Number(value) : null;
     const quoteTime = getTencentQuoteTimeInfo(fields);
-    return { ...quoteTime, open:priceOrClose(fields[5]), high:priceOrClose(fields[33]), low:priceOrClose(fields[34]),
-        close:price, prevClose:finiteMarketNumber(fields[4],0), vol:Math.max(0,finiteMarketNumber(fields[36],0)),
+    return { ...quoteTime, open:priceOrMissing(fields[5]), high:priceOrMissing(fields[33]), low:priceOrMissing(fields[34]),
+        close:price, prevClose:finiteMarketNumber(fields[4],0), vol:finiteMarketNumber(fields[36],0),
         amt:normalizeTencentQuoteAmount(fields[37]) };
 }
 
@@ -1340,6 +1472,8 @@ async function syncDataWithHistory(id) {
 }
 
 async function performHistorySync(id) {
+    const token = createDataTaskToken(true);
+    if (!isDataTaskCurrent(token)) return null;
     setHistoryCheckState(id, 'checking');
     const sources = id === 'bz50'
         ? [
@@ -1357,6 +1491,7 @@ async function performHistorySync(id) {
     for (const [index, source] of sources.entries()) {
         updateHistoryLoadingMessage(id, index ? `正在尝试备用来源（${index + 1}/${sources.length}）…` : '正在获取确认历史 K 线…');
         const data = normalizeConfirmedHistoryData(await source.load(id), id);
+        if (!isDataTaskCurrent(token)) return null;
         if (!data || data.length < 30) continue;
         const lastDate = data[data.length - 1].date;
         if (isConfirmedSeriesFreshEnough(data)) {
@@ -1449,37 +1584,59 @@ async function syncData(id) {
 
 const confirmedDataInFlight = new Map();
 
-function syncConfirmedData(id) {
-    if (!id) return Promise.resolve(null);
+function buildHistorySyncResult(id, rows, patch = {}) {
+    const lastDate = rows?.at(-1)?.date || '';
+    return {id,rows:rows?.length ? rows : null,lastDate,origin:'cache',requestStatus:'skipped',
+        status:rows?.length ? (isConfirmedSeriesFreshEnough(rows) ? 'fresh' : 'stale') : 'failed',verified:false,...patch};
+}
+function syncConfirmedDataResult(id) {
+    if (!id) return Promise.resolve(buildHistorySyncResult(id,null));
     if (confirmedDataInFlight.has(id)) return confirmedDataInFlight.get(id);
     const task = performConfirmedDataSync(id).finally(() => {
         if (confirmedDataInFlight.get(id) === task) confirmedDataInFlight.delete(id);
         releaseRetiredSecurityData();
     });
-    confirmedDataInFlight.set(id, task);
+    confirmedDataInFlight.set(id,task);
     return task;
 }
-
+async function syncConfirmedData(id) { return (await syncConfirmedDataResult(id)).rows; }
+async function syncDataResult(id, options = {}) {
+    const token = createDataTaskToken(true);
+    const result = await syncConfirmedDataResult(id);
+    if (!options.historyOnly && isDataTaskCurrent(token)) await syncRealtimeForSeries(id,result.rows,token);
+    return result;
+}
 async function performConfirmedDataSync(id) {
-    const cached = await getCachedData(id);
-    const hasEnough = cached?.length >= 30;
-    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
-        if (hasEnough && !state.liveBars?.[id]) tryApplyCachedLiveOverlay(id, cached);
-        return hasEnough ? cached : null;
+    const token = createDataTaskToken();
+    const memory = Boolean(state.rawData[id]?.length);
+    const cached = await getCachedData(id), hasEnough = cached?.length >= 30;
+    const fallback = patch => buildHistorySyncResult(id,hasEnough ? cached : null,{origin:memory ? 'memory' : 'cache',...patch});
+    if (!isDataTaskCurrent(token)) return fallback({requestStatus:'cancelled'});
+    if (!canRequestMarketData()) {
+        if (hasEnough && !state.liveBars?.[id]) tryApplyCachedLiveOverlay(id,cached);
+        return fallback();
     }
-    if (!hasEnough) setHistoryRefreshMeta(id, { lastAttemptAt: Date.now() });
-    const fresh = hasEnough ? await syncDataIncremental(id) : await syncDataWithHistory(id);
+    const networkToken = createDataTaskToken(true);
+    if (hasEnough && shouldSkipHistoryRefresh(id,cached)) return fallback();
+    setHistoryRefreshMeta(id,{lastAttemptAt:Date.now()});
+    const fresh = await syncDataWithHistory(id);
+    if (!isDataTaskCurrent(networkToken)) return fallback({requestStatus:'cancelled'});
     if (!fresh || fresh.length < 30) {
-        setConfirmedStatus(id, { source: 'cache', status: hasEnough ? 'stale' : 'failed', lastDate: cached?.at(-1)?.date || '', syncedAt: Date.now() });
-        return hasEnough ? cached : null;
+        setConfirmedStatus(id,{source:'cache',status:'failed',sourceLagging:false,lastDate:cached?.at(-1)?.date || '',syncedAt:Date.now()});
+        return fallback({requestStatus:'failed'});
     }
-    if (!hasEnough) setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastAttemptAt: Date.now(), lastDate: fresh.at(-1).date });
-    // 持久化不属于可见内容的完成条件，失败由存储层降级处理。
-    if (getDataMutationMeta(cached, fresh).mode !== 'unchanged') void dbSet(id, fresh);
+    const rows = mergeConfirmedHistory(id,cached,fresh);
+    const sourceLagging=Boolean(cached?.length && fresh.at(-1).date<cached.at(-1).date);
+    setConfirmedStatus(id,{source:sourceLagging?'cache':state.confirmedStatus[id]?.source || 'network',
+        status:isConfirmedSeriesFreshEnough(rows)?'fresh':'stale',lastDate:rows.at(-1).date,sourceLagging});
+    const verified = isConfirmedSeriesFreshEnough(fresh) && fresh.at(-1).date >= (cached?.at(-1)?.date || '');
+    if (verified) setHistoryRefreshMeta(id,{lastSuccessAt:Date.now(),lastAttemptAt:Date.now(),lastDate:rows.at(-1).date});
+    if (getDataMutationMeta(cached,rows).mode !== 'unchanged') void dbSet(id,rows,networkToken);
     const quote = getQuoteBar(id);
-    if (quote && !quote._isCachedLive && isMarketOpen()) applyRealtimeQuoteForSeries(id, fresh, quote);
-    else if (!isConfirmedSeriesFreshEnough(fresh)) tryApplyCachedLiveOverlay(id, fresh);
-    return fresh;
+    if (quote && !quote._isCachedLive && isMarketOpen()) applyRealtimeQuoteForSeries(id,rows,quote);
+    else if (!isConfirmedSeriesFreshEnough(rows)) tryApplyCachedLiveOverlay(id,rows);
+    return buildHistorySyncResult(id,rows,{origin:rows === cached ? (memory ? 'memory' : 'cache') : 'network',
+        source:state.confirmedStatus[id]?.source || '',requestStatus:'success',verified});
 }
 
 async function performSyncData(id) {
@@ -1487,9 +1644,10 @@ async function performSyncData(id) {
     return syncRealtimeForSeries(id, data);
 }
 
-async function syncRealtimeForSeries(id, data) {
+async function syncRealtimeForSeries(id, data, token = createDataTaskToken(true)) {
     if (!data?.length || !isMarketOpen() || (typeof canRequestMarketData === 'function' && !canRequestMarketData())) return data;
     const rt = await requestManager.fetchRealtimeWithThrottle(id);
+    if (!isDataTaskCurrent(token)) return data;
     const skipped = isRealtimeFetchSkipped(rt);
     if (rt && !skipped) applyRealtimeQuoteForSeries(id, data, rt);
     else if (!skipped) tryApplyCachedLiveOverlay(id, data);
@@ -1508,15 +1666,15 @@ async function handleUpdateData(forceFull = false) {
     const name = getIndexConfig(id)?.name || getActiveSecurityTarget()?.name || id;
     const workspace = state.tab;
     const isCurrentSelection = () => state.tab === workspace && state.mode === workspace && state.id === id && globalSelectionSeq === selectionSeq;
+    if (!canRequestMarketData()) claimMarketRefreshLeadership({force:true});
+    if (!canRequestMarketData()) return;
+    const taskToken=createDataTaskToken(true);
     const now = Date.now(), lastClick = lastUpdateClicks.get(id) || 0;
     if (!forceFull && now - lastClick < SYS_CONFIG.UPDATE_COOLDOWN) {
         showToast(`请 ${Math.ceil((SYS_CONFIG.UPDATE_COOLDOWN - (now - lastClick)) / 1000)} 秒后再更新。`, 'info');
         return;
     }
-    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
-        showToast('另一页面正在负责行情更新，当前保留已有数据。', 'info');
-        return;
-    }
+
 
     resetHistorySourceCircuits();
     btn.disabled = true;
@@ -1529,6 +1687,7 @@ async function handleUpdateData(forceFull = false) {
         const previous = state.rawData[id];
         const previousConfirmed = state.confirmedStatus?.[id];
         const fresh = await syncDataWithHistory(id);
+        if (!isDataTaskCurrent(taskToken)) return;
         if (!fresh?.length) {
             showToast(`${name} 更新失败，已保留原数据，可重新尝试。`, 'warn', 4500);
             return;
@@ -1544,11 +1703,13 @@ async function handleUpdateData(forceFull = false) {
             showToast(`${name} 行情源历史落后于现有数据，已保留至 ${previousDate}，可重新尝试。`, 'warn', 4500);
             return;
         }
-        await dbSet(id, fresh);
+        await dbSet(id,fresh,taskToken);
+        if (!isDataTaskCurrent(taskToken)) return;
         setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastAttemptAt: Date.now(), lastDate: fresh[fresh.length - 1].date });
         setRawData(id, fresh);
         if (isMarketOpen()) {
             const quote = await requestManager.fetchRealtimeWithThrottle(id);
+            if (!isDataTaskCurrent(taskToken)) return;
             if (quote && !isRealtimeFetchSkipped(quote)) applyRealtimeQuoteForSeries(id, fresh, quote);
         }
         // 排序期间不重建左栏，也不让中右先显示新数据；切换标的后取消本次界面提交。
@@ -1560,8 +1721,11 @@ async function handleUpdateData(forceFull = false) {
             const leftTxn = beginRefreshTransaction('leftList', { source: 'manual-update', id });
             const rightTxn = beginRefreshTransaction('rightPanel', { source: 'manual-update', id });
             if (typeof renderActiveLeftListAfterDataApply === 'function') renderActiveLeftListAfterDataApply(leftTxn, { id, renderNow: true });
-            const status = applyActiveDataRefresh(id);
-            if (status !== 'no-data') markRefreshTime(rightTxn, { path: status, id });
+            const status = await applyActiveDataRefresh(id);
+            // 异步绘制可能因切换或任务取消而跳过；只为仍有效的已应用结果提交时间。
+            if (status !== 'no-data' && status !== 'skipped' && isCurrentSelection() && isDataTaskCurrent(taskToken)) {
+                markRefreshTime(rightTxn, { path: status, id });
+            }
         }
         const date = fresh[fresh.length - 1].date;
         const complete = isConfirmedSeriesFreshEnough(fresh);
@@ -1584,15 +1748,15 @@ const KLINE_CACHE_VERSION = 2;
 // 决策快照落盘：与 K 线缓存共用同一 objectStore，但用独立前缀，
 // 既能被“重置本地数据”的 clear() 一并清掉，又能绕开 OHLCV 归一化。
 const DECISION_CACHE_KEY_PREFIX = 'decision_cache::';
-const NON_KLINE_CACHE_KEYS = new Set(['stock_cache', 'watchlist_list']);
+const NON_KLINE_CACHE_KEYS = new Set(['stock_cache', 'watchlist_list', DATA_GENERATION_RECORD_KEY]);
 function isDecisionCacheKey(id) { return typeof id === 'string' && id.startsWith(DECISION_CACHE_KEY_PREFIX); }
 function buildDecisionCacheKey(secid) { return `${DECISION_CACHE_KEY_PREFIX}${secid}`; }
 function isKlineCacheKey(id) { return !NON_KLINE_CACHE_KEYS.has(id) && !isDecisionCacheKey(id); }
-function buildPersistentCacheRecord(id, data) {
-    return { id, data, updated: Date.now(), ...(isKlineCacheKey(id) ? { klineCacheVersion: KLINE_CACHE_VERSION } : {}) };
+function buildPersistentCacheRecord(id, data, generation = dataTaskRuntime.generation) {
+    return { id, data, generation, updated: Date.now(), ...(isKlineCacheKey(id) ? { klineCacheVersion: KLINE_CACHE_VERSION } : {}) };
 }
 function isUsablePersistentCacheRecord(id, record) {
-    return !record || !isKlineCacheKey(id) || record.klineCacheVersion === KLINE_CACHE_VERSION;
+    return !record || ((record.generation ?? 0) === dataTaskRuntime.generation && (!isKlineCacheKey(id) || record.klineCacheVersion === KLINE_CACHE_VERSION));
 }
 
 let DB = null;
@@ -1700,28 +1864,24 @@ function dbGet(id) {
     });
 }
 
-function dbSet(id, data) {
+function dbSet(id, data, token = createDataTaskToken()) {
     return new Promise(resolve => {
-        if (!DB) return resolve();
-        data = (id === 'stock_cache' || id === 'watchlist_list' || isDecisionCacheKey(id)) ? data : normalizeConfirmedHistoryData(data, id);
+        if (!DB || !isDataTaskCurrent(token)) return resolve(false);
+        data = NON_KLINE_CACHE_KEYS.has(id) || isDecisionCacheKey(id) ? data : normalizeConfirmedHistoryData(data,id);
         try {
-            const tx = DB.transaction(STORE, 'readwrite');
-            tx.objectStore(STORE).put(buildPersistentCacheRecord(id, data));
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => {
-                disablePersistentStorage(tx.error?.message || '本地缓存写入失败');
-                resolve();
+            const tx = DB.transaction(STORE,'readwrite'), store = tx.objectStore(STORE);
+            let written = false;
+            tx.oncomplete = () => resolve(written);
+            tx.onerror = tx.onabort = () => { disablePersistentStorage(tx.error?.message || '本地缓存写入失败'); resolve(false); };
+            const request = store.get(DATA_GENERATION_RECORD_KEY);
+            request.onsuccess = event => {
+                if (!isDataTaskCurrent(token) || getStoredDataGeneration(event.target.result) !== token.generation) return;
+                store.put(buildPersistentCacheRecord(id,data,token.generation)); written = true;
             };
-            tx.onabort = () => {
-                disablePersistentStorage(tx.error?.message || '本地缓存写入已中止');
-                resolve();
-            };
-        } catch (error) {
-            disablePersistentStorage(error?.message || '本地缓存写入失败');
-            resolve();
-        }
+        } catch (error) { disablePersistentStorage(error?.message || '本地缓存写入失败'); resolve(false); }
     });
 }
+
 // 每项自选操作都在同一读写事务中基于最新列表执行，避免多页面整表覆盖。
 function applyStoredWatchlistMutation(list, operation = { type:'normalize' }) {
     const rows = Array.isArray(list) ? list.map(normalizeSecurityTarget) : [];
@@ -1745,8 +1905,8 @@ function applyStoredWatchlistMutation(list, operation = { type:'normalize' }) {
     return rows;
 }
 
-function mutateStoredWatchlist(operation) {
-    if (!DB) return Promise.resolve(null);
+function mutateStoredWatchlist(operation, token = createWatchlistMutationToken()) {
+    if (!DB || !isDataTaskCurrent(token)) return Promise.resolve(null);
     return new Promise((resolve,reject) => {
         let tx, result, settled = false, semanticError = null;
         const fail = () => {
@@ -1759,17 +1919,22 @@ function mutateStoredWatchlist(operation) {
             tx = DB.transaction(STORE,'readwrite');
             tx.onabort = tx.onerror = fail;
             tx.oncomplete = () => { if (!settled) { settled = true; resolve(result); } };
-            const store = tx.objectStore(STORE), request = store.get('watchlist_list');
-            request.onerror = fail;
-            request.onsuccess = event => {
+            const store = tx.objectStore(STORE), generationRequest = store.get(DATA_GENERATION_RECORD_KEY);
+            generationRequest.onerror = fail;
+            generationRequest.onsuccess = generationEvent => {
+                if (!isDataTaskCurrent(token) || getStoredDataGeneration(generationEvent.target.result) !== token.generation) return;
+                const request = store.get('watchlist_list');
+                request.onerror = fail;
+                request.onsuccess = event => {
                 try {
                     result = applyStoredWatchlistMutation(event.target.result?.data || [],operation);
-                    store.put(buildPersistentCacheRecord('watchlist_list',result));
+                    if (isDataTaskCurrent(token)) store.put(buildPersistentCacheRecord('watchlist_list',result,token.generation));
                 } catch (error) {
                     semanticError = error;
                     try { tx.abort(); } catch (abortError) {}
                     fail();
                 }
+                };
             };
         } catch (error) { fail(); }
     });
@@ -1798,38 +1963,15 @@ function getRenderedSidebarDate() {
     return headerEl ? headerEl.textContent.trim().split('|')[0].trim() : '';
 }
 
-function applyActiveDataRefresh(id) {
-    if (id !== state.id || !['index', 'stock'].includes(state.mode)) return 'skipped';
-    const rd = getActiveData();
-    if (!rd || !rd.length) return 'no-data';
-
-    const newLatestDate = rd[rd.length - 1].date;
-    const oldDate = getRenderedSidebarDate();
-    renderMASelector();
-
-    if (state.isFrozen) {
-        draw();
-        return 'frozen-redraw';
-    }
-
-    setLockIdx(rd.length - 1);
-    resetViewportToLatest(rd);
-    if (oldDate && oldDate === newLatestDate) {
-        updateAllIndicators();
-        if (typeof drawViewport === 'function' && state.charts && (state.charts.main || state.charts.vol || state.charts.macd || state.charts.kdj)) {
-            drawViewport();
-        }
-        if (typeof updateSidebarPriceOnly === 'function') updateSidebarPriceOnly();
-        // 指标与结论同轮应用；不能只保证旧结论卡片非空。
-        safeUpdateSidebar({ interactive: true });
-        if (typeof updateDataStatusRefreshBadge === 'function') updateDataStatusRefreshBadge(rd[rd.length - 1], id, rd);
-        updateNavCapsuleVisuals(rd.length - 1, rd.length);
-        return 'same-day-light';
-    }
-
-    draw();
-    safeUpdateSidebar();
-    return 'full-redraw';
+async function applyActiveDataRefresh(id) {
+    if (id !== state.id || !['index','stock'].includes(state.mode)) return 'skipped';
+    const rd=getActiveData();if(!rd?.length)return 'no-data';
+    const oldDate=getRenderedSidebarDate(),latestDate=rd.at(-1).date;
+    const frozen=state.isFrozen;
+    if (!frozen) {setLockIdx(rd.length-1);resetViewportToLatest(rd);}
+    const ok=await requestCurrentCalculationRender({isCurrent:()=>id===state.id,
+        beforeRender:renderMASelector,interactive:oldDate===latestDate});
+    return !ok ? 'skipped' : frozen ? 'frozen-redraw' : oldDate===latestDate ? 'same-day-light' : 'full-redraw';
 }
 
 function scheduleCachedFetchRefreshApply(id) {
@@ -1842,7 +1984,7 @@ function scheduleCachedFetchRefreshApply(id) {
         if (!applyId) return;
 
         const perfTrace = PERF.start('cachedFetchRefreshApply', { id: applyId, activeId: state.id, mode: state.mode });
-        requestAnimationFrame(() => {
+        requestAnimationFrame(async () => {
             if (applyId !== state.id || !['index', 'stock'].includes(state.mode)) {
                 PERF.end(perfTrace, { status: 'skipped' });
                 return;
@@ -1857,8 +1999,8 @@ function scheduleCachedFetchRefreshApply(id) {
                 return;
             }
             const rightTxn = beginRefreshTransaction('rightPanel', { source: 'cached-fetch-refresh-apply', id: applyId });
-            const status = applyActiveDataRefresh(applyId);
-            if (status === 'no-data') {
+            const status = await applyActiveDataRefresh(applyId);
+            if (status === 'no-data' || status === 'skipped') {
                 PERF.end(perfTrace, { status: 'no-data' });
                 return;
             }
@@ -1948,31 +2090,44 @@ function getHoldingDiagnosis(idx, full, ind, meta, decision) {
     return { status, displayStatus: getHoldingDisplayStatus(status), action, displayAction: getActionDisplayText(action), rsText, toneClass };
 }
 
-async function clearAllCache() { 
-    if(DB) { 
-        await new Promise((resolve, reject) => {
-            const tx = DB.transaction(STORE, 'readwrite');
-            tx.oncomplete = resolve;
-            tx.onerror = tx.onabort = () => reject(tx.error || new Error('本地数据重置未完成，请重试。'));
-            tx.objectStore(STORE).clear();
-        });
-    } 
-    state.rawData = {}; 
-    state.weeklyData = {}; 
-    state.liveBars = {};
-    state.liveQuotes = {};
-    state.liveWeeklyData = {};
-    state.liveDailyData = {};
-    state.liveOverlayCache = {};
-    try { localStorage.removeItem(SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY); } catch(e) {}
-    try { localStorage.removeItem(SECTOR_TREND_CONFIG.CACHE_KEY); } catch(e) {}
-    try { localStorage.removeItem(EXTERNAL_LEAD_STRIP_CONFIG.CACHE_KEY); } catch(e) {}
-    SECTOR_TREND_CONFIG.LEGACY_CACHE_KEYS.forEach(key => {
-        try { localStorage.removeItem(key); } catch(e) {}
-    });
-    derivedIndicatorCache.clear();
-    try { localStorage.removeItem('quant_strategy'); } catch (error) {}
-    location.reload(); 
+async function clearAllCache() {
+    if (dataTaskRuntime.resetPromise) return dataTaskRuntime.resetPromise;
+    if (!DB) throw new Error('本地存储不可用，无法彻底重置；原数据已保留，请恢复存储后重试。');
+    const wasStarted = typeof refreshSchedulerRuntime !== 'undefined' && Boolean(window.__DG_REFRESH_SCHEDULERS_STARTED__);
+    dataTaskRuntime.resetting = true;
+    if (typeof stopRefreshSchedulers === 'function') stopRefreshSchedulers('reset');
+    cancelDataTasks('reset');
+    const task = (async () => {
+        try {
+            const generation = await new Promise((resolve,reject) => {
+                const tx = DB.transaction(STORE,'readwrite'), store = tx.objectStore(STORE);
+                let next = 0;
+                tx.oncomplete = () => resolve(next);
+                tx.onerror = tx.onabort = () => reject(tx.error || new Error('本地数据重置未完成，请重试。'));
+                const request = store.get(DATA_GENERATION_RECORD_KEY);
+                request.onsuccess = event => {
+                    next = getStoredDataGeneration(event.target.result) + 1;
+                    store.clear(); store.put({id:DATA_GENERATION_RECORD_KEY,data:next});
+                };
+                request.onerror = () => reject(request.error || new Error('无法读取数据代次，原数据已保留。'));
+            });
+            dataTaskRuntime.generation = generation;
+            clearSessionDataAfterReset();
+            for (const key of [SYS_CONFIG.LIVE_OVERLAY_CACHE_KEY,'dg_live_overlay_cache_v2',SECTOR_TREND_CONFIG.CACHE_KEY,
+                EXTERNAL_LEAD_STRIP_CONFIG.CACHE_KEY,...SECTOR_TREND_CONFIG.LEGACY_CACHE_KEYS,'quant_strategy','quant_strategy_generation']) {
+                try { localStorage.removeItem(key); } catch (error) {}
+            }
+            try { localStorage.setItem(DATA_RESET_NOTIFICATION_KEY,JSON.stringify({generation,owner:PAGE_SESSION_ID,at:Date.now()})); } catch (error) {}
+            location.reload();
+        } catch (error) {
+            dataTaskRuntime.resetting = false;
+            if (typeof loadWatchlist==='function') {await loadWatchlist();if(typeof renderWatchlist==='function')renderWatchlist();}
+            if (wasStarted) { initMarketRefreshLeadership(); startRefreshSchedulers(); requestVisibleWorkspaceRefresh(); }
+            throw error;
+        } finally { dataTaskRuntime.resetPromise = null; }
+    })();
+    dataTaskRuntime.resetPromise = task;
+    return task;
 }
 
 async function handleClearCache() { 
@@ -2014,14 +2169,15 @@ async function cachedFetch(id, options = {}) {
 
 async function performCachedFetch(id, options = {}) {
     const perfTrace = PERF.start('cachedFetch', { id, activeId: state.id, mode: state.mode });
+    const taskToken = createDataTaskToken();
     const selectionSeq = globalSelectionSeq;
     const workspace = state.tab;
     const mode = state.mode;
-    const isActiveFetch = () => id === state.id && workspace === state.tab && mode === state.mode && selectionSeq === globalSelectionSeq;
+    const isActiveFetch = () => isDataTaskCurrent(taskToken) && id === state.id && workspace === state.tab && mode === state.mode && selectionSeq === globalSelectionSeq;
     const memory = state.rawData[id];
     const cached = memory?.length ? memory : await getCachedData(id);
     PERF.mark(perfTrace, memory?.length ? 'memory' : 'dbGet');
-    const applySelection = (data, source) => {
+    const applySelection = async (data, source) => {
         if (!isActiveFetch()) return;
         if (state.rawData[id] !== data) setRawData(id, data);
         tryApplyCachedLiveOverlay(id, state.rawData[id]);
@@ -2031,7 +2187,7 @@ async function performCachedFetch(id, options = {}) {
         PERF.mark(perfTrace, 'active-data', { source, points: rd?.length || 0 });
         setLockIdx(rd?.length ? rd.length - 1 : -1);
         resetViewportToLatest(rd);
-        updateAllIndicators();
+        if (!await ensureCurrentCalculation({isCurrent:isActiveFetch}) || !isActiveFetch()) return;
         PERF.mark(perfTrace, 'indicators');
         hideLoading();
         renderMASelector();
@@ -2055,7 +2211,7 @@ async function performCachedFetch(id, options = {}) {
     };
     if (cached?.length && isActiveFetch()) {
         const hasChart = !!(state.charts && Object.values(state.charts).some(Boolean));
-        if (!hasChart || options.forceRender || (state.renderedSelectionId && state.renderedSelectionId !== id)) applySelection(cached, memory?.length ? 'memory' : 'cache');
+        if (!hasChart || options.forceRender || (state.renderedSelectionId && state.renderedSelectionId !== id)) await applySelection(cached,memory?.length ? 'memory' : 'cache');
         PERF.end(perfTrace, { status: memory?.length ? 'active-memory-render' : 'cache-first', firstLoad: false });
         void startRefresh().catch(error => console.error('[DailyGlance] background refresh failed', error));
         return;
@@ -2074,10 +2230,12 @@ async function performCachedFetch(id, options = {}) {
         PERF.end(perfTrace, { status: 'no-fresh-data' });
         return;
     }
-    // 失效请求只保留数据，不提交当前选择的 DOM。
+    // 同会话失效选择可保留行情；重置或生命周期取消则不能回写。
+    if (!isDataTaskCurrent(taskToken)) return;
     setRawData(id, fresh);
     if (isActiveFetch()) {
-        applySelection(fresh, 'fresh');
+        await applySelection(fresh,'fresh');
+        if (!isActiveFetch()) return;
         const oldVisible = getActiveData();
         void syncRealtimeForSeries(id, fresh).then(() => {
             if (isActiveFetch() && getDataMutationMeta(oldVisible, getActiveData()).mode !== 'unchanged') scheduleCachedFetchRefreshApply(id);
@@ -2090,8 +2248,10 @@ function scheduleCachedFetchRefresh(id) {
     if (cachedFetchRefreshJobs.has(id)) return cachedFetchRefreshJobs.get(id);
     const job = (async () => {
         const perfTrace = PERF.start('cachedFetchRefresh', { id, activeId: state.id, mode: state.mode });
+        const taskToken = createDataTaskToken(true);
         const oldVisible = id === state.id ? getActiveData() : null;
         const fresh = await syncData(id);
+        if (!isDataTaskCurrent(taskToken)) return;
         PERF.mark(perfTrace, 'syncData', { points: fresh?.length || 0 });
         if (!fresh || fresh.length === 0) {
             PERF.end(perfTrace, { status: 'no-fresh-data' });
@@ -2127,13 +2287,14 @@ function scheduleCachedFetchRefresh(id) {
         PERF.mark(perfTrace, 'defer-left-list-commit', { id });
         PERF.end(perfTrace, { status: 'updated' });
     })().finally(() => {
-        cachedFetchRefreshJobs.delete(id);
+        if (cachedFetchRefreshJobs.get(id)===job) cachedFetchRefreshJobs.delete(id);
     });
     cachedFetchRefreshJobs.set(id, job);
     return job;
 }
 
 async function preloadCacheOnly(options = {}) {
+    const taskToken = createDataTaskToken();
     const symbols = options.ids ? [...options.ids] : [...INDEX_IDS];
     if (!options.ids && state.watchlist && state.watchlist.length > 0) {
         const watchlistSymbols = state.watchlist
@@ -2148,6 +2309,7 @@ async function preloadCacheOnly(options = {}) {
         try {
             const c = state.rawData[id]?.length ? null : await dbGet(id);
             const cachedData = normalizeConfirmedHistoryData(c?.data, id);
+            if (!isDataTaskCurrent(taskToken)) return;
             if (!state.rawData[id]?.length && cachedData && cachedData.length >= 30 && isValidPrice(cachedData[cachedData.length - 1].close, id)) {
                 setRawData(id, cachedData);
             }
@@ -2175,6 +2337,7 @@ function persistDerivedDecisionCache(secid, payload) {
 }
 
 async function hydrateWatchlistDecisionCache(options = {}) {
+    const taskToken=createDataTaskToken();
     if (!DB || typeof derivedIndicatorCache === 'undefined') return 0;
     if (typeof isReusableDecisionCacheRecord !== 'function') return 0;
     const targets = (typeof getSupportedWatchlistTargets === 'function')
@@ -2187,15 +2350,16 @@ async function hydrateWatchlistDecisionCache(options = {}) {
         if (!secid) continue;
         try {
             const record = await dbGet(buildDecisionCacheKey(secid));
+            if (!isDataTaskCurrent(taskToken) || (options.isCurrent && !options.isCurrent())) break;
             const payload = record && record.data;
             if (!isReusableDecisionCacheRecord(payload)) continue;
             // 已在内存（本会话已算过）则不覆盖。
             if (derivedIndicatorCache.has(payload.cacheKey)) continue;
-            derivedIndicatorCache.set(payload.cacheKey, {
+            if (!putDerivedIndicatorCache(payload.cacheKey, {
                 decisionGovernanceVersion: payload.decisionGovernanceVersion,
                 indicators: payload.indicators,
                 rows: payload.rows
-            });
+            })) continue;
             _lastPersistedDecisionCacheKey.set(secid, payload.cacheKey);
             hydrated++;
         } catch (error) {}
@@ -2210,7 +2374,9 @@ function shouldEnsureMarketTemperatureData(id) {
 }
 
 async function ensureMarketTemperatureData(options = {}) {
-    const isCurrent = options.isCurrent || (() => true);
+    const taskToken=createDataTaskToken();
+    const callerCurrent=options.isCurrent || (()=>true);
+    const isCurrent=()=>isDataTaskCurrent(taskToken) && callerCurrent();
     const ids = options.ids || INDEX_IDS;
     if (!isCurrent()) return;
     const owner = {};
@@ -2221,7 +2387,7 @@ async function ensureMarketTemperatureData(options = {}) {
         await pLimit(ids.filter(shouldEnsureMarketTemperatureData), SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async id => {
             if (!isCurrent()) return;
             const data = await syncConfirmedData(id);
-            if (data && data.length >= 30) setRawData(id, data);
+            if (isCurrent() && data && data.length >= 30) setRawData(id,data);
         });
     } finally {
         if (state.indexHydrationOwner === owner) state.indexHydrationPending = false;

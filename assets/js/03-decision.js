@@ -965,31 +965,35 @@ function getWaveHoldingBaselineContext(idx, full, meta, prevPos, exit, waveConte
 }
 
 function computeBaseDecisionForIndex(idx, full, prevPos, options = {}) {
-    const request = evaluateBasePositionRequest(idx,full,prevPos,options.context || getWaveEvaluationContext(idx,full,prevPos));
+    const context = options.context || (state.strategy === '波段抄底型' ? getWaveEvaluationContext(idx,full,prevPos) : null);
+    const request = evaluateBasePositionRequest(idx,full,prevPos,context);
     return finishWaveRequest({ ...request, phase:'base' },prevPos,options.candidateOnly);
 }
 function evaluateBasePositionRequest(idx, full, prevPos, context) {
-    const { indicators, policy } = getWaveEvaluationSources(context);
+    // 普通策略在同一同步调用内直接读取事实，不构造未使用的波段状态快照。
+    // 显式上下文与波段路径仍经过原有不可变事实和失效校验。
+    const { indicators, policy } = context ? getWaveEvaluationSources(context) : { indicators:state.indicators, policy:STRATEGY };
+    const scope = context?.scope || state;
     const rawMeta = getSignalMeta(idx, full, indicators), market = getMarketContext(full[idx].date);
-    const rawSignals = context.rawSignals;
+    const rawSignals = context?.rawSignals || full[idx]?._signals || [];
     const wavePeak = getWavePeakContext(idx, full, indicators, rawMeta);
     const risk = getRiskContext(idx, full, indicators), rawExit = getExitSeverity(rawMeta, idx, full, indicators);
     const trendRegime = getTrendRegimeContext(idx, full, indicators);
-    const waveContext = getWaveContextForEvaluation(context,policy);
+    const waveContext = context ? getWaveContextForEvaluation(context,policy) : getWaveContext(idx,full,indicators,policy);
     let waveL10TrendHandoff = getWaveL10TrendHandoffContext(idx, full, rawMeta, prevPos, policy);
     let meta = rawMeta;
     if (waveL10TrendHandoff.eligible) {
         meta = getSignalMeta(idx, full, indicators, { currentSignals: rawSignals.filter(signal => signal !== 'L10') });
     }
-    const waveBottomL3Observation = context.scope.strategy === '波段抄底型'
-        && context.scope.mode === 'stock'
-        && context.scope.period === 'daily'
+    const waveBottomL3Observation = scope.strategy === '波段抄底型'
+        && scope.mode === 'stock'
+        && scope.period === 'daily'
         && prevPos > 0
         && waveContext?.inScope
         && ['down', 'range', 'transition'].includes(waveContext.regime)
         && isWaveStandaloneL3Observation(rawMeta, policy);
-    const waveStandaloneL3Observation = context.scope.strategy === '波段抄底型'
-        && context.scope.period === 'daily'
+    const waveStandaloneL3Observation = scope.strategy === '波段抄底型'
+        && scope.period === 'daily'
         && prevPos > 0
         && (isWaveStandaloneL3Observation(rawMeta, policy) && (!waveContext?.inScope || waveContext.regime === 'up' || waveBottomL3Observation));
     let exit = waveL10TrendHandoff.eligible
@@ -1000,9 +1004,9 @@ function evaluateBasePositionRequest(idx, full, prevPos, context) {
     const b11StructureDefense = getB11StructureDefenseContext(meta, full, policy);
     let waveB6TrendAdd = getWaveB6TrendAddContext(idx, full, meta, prevPos, exit, policy);
     let base = getBasePosition(idx, full, indicators, meta);
-    const isWaveStockTrendHold = context.scope.strategy === '波段抄底型'
-        && context.scope.mode === 'stock'
-        && context.scope.period === 'daily'
+    const isWaveStockTrendHold = scope.strategy === '波段抄底型'
+        && scope.mode === 'stock'
+        && scope.period === 'daily'
         && getSignalStateCode(meta) === SIGNAL_STATE.HOLD
         && prevPos > 0;
     if (isWaveStockTrendHold) base = prevPos;
@@ -1209,20 +1213,22 @@ function getWaveExpiryB11TakeoverAddContext(idx, full, meta, prevPos, decision, 
 }
 
 function computeWaveCandidateDecisionForIndex(idx, full, prevPos, options = {}) {
-    const request = evaluateWaveCandidateRequest(idx,full,prevPos,options.context || getWaveEvaluationContext(idx,full,prevPos));
+    const context = options.context || (state.strategy === '波段抄底型' ? getWaveEvaluationContext(idx,full,prevPos) : null);
+    const request = evaluateWaveCandidateRequest(idx,full,prevPos,context);
     return finishWaveRequest({ ...request, phase:'candidate' },prevPos,options.candidateOnly);
 }
 function evaluateWaveCandidateRequest(idx, full, prevPos, context) {
-    const { indicators, policy } = getWaveEvaluationSources(context);
+    const { indicators, policy } = context ? getWaveEvaluationSources(context) : { indicators:state.indicators, policy:STRATEGY };
+    const scope = context?.scope || state;
     const actualDecision = asWavePositionRequest(computeBaseDecisionForIndex(idx, full, prevPos, {candidateOnly:true,context}));
     const config = policy?.waveExpiryB11TakeoverAdd;
     const sourcePosition = Math.max(0, Number(config?.sourcePosition) || 30);
     const targetPosition = Math.max(sourcePosition, Number(config?.targetPosition) || 50);
     const previousLayer = full?.[idx - 1]?._decision?.waveExpiryB11TakeoverAdd;
     const inScope = !!config
-        && context.scope.strategy === '波段抄底型'
-        && context.scope.period === 'daily'
-        && (config.stocksOnly === false || context.scope.mode === 'stock');
+        && scope.strategy === '波段抄底型'
+        && scope.period === 'daily'
+        && (config.stocksOnly === false || scope.mode === 'stock');
     const layerActive = inScope && previousLayer?.active && prevPos > 0;
 
     if (layerActive) {
@@ -1611,9 +1617,11 @@ function getWaveHoldingRegimeCap(previousPosition, labelCap) {
 }
 
 function applyWaveRegimeGovernance(idx, full, prevPos, candidate, strategy = STRATEGY, options = {}) {
-    const context = options.context || getWaveEvaluationContext(idx,full,prevPos);
-    const wave = getWaveContextForEvaluation(context,strategy);
+    // 先确认治理作用域，非波段路径不捕获或序列化无用的上一日波段状态。
+    let context = options.context;
+    const wave = context ? getWaveContextForEvaluation(context,strategy) : getWaveContext(idx,full,state.indicators,strategy);
     if (!wave.inScope) return candidate;
+    context = context || getWaveEvaluationContext(idx,full,prevPos);
     const request = evaluateWaveRegimeRequest(idx,full,prevPos,asWavePositionRequest(candidate),strategy,context);
     const approved = { ...request, phase:'governed' };
     recordWaveApproval(context,approved);
@@ -2135,8 +2143,9 @@ function hasOutdatedWaveDecisionRules(rows) {
 
 function isCurrentDerivedDecisionCache(cached, options = {}) {
     if (!cached || !isCurrentDecisionMarketContext(cached.rows?.[cached.rows.length - 1]?._decision)) return false;
-    const inScope = options.waveStockDaily === true
-        || (state.strategy === '波段抄底型' && state.mode === 'stock' && state.period === 'daily');
+    const strategy=options.strategy || state.strategy;
+    if (!cached.rows?.every(row=>!row || (row._strategy===strategy && row._signalVersion===SIGNAL_VERSION))) return false;
+    const inScope = options.waveStockDaily ?? (state.strategy === '波段抄底型' && state.mode === 'stock' && state.period === 'daily');
     return !inScope || (
         cached.decisionGovernanceVersion === WAVE_GOVERNANCE_VERSION
         && !hasOutdatedWaveDecisionRules(cached.rows)
@@ -2242,15 +2251,41 @@ function isReusableDecisionCacheRecord(record) {
     if (!record.cacheKey || typeof record.cacheKey !== 'string') return false;
     if (!record.indicators || !record.indicators.macd || !record.indicators.rsi || !record.indicators.kdj) return false;
     if (!Array.isArray(record.rows) || !record.rows.length) return false;
+    if (!record.rows.every(row=>!row || (row._strategy===record.strategy && row._signalVersion===SIGNAL_VERSION))) return false;
     if (record.strategy === '波段抄底型' && record.rows[record.rows.length - 1]?._decision?.waveContext?.inScope
         && (!isCurrentDecisionGovernanceVersion(record.rows[record.rows.length - 1]._decision, { waveStockDaily: true })
             || !record.rows.every(row => isValidWavePendingBreakRecord(row?._decision?.waveRejectionProtection)))) return false;
     return true;
 }
 
+// 内容指纹只用于校验；同一标的/周期/策略只保留最新快照。
+function getDerivedIndicatorCacheScope(cacheKey) {
+    return String(cacheKey || '').split('_').slice(0,3).join('_');
+}
+function putDerivedIndicatorCache(cacheKey, payload) {
+    const [id,period,strategy]=getDerivedIndicatorCacheScope(cacheKey).split('_');
+    const isIndex=typeof getIndexConfig==='function' ? Boolean(getIndexConfig(id)) : (state.mode==='index' && state.id===id);
+    if (!cacheKey || !payload?.rows?.length || !payload.indicators || !isCurrentDerivedDecisionCache(payload,{strategy,
+        waveStockDaily:strategy==='波段抄底型' && period==='daily' && !isIndex})) return false;
+    const lastDecision=payload.rows[payload.rows.length-1]?._decision;
+    if (!isCurrentDecisionMarketContext(lastDecision)) return false;
+    const scope=getDerivedIndicatorCacheScope(cacheKey);
+    pruneStaleMarketContextCaches();
+    for (const key of derivedIndicatorCache.keys()) if (key !== cacheKey && getDerivedIndicatorCacheScope(key) === scope) derivedIndicatorCache.delete(key);
+    derivedIndicatorCache.delete(cacheKey);
+    derivedIndicatorCache.set(cacheKey,payload);
+    while (derivedIndicatorCache.size > SYS_CONFIG.RENDER_CACHE_SIZE) derivedIndicatorCache.delete(derivedIndicatorCache.keys().next().value);
+    return true;
+}
+
 function storeDerivedIndicatorCache(id, period, strategy, data, indicators) {
     if (!id || !period || !strategy || !data?.length || !indicators?.macd || !indicators?.rsi || !indicators?.kdj) return;
     const cacheKey = buildIndicatorKeyForData(id, period, strategy, data);
+    storePreparedDerivedIndicatorCache(cacheKey,id,period,strategy,data,indicators);
+}
+
+// 只在同一同步计算步骤内使用已构造/校验的键，不跨帧记忆行情内容指纹。
+function storePreparedDerivedIndicatorCache(cacheKey, id, period, strategy, data, indicators) {
     if (!cacheKey) return;
     const entryIndicators = {
         ma: { ...(indicators.ma || {}) },
@@ -2266,14 +2301,12 @@ function storeDerivedIndicatorCache(id, period, strategy, data, indicators) {
     }) : null);
     // 同时收敛异步恢复后才进入内存的旧快照。
     pruneStaleMarketContextCaches();
-    derivedIndicatorCache.set(cacheKey, {
+    const stored=putDerivedIndicatorCache(cacheKey, {
         decisionGovernanceVersion: WAVE_GOVERNANCE_VERSION,
         indicators: entryIndicators,
         rows: entryRows
     });
-    if (derivedIndicatorCache.size > SYS_CONFIG.RENDER_CACHE_SIZE) {
-        derivedIndicatorCache.delete(derivedIndicatorCache.keys().next().value);
-    }
+    if (!stored) return;
     // 仅日线决策会用于自选股冷启动快照，落盘范围限定 daily，避免存周线图表态。
     if (period === 'daily' && typeof persistDerivedDecisionCache === 'function') {
         persistDerivedDecisionCache(id, buildDecisionCacheRecord(cacheKey, strategy, entryIndicators, entryRows));
@@ -2288,6 +2321,59 @@ function resetIndicatorState() {
     markIndicatorsDirty();
 }
 
+let currentCalculationCoordinator = null;
+let currentCalculationReadyGuard = null;
+let activeCalculationFacts = null;
+function getCalculationFact(full, name, args, compute) {
+    const task=activeCalculationFacts;
+    if (!task || task.full !== full) return compute();
+    const key=name+'|'+JSON.stringify(args);
+    if (!task.cache.has(key)) task.cache.set(key,compute());
+    return task.cache.get(key);
+}
+function cancelCurrentCalculation(reason = 'superseded') {
+    if (activeIndicatorUpdate) activeIndicatorUpdate.cancelled = true;
+    currentCalculationCoordinator = null;
+    currentCalculationReadyGuard = null;
+    state.calculationPending = false;
+    state.indicatorKey = '';
+}
+function isCurrentCalculationReady(verifyContents = true) {
+    const full=getActiveData();
+    if (!full?.length) return true;
+    if (hasOutdatedWaveDecisionRules(full) || !isCurrentDecisionGovernanceVersion(full.at(-1)?._decision)
+        || full.some(row=>row && (row._strategy!==state.strategy || row._signalVersion!==SIGNAL_VERSION))) return false;
+    if (state.calculationPending || !state.indicatorKey || !state.indicators.macd || !state.indicators.rsi || !state.indicators.kdj) return false;
+    if (currentCalculationReadyGuard && currentCalculationReadyGuard.data===full
+        && currentCalculationReadyGuard.id===state.id && currentCalculationReadyGuard.period===state.period
+        && currentCalculationReadyGuard.strategy===state.strategy && currentCalculationReadyGuard.key===state.indicatorKey)
+        return isCalculationInputCurrent(currentCalculationReadyGuard,verifyContents);
+    if (state.indicatorKey !== getIndicatorKey(full) || hasOutdatedWaveDecisionRules(full)) return false;
+    currentCalculationReadyGuard=createCalculationInputGuard(state.id,state.period,state.strategy,full);
+    return true;
+}
+function ensureCurrentCalculation(options = {}) {
+    if (options.isCurrent && !options.isCurrent()) return Promise.resolve(false);
+    if (isCurrentCalculationReady()) return Promise.resolve(true);
+    const full=getActiveData();if(!full?.length)return Promise.resolve(true);
+    const key=getIndicatorKey(full);
+    let task=currentCalculationCoordinator;
+    if (!task || task.full!==full || task.key!==key || task.mode!==state.mode || task.id!==state.id) {
+        const dataToken=typeof createDataTaskToken==='function' ? createDataTaskToken() : null;
+        task={full,key,id:state.id,mode:state.mode,period:state.period,strategy:state.strategy,promise:null};
+        currentCalculationCoordinator=task;state.calculationPending=true;
+        if (typeof updateDataStatusRefreshBadge==='function') updateDataStatusRefreshBadge();
+        task.promise=(async()=> {
+            const result=await updateAllIndicatorsAsync();
+            if (currentCalculationCoordinator!==task || (dataToken && !isDataTaskCurrent(dataToken))) return false;
+            return result;
+        })().finally(()=>{
+            if(currentCalculationCoordinator===task){currentCalculationCoordinator=null;state.calculationPending=false;}
+        });
+    }
+    return options.isCurrent ? task.promise.then(ok=>ok && options.isCurrent()) : task.promise;
+}
+
 let activeIndicatorUpdate = null;
 function yieldCalculationTurn() {
     if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') return scheduler.yield();
@@ -2298,7 +2384,8 @@ function yieldCalculationTurn() {
 function updateAllIndicators(incrementalIdx = -1) {
     if (activeIndicatorUpdate) activeIndicatorUpdate.cancelled = true;
     const steps = updateIndicatorSteps(incrementalIdx);
-    while (!steps.next().done) {}
+    const prior=activeCalculationFacts;activeCalculationFacts={full:getActiveData(),cache:new Map()};
+    try {while (!steps.next().done) {}} finally {activeCalculationFacts=prior;steps.return();}
 }
 
 async function updateAllIndicatorsAsync(sliceMs = 12) {
@@ -2324,22 +2411,29 @@ async function updateAllIndicatorsAsync(sliceMs = 12) {
         if (task.cancelled || !sameScope()) return false;
         return validInput(true) || cancelChangedInput();
     };
-    const steps = updateIndicatorSteps(-1,Math.max(1,sliceMs),canCommit);
+    const steps = updateIndicatorSteps(-1,Math.max(1,sliceMs),canCommit,guard.key);
     try {
         while (true) {
             if (task.cancelled || !sameScope()) return false;
             if (!validInput(false)) return cancelChangedInput();
-            const result = steps.next();
-            if (result.done) return result.value !== false;
+            const prior=activeCalculationFacts;activeCalculationFacts=task.facts || (task.facts={full,cache:new Map()});
+            let result;try {result=steps.next();} finally {activeCalculationFacts=prior;}
+            if (result.done) {
+                const completed = result.value !== false;
+                // 起点和提交前已核对完整内容；展示时仍用此原始快照再次验证。
+                if (completed && !task.cancelled && sameScope() && state.indicatorKey === guard.key) currentCalculationReadyGuard=guard;
+                return completed;
+            }
             await yieldCalculationTurn();
         }
     } finally {
         steps.return();
+        task.facts?.cache.clear();
         if (activeIndicatorUpdate === task) activeIndicatorUpdate = null;
     }
 }
 
-function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = null) {
+function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = null, preparedKey = '') {
     const perfTrace = PERF.start('updateAllIndicators', { id: state.id, period: state.period, strategy: state.strategy, incrementalIdx });
     const full = getActiveData();
     if(!full || !full.length) {
@@ -2356,11 +2450,14 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
     }
     const outdatedWaveRules = state.strategy === '波段抄底型' && state.mode === 'stock' && state.period === 'daily'
         && hasOutdatedWaveDecisionRules(full);
-    const nextKey = getIndicatorKey(full);
+    // A cancelled strategy switch may leave a correct prefix and an old-strategy middle.
+    // A later quote can replace strategy-only with incremental; never start that chain at the tail.
+    const strategyRowsStale=full.some((row,index)=>index<full.length-1 && row && row._strategy!==state.strategy);
+    const nextKey = preparedKey || getIndicatorKey(full);
     const previousDecision = full[full.length - 1]?._decision || full[full.length - 2]?._decision;
     const marketContextChanged = !!previousDecision && !isCurrentDecisionMarketContext(previousDecision);
     const pendingMutation = state.pendingIndicatorMutation;
-    if (incrementalIdx === -1 && !outdatedWaveRules && pendingMutation?.mode !== 'market-only' && state.indicatorKey === nextKey && state.indicators.macd && state.indicators.rsi && state.indicators.kdj
+    if (incrementalIdx === -1 && !outdatedWaveRules && !strategyRowsStale && pendingMutation?.mode !== 'market-only' && state.indicatorKey === nextKey && state.indicators.macd && state.indicators.rsi && state.indicators.kdj
         && isCurrentDecisionGovernanceVersion(full[full.length - 1]?._decision)) {
         PERF.end(perfTrace, { status: 'unchanged-key', points: full.length });
         return;
@@ -2383,7 +2480,7 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
     const shouldFullRebuild = !isStrategyOnlyMutation && !isMarketOnlyMutation &&
         (!state.indicators.macd || full.length < 60 || mutation.mode === 'full');
 
-    if (mutation.mode === 'unchanged' && !outdatedWaveRules && state.indicators.macd && isCurrentDecisionGovernanceVersion(full[full.length - 1]?._decision)) {
+    if (mutation.mode === 'unchanged' && !outdatedWaveRules && !strategyRowsStale && state.indicators.macd && isCurrentDecisionGovernanceVersion(full[full.length - 1]?._decision)) {
         state.indicatorKey = nextKey;
         state.pendingIndicatorMutation = null;
         PERF.end(perfTrace, { status: 'unchanged-mutation', points: full.length });
@@ -2412,10 +2509,9 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
 
     const calcStart = shouldFullRebuild ? 0 : Math.max(0, mutation.startIdx || 0);
     if (!isStrategyOnlyMutation && !isMarketOnlyMutation) {
-        MA_OPTIONS.forEach(n => {
-            state.indicators.ma[n] = shouldFullRebuild
-                ? Calcs.ma(full, n)
-                : Calcs.maIncremental(full, n, state.indicators.ma?.[n], calcStart);
+        if (shouldFullRebuild) Object.assign(state.indicators.ma,Calcs.maBatch(full,MA_OPTIONS));
+        else MA_OPTIONS.forEach(n => {
+            state.indicators.ma[n] = Calcs.maIncremental(full,n,state.indicators.ma?.[n],calcStart);
         });
         state.indicators.macd = shouldFullRebuild
             ? Calcs.macd(full)
@@ -2428,8 +2524,13 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
             : Calcs.kdjIncremental(full, state.indicators.kdj, 9, calcStart);
     }
     PERF.mark(perfTrace, 'base-indicators', { skipped: !!(isStrategyOnlyMutation || isMarketOnlyMutation), fullRebuild: !!shouldFullRebuild, calcStart });
-    const weeklySignalContexts = shouldFullRebuild || (isStrategyOnlyMutation && state.period === 'daily')
-        ? buildWeeklySignalContexts(full) : null;
+    const needsSignalRebuild = row => !row._signals || row._signalVersion !== SIGNAL_VERSION
+        || (state.mode === 'stock' && state.period === 'daily'
+            && (row._strategy !== state.strategy
+                || (state.strategy === '波段抄底型' && row._decision?.waveDecisionStateVersion !== WAVE_DECISION_STATE_VERSION)));
+    // 周线背景只供原始信号计算使用；只重放决策时不做无用预计算。
+    const weeklySignalContexts = (shouldFullRebuild || ((isStrategyOnlyMutation || strategyRowsStale) && state.period === 'daily'))
+        && full.some(row => row && needsSignalRebuild(row)) ? buildWeeklySignalContexts(full) : null;
     PERF.mark(perfTrace, 'weekly-signal-context', { precomputed: !!weeklySignalContexts, points: weeklySignalContexts?.length || 0 });
 
     const isLatestOnlyMutation = !shouldFullRebuild &&
@@ -2441,7 +2542,7 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
         full[full.length - 2]?._signalVersion === SIGNAL_VERSION &&
         isCurrentDecisionGovernanceVersion(full[full.length - 2]?._decision);
     // 实时报价可能把 market-only 替换成 incremental；仍须重算旧环境下的整条决策链。
-    const rebuildStart = outdatedWaveRules || isStrategyOnlyMutation || isMarketOnlyMutation || marketContextChanged
+    const rebuildStart = outdatedWaveRules || strategyRowsStale || isStrategyOnlyMutation || isMarketOnlyMutation || marketContextChanged
         ? 0
         : shouldFullRebuild
         ? 0
@@ -2460,6 +2561,7 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
     let decisionRows = 0;
     const signalBreakdown = { contextMs: 0, ruleMs: {}, ruleChecks: {}, ruleHits: {} };
     for(let i = shouldFullRebuild ? 0 : rebuildStart; i < full.length; i++) {
+        activeCalculationFacts?.cache.clear();
         if (!isMarketOnlyMutation && full[i]?._signals && full[i]._signalVersion === SIGNAL_VERSION && full[i]._strategy === state.strategy
             && full[i]._decision && isCurrentDecisionGovernanceVersion(full[i]._decision)) {
             prevPos = full[i]._decision.position;
@@ -2467,10 +2569,7 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
             continue;
         }
         if (full[i]) {
-            const strategyDependentSignalsChanged = state.mode === 'stock' && state.period === 'daily'
-                && (full[i]._strategy !== state.strategy
-                    || (state.strategy === '波段抄底型' && full[i]._decision?.waveDecisionStateVersion !== WAVE_DECISION_STATE_VERSION));
-            if (!full[i]._signals || full[i]._signalVersion !== SIGNAL_VERSION || strategyDependentSignalsChanged) {
+            if (needsSignalRebuild(full[i])) {
                 const signalStarted = performance.now();
                 full[i]._signals = calculateDailySignals(i, full, state.indicators, signalBreakdown, weeklySignalContexts?.[i] || null);
                 signalMs += performance.now() - signalStarted;
@@ -2511,7 +2610,7 @@ function* updateIndicatorSteps(incrementalIdx = -1, sliceMs = 0, canCommit = nul
     }
     state.indicatorKey = nextKey;
     state.pendingIndicatorMutation = null;
-    storeDerivedIndicatorCache(state.id, state.period, state.strategy, full, state.indicators);
+    storePreparedDerivedIndicatorCache(cacheKey,state.id,state.period,state.strategy,full,state.indicators);
     PERF.mark(perfTrace, 'cache-store');
     PERF.end(perfTrace, { status: shouldFullRebuild ? 'full' : mutation.mode, points: full.length });
 }

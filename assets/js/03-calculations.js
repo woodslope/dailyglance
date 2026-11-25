@@ -66,11 +66,19 @@ function getDecisionActionCode(decision) {
 // ==========================================
 
 const Calcs = {
-    ma: (data, n) => {
-        let r = [];
-        for (let i = 0; i < data.length; i++) {
+    ma: (data, n) => Calcs.maFromCloses(Array.from(data, item => item?.close || 0), n),
+    maBatch: (data, periods) => {
+        // 一次读取当次行情的收盘列；仅用于同步计算，不持有跨任务缓存。
+        const closes = Array.from(data, item => item?.close || 0), result = {};
+        for (const n of periods) result[n] = Calcs.maFromCloses(closes,n);
+        return result;
+    },
+    maFromCloses: (closes, n) => {
+        const r = [];
+        for (let i = 0; i < closes.length; i++) {
             if (i < n - 1) { r.push(null); continue; }
-            let s = 0; for (let j = 0; j < n; j++) s += data[i - j]?.close || 0;
+            // 保留从当天向过去逐项相加的顺序；不改成滚动和，避免浮点舍入改变信号。
+            let s = 0; for (let j = 0; j < n; j++) s += closes[i - j];
             r.push(s / n);
         }
         return r;
@@ -331,6 +339,9 @@ function checkDoubleBottomBreakout(ctx) {
 }
 
 function findConfirmedPivotLow(full, endDay, lookbackDays = 120, pivotDays = 2) {
+    return getCalculationFact(full,'findConfirmedPivotLow',[endDay,lookbackDays,pivotDays],()=>computeConfirmedPivotLow(full, endDay, lookbackDays, pivotDays));
+}
+function computeConfirmedPivotLow(full, endDay, lookbackDays = 120, pivotDays = 2) {
     const start = Math.max(pivotDays, endDay - Math.max(1, lookbackDays));
     for (let day = endDay - pivotDays; day >= start; day--) {
         const value = Number(full?.[day]?.low);
@@ -403,6 +414,10 @@ function checkDoubleBottomRepair(ctx, options = {}) {
 }
 
 function getWeeklyDoubleBottomContext(full, idx, weeksOverride = null, options = {}) {
+    if (weeksOverride) return computeWeeklyDoubleBottomContext(full,idx,weeksOverride,options);
+    return getCalculationFact(full,'getWeeklyDoubleBottomContext',[idx,options],()=>computeWeeklyDoubleBottomContext(full, idx, weeksOverride, options));
+}
+function computeWeeklyDoubleBottomContext(full, idx, weeksOverride = null, options = {}) {
     const weeks = weeksOverride || (state.period === 'weekly'
         ? full?.slice(0, idx + 1)
         : getCalendarWeeksUntil(full, idx));
@@ -927,9 +942,10 @@ function calculateAllSignals(idx, full, ind) {
     const activeBuySignals = rawSigs.filter(s => S.buySignals?.includes(s)), activeExitSignals = rawSigs.filter(s => S.exitSignals?.includes(s));
     
     let lastExitIdx = -1, previousStrongExitIdx = -1;
-    for(let i = idx; i >= Math.max(0, idx - 60); i--) { 
+    // 同次历史扫描使用同一份策略配置，不为每个交易日重复创建集合。
+    const dayStrongExitSet = getStrongExitSignals(S);
+    for(let i = idx; i >= Math.max(0, idx - 60); i--) {
         const daySignals = full[i]?._signals || [];
-        const dayStrongExitSet = getStrongExitSignals(S);
         if(daySignals.some(s => s.startsWith('L') && S.exitSignals?.includes(s)
             && dayStrongExitSet.has(s)
             && !isWaveL10TrendHandoffSignal(full, i, s, S)
@@ -938,7 +954,7 @@ function calculateAllSignals(idx, full, ind) {
             else { previousStrongExitIdx = i; break; }
         }
     }
-    
+
     const cooldownDays = 3;
     let inCooldown = false, daysSinceExit = Infinity;
     if(lastExitIdx >= 0 && lastExitIdx < idx) { daysSinceExit = idx - lastExitIdx; if(daysSinceExit <= cooldownDays) inCooldown = true; }

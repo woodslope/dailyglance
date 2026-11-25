@@ -128,7 +128,7 @@ async function runBacktest() {
             markIndicatorsDirty(); 
         }
         
-        updateAllIndicators(); 
+        await ensureCurrentCalculation();
         await new Promise(r => setTimeout(r, 100)); 
         
         const summary = calculateBacktestSummary(full, { startIdx: 60, costRate: 0.001, delayBars: 1 });
@@ -199,7 +199,7 @@ async function runBacktest() {
         if (state.period !== prevPeriod) { 
             state.period = prevPeriod; 
             markIndicatorsDirty(); 
-            updateAllIndicators(); 
+            await ensureCurrentCalculation();
             draw(); 
             safeUpdateSidebar(); 
         } 
@@ -416,9 +416,11 @@ function onSearchKeydown(e) {
     }
 }
 
-async function loadWatchlist() { 
+async function loadWatchlist() {
+    const token=createWatchlistMutationToken();
     try { 
-        const w = await dbGet('watchlist_list'); 
+        const w = await dbGet('watchlist_list');
+        if(!isDataTaskCurrent(token))return;
         const rawWatchlist = (w && w.data) || [];
         const normalized = rawWatchlist.map(stock => normalizeSecurityTarget(stock));
         const needsNormalization = JSON.stringify(normalized) !== JSON.stringify(rawWatchlist);
@@ -428,8 +430,8 @@ async function loadWatchlist() {
                 await saveWatchlist();
             } catch(e) {}
         }
-    } catch(e) { 
-        state.watchlist = []; 
+    } catch(e) {
+        if(isDataTaskCurrent(token))state.watchlist=[];
     } 
 }
 
@@ -449,15 +451,22 @@ function overlayPendingWatchlistMutations(list) {
     });
 }
 async function saveWatchlist(operation = { type:'normalize' }) {
-    const entry = { operation };
+    const token = createWatchlistMutationToken();
+    const entry = { operation,token };
     pendingWatchlistMutations.push(entry);
     const save = async () => {
+        if (!isDataTaskCurrent(token)) {
+            const index=pendingWatchlistMutations.indexOf(entry);if(index>=0)pendingWatchlistMutations.splice(index,1);
+            return;
+        }
         let saved;
         try {
-            saved = await mutateStoredWatchlist(operation);
+            saved = await mutateStoredWatchlist(operation,token);
         } catch (error) {
+            if (!isDataTaskCurrent(token)) return;
             // 跨页新增可能在事务内才触及上限；恢复真实列表，不能假装已保存。
             const record = await dbGet('watchlist_list');
+            if(!isDataTaskCurrent(token))return;
             if (Array.isArray(record?.data)) {
                 const remaining = pendingWatchlistMutations.filter(item => item !== entry);
                 let rows = record.data.map(normalizeSecurityTarget);
@@ -471,6 +480,7 @@ async function saveWatchlist(operation = { type:'normalize' }) {
             const index = pendingWatchlistMutations.indexOf(entry);
             if (index >= 0) pendingWatchlistMutations.splice(index,1);
         }
+        if (!isDataTaskCurrent(token)) return;
         if (saved) state.watchlist = overlayPendingWatchlistMutations(saved);
         try { localStorage.setItem(SYS_CONFIG.WATCHLIST_SYNC_KEY, JSON.stringify({ owner:PAGE_SESSION_ID, at:Date.now() })); } catch(error) {}
     };
@@ -1153,8 +1163,9 @@ async function removeStock(code) {
         'info', 3000
     );
     
+    const removeToken = createWatchlistMutationToken();
     setTimeout(async function() {
-        if (!stock._pendingRemove) return;
+        if (!isDataTaskCurrent(removeToken) || !stock._pendingRemove) return;
         state.watchlist = state.watchlist.filter(s => s.code !== code); 
         await saveWatchlist({ type:'remove', code });
         renderWatchlist();
@@ -1189,7 +1200,9 @@ if (typeof window !== 'undefined') window.__DG_SIDEBAR_FULL_SYNC__ = sidebarFull
 let watchlistDataRefreshKey = '';
 async function updateAllWatchlistData(options = {}) {
     if (!state.watchlist || !state.watchlist.length) return [];
-    const isCurrent = options.isCurrent || (() => !document.hidden && state.tab === 'stock');
+    const batchToken = createDataTaskToken(true);
+    const callerCurrent = options.isCurrent || (() => !document.hidden && state.tab === 'stock');
+    const isCurrent = () => isDataTaskCurrent(batchToken) && callerCurrent();
     if (!isCurrent()) return [];
     const key = `${globalSelectionSeq}:${state.strategy}:${getSupportedWatchlistTargets().map(stock => stock.secid).sort().join(',')}`;
     if (watchlistDataRefreshInFlight) {
@@ -1210,24 +1223,27 @@ async function updateAllWatchlistData(options = {}) {
                 if (!isCurrent()) return { code: stock.code, success: false, reason: 'cancelled' };
                 const secid = stock.secid;
                 try {
-                    const data = await (options.historyOnly ? syncConfirmedData(secid) : syncData(secid));
+                    const result = await syncDataResult(secid,{historyOnly:!!options.historyOnly});
+                    if (!isCurrent()) return {code:stock.code,success:false,reason:'cancelled'};
+                    const data = result.rows;
                     if (data && data.length >= 30 && isValidPrice(data[data.length - 1].close, secid)) {
                         setRawData(secid, data);
                         syncWatchlistSignalSnapshotFast(stock.code, state.rawData[secid] || data);
-                        return { code: stock.code, success: true };
+                        return {code:stock.code,success:result.verified,applied:true,origin:result.origin,requestStatus:result.requestStatus};
                     }
                     setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '数据不足', strategy: batchStrategy, date: data?.[data.length - 1]?.date || '' });
-                    return { code: stock.code, success: false, reason: '数据不足' };
+                    return {code:stock.code,success:false,applied:false,requestStatus:result.requestStatus,reason:'数据不足'};
                 } catch (e) {
                     const cached = await dbGet(secid);
+                    if (!isCurrent()) return {code:stock.code,success:false,reason:'cancelled'};
                     const cachedData = normalizeConfirmedHistoryData(cached?.data, secid);
                     if (cachedData && cachedData.length >= 30) {
                         setRawData(secid, cachedData);
                         syncWatchlistSignalSnapshotFast(stock.code, state.rawData[secid] || cachedData);
-                        return { code: stock.code, success: true, source: 'cache' };
+                        return {code:stock.code,success:false,applied:true,origin:'cache',requestStatus:'failed'};
                     }
                     setWatchlistStatusSnapshot(stock.code, { ...WATCHLIST_STATUS_META.pending, action: '同步失败', strategy: batchStrategy, date: '' });
-                    return { code: stock.code, success: false, reason: e.message };
+                    return {code:stock.code,success:false,applied:false,requestStatus:'failed',reason:e.message};
                 }
             });
         } finally {
@@ -1241,13 +1257,16 @@ async function updateAllWatchlistData(options = {}) {
         if (!isCurrentBatch) return results;
 
         const successCount = results.filter(result => result?.success).length;
-        const shouldMarkRefresh = successCount > 0;
+        const appliedCount = results.filter(result => result?.applied || result?.success).length;
+        const cachedCount = results.filter(result => result?.applied && !result?.success).length;
+        const failedCount = results.filter(result => result?.requestStatus === 'failed').length;
+        const shouldMarkRefresh = appliedCount > 0;
         const refreshTxn = shouldMarkRefresh
             ? beginRefreshTransaction('leftList', {
                 source: 'watchlist-data',
                 expectedCount: stocks.length,
-                successCount,
-                appliedCount: successCount,
+                successCount,verifiedCount:successCount,cachedCount,failedCount,
+                appliedCount,
                 status: successCount === stocks.length ? 'full' : 'partial'
             })
             : null;
@@ -1257,7 +1276,7 @@ async function updateAllWatchlistData(options = {}) {
                 markLeftListRefreshForActiveTab(refreshTxn, {
                     area: 'stock-list',
                     expectedCount: stocks.length,
-                    appliedCount: successCount,
+                    appliedCount,verifiedCount:successCount,cachedCount,failedCount,
                     status: successCount === stocks.length ? 'full' : 'partial'
                 });
             }
@@ -1318,6 +1337,7 @@ let sidebarRealtimePendingKey = '';
 let sidebarRealtimeRunningKey = '';
 function refreshSidebarRealtime() {
     if (document.hidden || (typeof canRequestMarketData === 'function' && !canRequestMarketData())) return;
+    const taskToken = createDataTaskToken(true);
     const ids = getSidebarRealtimeTargetIds();
     const key = `${getSidebarRealtimeArea()}:${ids.slice().sort().join(',')}`;
     if (sidebarRealtimeInFlight) {
@@ -1337,7 +1357,7 @@ function refreshSidebarRealtime() {
         });
         if (!requestIds.length) return { status: 'deferred', batchId, expectedCount: ids.length, receivedCount: 0, appliedCount: 0 };
         const prices = await batchGetRealtimePrices(requestIds);
-        if (!isCurrentSidebarRealtimeBatch(area, ids)) return { status: 'stale', batchId };
+        if (!isDataTaskCurrent(taskToken) || !isCurrentSidebarRealtimeBatch(area, ids)) return { status: 'stale', batchId };
 
         const receivedIds = ids.filter(id => Object.prototype.hasOwnProperty.call(prices, id));
         if (!state.quoteRefreshFailures) state.quoteRefreshFailures = {};
@@ -1414,17 +1434,18 @@ function refreshSidebarRealtime() {
         }
         if (activeOverlayChanged && !state.isFrozen) {
             const activeId = state.id;
-            const applyActiveRefresh = () => {
-                if (activeId !== state.id || state.isFrozen || !isCurrentSidebarRealtimeBatch(area, ids) || document.hidden) return;
+            const applyActiveRefresh = async () => {
+                if (!isDataTaskCurrent(taskToken) || activeId !== state.id || state.isFrozen || !isCurrentSidebarRealtimeBatch(area, ids) || document.hidden) return;
                 if (typeof isChartInteractionActive === 'function' && isChartInteractionActive()) {
                     window.setTimeout(applyActiveRefresh, 120);
                     return;
                 }
                 const rightTxn = beginRefreshTransaction('rightPanel', { source: 'realtime-batch', id: activeId });
-                applyActiveDataRefresh(activeId);
+                const applyStatus=await applyActiveDataRefresh(activeId);
+                if(applyStatus==='skipped' || applyStatus==='no-data')return;
                 markRefreshTime(rightTxn, { path: state.liveBars?.[activeId] ? 'active-overlay' : 'confirmed-fallback' });
             };
-            applyActiveRefresh();
+            await applyActiveRefresh();
         }
         return { status, batchId, expectedCount: ids.length, receivedCount: receivedIds.length, appliedCount: appliedIds.length };
     })();
@@ -1453,6 +1474,7 @@ async function runSidebarFullSync() {
     sidebarFullSyncRuntime.startedAt = Date.now();
     sidebarFullSyncRuntime.runCount++;
     sidebarFullSyncRuntime.lastError = '';
+    const taskToken = createDataTaskToken(true);
     const task = (async () => {
         // 先占住慢通道，再等待快通道，避免多个调用同时越过等待点。
         if (sidebarRealtimeInFlight) {
@@ -1462,17 +1484,19 @@ async function runSidebarFullSync() {
         if (state.tab === 'index' || state.mode === 'index') {
             const selectionSeq = globalSelectionSeq;
             const ids = INDEX_IDS.filter(id => id !== state.id);
-            const isCurrent = () => !document.hidden && state.tab === 'index' && selectionSeq === globalSelectionSeq;
-            let failCnt = 0;
+            const isCurrent = () => isDataTaskCurrent(taskToken) && !document.hidden && state.tab === 'index' && selectionSeq === globalSelectionSeq;
+            let failCnt = 0, verifiedCount=0, cachedCount=0, appliedCount=0;
             if (typeof beginLiveOverlayCacheBatch === 'function') beginLiveOverlayCacheBatch();
             try {
                 await pLimit(ids, SYS_CONFIG.SIDEBAR_SYNC_CONCURRENCY, async (id) => {
                     if (!isCurrent()) return;
                     try {
-                        const data = await syncData(id);
-                        if (data && data.length >= 30) {
-                            setRawData(id, data);
-                        }
+                        const result = await syncDataResult(id);
+                        if (!isCurrent()) return;
+                        const data=result.rows;
+                        if (data && data.length >= 30) {setRawData(id,data);appliedCount++;}
+                        if(result.verified)verifiedCount++;else if(data?.length)cachedCount++;
+                        if(result.requestStatus==='failed' || !data?.length)failCnt++;
                     } catch(e) { failCnt++; }
                 });
             } finally {
@@ -1480,13 +1504,13 @@ async function runSidebarFullSync() {
             }
             if (!isCurrent()) return;
             if (failCnt >= 2) showToast('\u90e8\u5206\u6307\u6570\u5386\u53f2\u6570\u636e\u540c\u6b65\u5931\u8d25', 'warn', 4000);
-            const leftTxn = failCnt < ids.length ? beginRefreshTransaction('leftList', { source: 'sidebar-full-sync', area: 'index-list' }) : null;
+            const leftTxn = appliedCount ? beginRefreshTransaction('leftList',{source:'sidebar-full-sync',area:'index-list',expectedCount:ids.length,appliedCount,verifiedCount,cachedCount,failedCount:failCnt,status:verifiedCount===ids.length?'full':'partial'}) : null;
             renderIndexList();
             if (leftTxn) markLeftListRefreshForActiveTab(leftTxn, { area: 'index-list' });
         } else if (state.tab === 'stock' || state.mode === 'stock') {
             if (!state.watchlist || !state.watchlist.length) return;
             const results = await updateAllWatchlistData();
-            const failCount = results ? results.filter(r => !r.success).length : 0;
+            const failCount = results ? results.filter(r=>r.requestStatus==='failed' || (!r.applied && r.reason!=='cancelled')).length : 0;
             if (failCount >= 2) showToast('\u90e8\u5206\u81ea\u9009\u80a1\u6570\u636e\u540c\u6b65\u5931\u8d25', 'warn', 4000);
         }
         return true;
@@ -1523,6 +1547,7 @@ let _selectDebounceTimer = 0;
 let _resolveSelectionDelay = null;
 let activeSelectionLoad = null;
 function invalidatePendingSelection() {
+    cancelCurrentCalculation('selection');
     if (_selectDebounceTimer) clearTimeout(_selectDebounceTimer);
     _selectDebounceTimer = 0;
     if (_resolveSelectionDelay) _resolveSelectionDelay(false);
@@ -2568,7 +2593,9 @@ function renderSectorTrendWorkspaceStatus() {
     const statusEl = document.getElementById('sectorTrendStatus');
     if (!statusEl) return;
     const snapshotStatus = getSectorTrendWorkspaceStatus();
+    if(getMarketRefreshOwnershipNotice())snapshotStatus.key='paused';
     const statusMap = {
+        paused:{label:'暂停更新',tone:'data-status-warn',tooltip:getMarketRefreshOwnershipNotice()},
         idle: { label: '等待扫描', tone: 'data-status-info', tooltip: '进入页面后将扫描 A 股行业与概念板块' },
         loading: { label: '正在扫描', tone: 'data-status-info', tooltip: '正在计算板块多周期强度并补充活跃个股' },
         ready: { label: '扫描完成', tone: 'data-status-ok', tooltip: '行业板块已完成趋势排名，概念板块已取今日热点首100' },
@@ -2718,19 +2745,20 @@ function switchPrimaryTab(tab) {
 
 async function handleExternalRefresh() {
     loadSectorTrendCache();
+    if(!canRequestMarketData())claimMarketRefreshLeadership({force:true});
+    if(!canRequestMarketData())return sectorTrendState;
+    const taskToken=createDataTaskToken(true);
     const remaining = getSectorTrendCooldownRemaining();
     if (remaining > 0) {
         showToast(`为保护行情接口，请 ${Math.ceil(remaining / 1000)} 秒后再更新。`, 'info', 2200);
         return sectorTrendState;
     }
-    if (typeof canRequestMarketData === 'function' && !canRequestMarketData()) {
-        showToast('另一页面正在负责行情更新，当前显示本地快照。', 'info', 2400);
-        return sectorTrendState;
-    }
+
     const [result] = await Promise.all([
         refreshSectorTrendSnapshot({ reason: 'manual' }),
         refreshExternalLeadStripSnapshot({ reason: 'manual' })
     ]);
+    if(!isDataTaskCurrent(taskToken))return sectorTrendState;
     if (result.status === 'ready') showToast('板块趋势扫描已完成。', 'success', 1800);
     else if (['partial', 'cached', 'error'].includes(result.status)) showToast('部分板块数据暂未更新，已保留最近结果。', 'warn', 2600);
     return result;
@@ -2791,6 +2819,7 @@ async function init() {
     initMarketRefreshLeadership();
     showLoading(); 
     const startupStorage = await openDB();
+    await initializeDataGeneration();
     PERF.mark(startupPerf, 'open-db');
     await loadWatchlist();
     initWatchlistCrossPageSync();
@@ -2799,7 +2828,7 @@ async function init() {
     let savedStrategy = null;
     let strategyPreferenceUnavailable = false;
     try {
-        savedStrategy = localStorage.getItem('quant_strategy');
+        savedStrategy=readStoredStrategyPreference();
     } catch (error) {
         strategyPreferenceUnavailable = true;
     }
@@ -2834,6 +2863,7 @@ async function init() {
                 b.classList.toggle('active', active);
                 b.setAttribute('aria-pressed', String(active));
             });
+            cancelCurrentCalculation('period-switch');
             const prevPeriod = state.period;
             const prevData = getActiveData();
             const prevLock = getPeriodLock(prevPeriod);

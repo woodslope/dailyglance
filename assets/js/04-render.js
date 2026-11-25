@@ -754,6 +754,35 @@ function selectChartElements(els) {
     }
 }
 
+let currentRenderSequence = 0;
+async function requestCurrentCalculationRender(options = {}) {
+    const sequence=++currentRenderSequence;
+    const id=state.id,mode=state.mode,period=state.period,strategy=state.strategy,selection=globalSelectionSeq;
+    const token=createDataTaskToken();
+    const isCurrent=()=>sequence===currentRenderSequence && isDataTaskCurrent(token) && id===state.id && mode===state.mode
+        && period===state.period && strategy===state.strategy && selection===globalSelectionSeq
+        && (!options.isCurrent || options.isCurrent());
+    const initial=getActiveData();updateDataStatusRefreshBadge(initial?.[getSafeIndex(initial)] || null,id,initial);
+    // Let loading/preparation state paint before entering the first calculation slice.
+    await new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+    for (let attempt=0;attempt<3 && isCurrent();attempt++) {
+        if (!await ensureCurrentCalculation({isCurrent})) continue;
+        if (!isCurrent()) return false;
+        if (options.beforeRender) options.beforeRender();
+        const trace=PERF.start('ready-render',{id,period,strategy});
+        if (options.interactive) {
+            if (Object.values(state.charts || {}).some(Boolean)) drawViewport(options.viewportOptions || {});
+            updateSidebarPriceOnly();
+        } else draw();
+        PERF.end(trace,{status:'ready'});
+        safeUpdateSidebar({interactive:!!options.interactive});
+        const visible=getActiveData();updateDataStatusRefreshBadge(visible?.[getSafeIndex(visible)] || null,id,visible);
+        if (options.afterRender) options.afterRender();
+        return true;
+    }
+    return false;
+}
+
 function draw() {
     const perfTrace = PERF.start('draw', { id: state.id, mode: state.mode, period: state.period, range: state.range });
     bindChartPointerReset();
@@ -762,8 +791,9 @@ function draw() {
     const currentFd = getActiveData(); 
     if(!currentFd || !currentFd.length) { clearCharts(); updateFreezeBadge(); PERF.end(perfTrace, { status: 'empty' }); return; }
     
-    updateAllIndicators();
-    PERF.mark(perfTrace, 'indicators');
+    if (!isCurrentCalculationReady()) {
+        void requestCurrentCalculationRender();PERF.end(perfTrace,{status:'calculation-pending'});return;
+    }
     renderChartViewport(perfTrace);
 }
 
@@ -774,9 +804,8 @@ function drawViewport(options = {}) {
     document.querySelectorAll('.empty-hint').forEach(e => e.remove());
     const currentFd = getActiveData();
     if(!currentFd || !currentFd.length) { clearCharts(); updateFreezeBadge(); PERF.end(perfTrace, { status: 'empty' }); return; }
-    if ((!state.indicators.macd || !state.indicators.kdj || !state.indicators.ma) && typeof updateAllIndicators === 'function') {
-        updateAllIndicators();
-        PERF.mark(perfTrace, 'indicators');
+    if (!isCurrentCalculationReady(false)) {
+        void requestCurrentCalculationRender({viewportOptions:options});PERF.end(perfTrace,{status:'calculation-pending'});return;
     }
     renderChartViewport(perfTrace, options);
 }
@@ -1134,6 +1163,7 @@ function generateAnalysisHTML(idx, full, meta) {
 }
 
 function safeUpdateSidebar(options = {}) {
+    if (!isCurrentCalculationReady(false)) {updateDataStatusRefreshBadge();void requestCurrentCalculationRender();return;}
     const perfTrace = PERF.start('sidebar', { id: state.id, mode: state.mode, period: state.period });
     const rd = getActiveData();
     if (rd && rd.length > 0) {
@@ -1147,8 +1177,8 @@ function safeUpdateSidebar(options = {}) {
             && !isCurrentDecisionGovernanceVersion(decision);
         if ((!decision || item._strategy !== state.strategy || item._signalVersion !== SIGNAL_VERSION || decisionGovernanceStale)
             && typeof updateAllIndicators === 'function') {
-            updateAllIndicators(safeIdx);
-            decision = item._decision || null;
+            state.pendingIndicatorMutation={mode:'strategy-only',startIdx:0};markIndicatorsDirty();
+            void requestCurrentCalculationRender();PERF.end(perfTrace,{status:'calculation-pending'});return;
         }
         const displayMode = state.displayStatus?.[state.id]?.mode || '';
         const cacheKey = [
@@ -1471,6 +1501,8 @@ function applySidebarHTML(bundle, cacheKey = '', options = {}) {
 function getDataStatusBadge(item, id = state.id, full = getActiveData()) {
     const calendar = getTradingCalendarInfo();
     if (!calendar.covered) return { tone:'warn', label:'日历待更新', detail:`${calendar.year}年休市表未维护，确认日期暂按周末推断；请核对交易所交易日。` };
+    const ownershipNotice=getMarketRefreshOwnershipNotice();
+    if(ownershipNotice)return {tone:'warn',label:'暂停更新',detail:ownershipNotice};
     const display = state.displayStatus?.[id] || {};
     const confirmed = state.confirmedStatus?.[id] || {};
     const effectiveMode = getEffectiveDisplayModeForItem(item, id);
@@ -1547,9 +1579,11 @@ function getDataFreshnessText(id = state.id) {
     const quote = state.liveQuotes?.[id];
     const parts = [lastDate ? `历史数据截至 ${lastDate}` : '历史尚未确认'];
     if (quote?.quoteTime) parts.push(`报价 ${quote.quoteTime}`);
+    if (state.displayStatus?.[id]?.repeated) parts.push('接口重复返回相同行情，报价时间未推进');
+    if (getMarketRefreshOwnershipNotice()) parts.push(getMarketRefreshOwnershipNotice());
     if (check?.status === 'checking') parts.push('正在检查历史');
     else if (check?.status === 'failed') parts.push('历史更新失败，保留可用数据');
-    else if (check?.status === 'stale') parts.push('历史尚未补齐，保留可用数据');
+    else if (check?.status === 'stale') parts.push(state.confirmedStatus?.[id]?.sourceLagging ? '历史来源落后于已有确认，未覆盖现有数据' : '历史尚未补齐，保留可用数据');
     else if (check?.checkedAt) parts.push(`历史检查于 ${new Date(check.checkedAt).toLocaleTimeString('en-GB', { hour12: false })}`);
     else if (!check?.checkedAt) parts.push('本地历史，尚未联网检查');
     if (state.quoteRefreshFailures?.[id]) parts.push('报价更新失败，保留最近报价');
@@ -1570,10 +1604,12 @@ function getDataFreshnessNotice(id = state.id, statusLabel = '') {
     const check = state.historyChecks?.[id];
     const confirmed = state.confirmedStatus?.[id];
     const lastDate = state.rawData?.[id]?.slice(-1)[0]?.date || confirmed?.lastDate || '';
+    if (confirmed?.sourceLagging && lastDate>=getExpectedConfirmedDate()) return {text:'来源历史落后，保留确认历史',warn:true};
     const failed = check?.status === 'failed' || confirmed?.status === 'failed';
     const stale = check?.status === 'stale' || confirmed?.status === 'stale' || !lastDate || lastDate < getExpectedConfirmedDate();
     const historyLabel = failed ? '历史同步失败' : stale ? '历史待补齐' : '';
     const parts = historyLabel && historyLabel !== statusLabel ? [historyLabel] : [];
+    if (state.displayStatus?.[id]?.repeated) parts.push('行情时间未推进');
     if (check?.status === 'checking') parts.push('历史检查中');
     else if (!historyLabel && !check?.checkedAt) parts.push('历史未联网检查');
     if (state.quoteRefreshFailures?.[id]) parts.push('报价更新失败');

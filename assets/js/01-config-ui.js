@@ -21,7 +21,7 @@ const SYS_CONFIG = {
     SIDEBAR_SYNC_CONCURRENCY: 3,
     WATCHLIST_LIMIT: 15,
     LIVE_OVERLAY_CACHE_TTL_MS: 45000,
-    LIVE_OVERLAY_CACHE_KEY: 'dg_live_overlay_cache_v2',
+    LIVE_OVERLAY_CACHE_KEY: 'dg_live_overlay_cache_v3',
     MARKET_REFRESH_LEASE_KEY: 'dg_market_refresh_leader_v1',
     MARKET_REFRESH_LEASE_MS: 12000,
     MARKET_REFRESH_HEARTBEAT_MS: 4000,
@@ -33,6 +33,7 @@ const COMPACT_MOBILE_MEDIA_QUERY = '(max-width: 1023px)';
 let marketRefreshLeadershipStarted = false;
 let marketRefreshHeartbeatTimer = 0;
 let marketRefreshLeader = false;
+let marketRefreshLeaseUnavailable = false;
 const marketRefreshLeadershipRuntime = {
     started: false,
     heartbeatActive: false,
@@ -47,6 +48,32 @@ function isCompactMobileLayout() {
         && window.matchMedia(COMPACT_MOBILE_MEDIA_QUERY).matches;
 }
 
+function getMarketRefreshOwnershipNotice() {
+    if (!marketRefreshLeadershipStarted || marketRefreshLeaseUnavailable) return '';
+    const lease=readMarketRefreshLease();
+    return lease && lease.owner !== PAGE_SESSION_ID && lease.expiresAt > Date.now()
+        ? '暂停更新：另一页面负责行情；聚焦本页或手动刷新可接管' : '';
+}
+function setMarketRefreshLeader(value) {
+    const previous=marketRefreshLeader;
+    marketRefreshLeader=Boolean(value);
+    if (previous===marketRefreshLeader)return;
+    const running=Boolean(window.__DG_REFRESH_SCHEDULERS_STARTED__);
+    if(running && typeof cancelDataTasks==='function')cancelDataTasks(value?'leadership-acquired':'leadership-lost');
+    if(running && typeof cancelExternalObservationTasks==='function')cancelExternalObservationTasks('leadership-change');
+    if(typeof updateDataStatusRefreshBadge==='function')updateDataStatusRefreshBadge();
+    if(typeof updateLeftListRefreshLabels==='function')updateLeftListRefreshLabels();
+    if(typeof renderSectorTrendWorkspaceStatus==='function')renderSectorTrendWorkspaceStatus();
+    if(value && running){
+        if(state.tab==='external' && typeof handleRefreshVisibilityChange==='function')handleRefreshVisibilityChange();
+        else {
+            if(typeof requestVisibleWorkspaceRefresh==='function')requestVisibleWorkspaceRefresh();
+            if(state.id && ['index','stock'].includes(state.mode) && typeof cachedFetch==='function')
+                void cachedFetch(state.id,{forceRender:true}).catch(error=>console.error('[DailyGlance] ownership refresh failed',error));
+        }
+    }
+}
+
 function readMarketRefreshLease() {
     try {
         const raw = localStorage.getItem(SYS_CONFIG.MARKET_REFRESH_LEASE_KEY);
@@ -54,7 +81,7 @@ function readMarketRefreshLease() {
         if (!lease || typeof lease.owner !== 'string' || !Number.isFinite(Number(lease.expiresAt))) return null;
         return { owner: lease.owner, expiresAt: Number(lease.expiresAt) };
     } catch (e) {
-        return null;
+        marketRefreshLeaseUnavailable=true;return null;
     }
 }
 
@@ -62,19 +89,20 @@ function claimMarketRefreshLeadership(options = {}) {
     const now = Date.now();
     const current = readMarketRefreshLease();
     if (!options.force && current && current.owner !== PAGE_SESSION_ID && current.expiresAt > now) {
-        marketRefreshLeader = false;
+        setMarketRefreshLeader(false);
         return false;
     }
+    if(options.force && current?.owner && current.owner!==PAGE_SESSION_ID)setMarketRefreshLeader(false);
     try {
         localStorage.setItem(SYS_CONFIG.MARKET_REFRESH_LEASE_KEY, JSON.stringify({
             owner: PAGE_SESSION_ID,
             expiresAt: now + SYS_CONFIG.MARKET_REFRESH_LEASE_MS
         }));
-        marketRefreshLeader = readMarketRefreshLease()?.owner === PAGE_SESSION_ID;
+        setMarketRefreshLeader(readMarketRefreshLease()?.owner === PAGE_SESSION_ID);
         return marketRefreshLeader;
     } catch (e) {
-        // Storage 不可用时保持单页原有行为。
-        marketRefreshLeader = true;
+        // Storage 不可用时保持单页原有行为，不反复触发所有权切换。
+        marketRefreshLeaseUnavailable=true;setMarketRefreshLeader(true);
         return true;
     }
 }
@@ -84,11 +112,12 @@ function releaseMarketRefreshLeadership() {
     if (current?.owner === PAGE_SESSION_ID) {
         try { localStorage.removeItem(SYS_CONFIG.MARKET_REFRESH_LEASE_KEY); } catch (e) {}
     }
-    marketRefreshLeader = false;
+    setMarketRefreshLeader(false);
 }
 
 function handleMarketRefreshFocus() {
     claimMarketRefreshLeadership({ force: true });
+    if (typeof checkDataGenerationAfterResume==='function') void checkDataGenerationAfterResume();
 }
 
 function handleMarketRefreshPageHide() {
@@ -97,7 +126,7 @@ function handleMarketRefreshPageHide() {
 
 function handleMarketRefreshStorage(event) {
     if (event.key !== SYS_CONFIG.MARKET_REFRESH_LEASE_KEY) return;
-    marketRefreshLeader = readMarketRefreshLease()?.owner === PAGE_SESSION_ID;
+    setMarketRefreshLeader(readMarketRefreshLease()?.owner === PAGE_SESSION_ID);
 }
 
 function handleMarketRefreshVisibilityChange() {
@@ -107,13 +136,14 @@ function handleMarketRefreshVisibilityChange() {
 
 function canRequestMarketData() {
     if (!marketRefreshLeadershipStarted) return true;
+    if (marketRefreshLeaseUnavailable) return !document.hidden;
     const now = Date.now();
     const current = readMarketRefreshLease();
     if (current?.owner === PAGE_SESSION_ID && current.expiresAt > now) {
-        marketRefreshLeader = true;
+        setMarketRefreshLeader(true);
         return true;
     }
-    marketRefreshLeader = false;
+    setMarketRefreshLeader(false);
     if (document.hidden) return false;
     if (!current || current.expiresAt <= now) return claimMarketRefreshLeadership();
     return false;
@@ -133,6 +163,7 @@ function initMarketRefreshLeadership() {
             releaseMarketRefreshLeadership();
             return;
         }
+        if (marketRefreshLeaseUnavailable) {setMarketRefreshLeader(true);return;}
         const current = readMarketRefreshLease();
         if (current?.owner === PAGE_SESSION_ID) claimMarketRefreshLeadership({ force: true });
         else if (!current || current.expiresAt <= Date.now()) claimMarketRefreshLeadership();
@@ -439,10 +470,12 @@ function getLeftListRefreshParts() {
     const coverage = Number.isFinite(expected) && expected > 0 && Number.isFinite(applied) && applied < expected
         ? `（${Math.max(0, Math.min(expected, applied))}/${expected}）`
         : '';
-    const cache = /cache|memory/.test(meta.source || '') ? ' · 本地缓存' : '';
+    const cache = Number(meta.cachedCount) > 0 ? ` · 缓存沿用${meta.cachedCount}项` : (/cache|memory/.test(meta.source || '') ? ' · 本地缓存' : '');
+    const failures = Number(meta.failedCount)>0 ? ` · 更新失败${meta.failedCount}项` : '';
+    const paused = getMarketRefreshOwnershipNotice() ? ' · 暂停更新' : '';
     const loading = state.mode === 'index' && state.indexHydrationPending ? ' · 补数中' : '';
     const time = `列表刷新于 ${formatLeftListRefreshTime(snapshot?.appliedAt || state.leftListRefreshAt)}`;
-    return { time, status:[coverage, cache, loading].filter(Boolean).join('').replace(/^[ ·]+/, ''), full:`${time}${coverage}${cache}${loading}` };
+    return { time, status:[coverage, cache, failures, paused, loading].filter(Boolean).join('').replace(/^[ ·]+/, ''), full:`${time}${coverage}${cache}${failures}${paused}${loading}` };
 }
 
 function getLeftListRefreshText() { return getLeftListRefreshParts().full; }
