@@ -2197,11 +2197,16 @@ async function performCachedFetch(id, options = {}) {
         PERF.mark(perfTrace, 'left-list');
         requestAnimationFrame(() => {
             if (!isActiveFetch()) return;
-            // 周期/策略是展示偏好，不是历史请求的身份；绘制读取此刻的偏好。
-            draw();
-            safeUpdateSidebar();
-            state.renderedSelectionId = id;
-            markRefreshTime(rightTxn, { path: source === 'cache' ? 'cache-first' : (source === 'memory' ? 'restore-memory-chart' : 'apply-fresh'), id });
+            // 周期/策略是展示偏好；按绘制发起时的偏好等待完整应用，再提交刷新快照。
+            void requestCurrentCalculationRender({
+                isCurrent: isActiveFetch,
+                beforeRender: renderMASelector,
+                afterRender: () => {
+                    if (!isActiveFetch()) return;
+                    state.renderedSelectionId = id;
+                    markRefreshTime(rightTxn, { path: source === 'cache' ? 'cache-first' : (source === 'memory' ? 'restore-memory-chart' : 'apply-fresh'), id });
+                }
+            }).catch(error => console.error('[DailyGlance] selection render failed', error));
         });
         PERF.mark(perfTrace, 'schedule-draw');
     };

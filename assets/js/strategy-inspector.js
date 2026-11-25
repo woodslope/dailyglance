@@ -11,9 +11,14 @@
         warning: { title: '预警信号', className: 'warning', note: '用于提示风险或限制，不单独等同于卖出。', empty: '当前策略没有配置预警信号。' }
     };
     const firstStrategyName = Object.keys(strategies)[0] || '';
-    const storedStrategyName = localStorage.getItem('quant_strategy');
-    let applicationName = storedStrategyName && strategies[storedStrategyName] ? storedStrategyName : firstStrategyName;
-    let activeName = applicationName;
+    let applicationName = '';
+    try {
+        const storedStrategyName = localStorage.getItem('quant_strategy');
+        applicationName = storedStrategyName && strategies[storedStrategyName] ? storedStrategyName : firstStrategyName;
+    } catch (error) {
+        // 偏好读取失败不阻断只读浏览，也不把默认浏览策略冒充应用当前策略。
+    }
+    let activeName = applicationName || firstStrategyName;
 
     function getSignalScore(signal, strategy) {
         return Number(strategy?.signalWeights?.[signal] ?? signalScores[signal] ?? 0);
@@ -108,7 +113,7 @@
     function render() {
         const strategy = strategies[activeName] || {};
         const current = document.getElementById('strategyCurrent');
-        if (current) current.textContent = `应用当前：${applicationName || '--'}`;
+        if (current) current.textContent = `应用当前：${applicationName || '无法读取'}`;
         renderTabs();
         renderOverview(strategy);
         renderSignals(strategy);
