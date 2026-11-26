@@ -677,8 +677,6 @@ document.addEventListener('keydown', (e) => {
         else closeSuggestions();
     }
     
-    if (e.key === 'Enter' && isModalOpen) { e.preventDefault(); document.getElementById('customModalBtnOk').click(); }
-
     if (!openOverlay && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
         if (e.key === 'ArrowLeft') { e.preventDefault(); prevDay(); }
         if (e.key === 'ArrowRight') { e.preventDefault(); nextDay(); }

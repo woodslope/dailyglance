@@ -993,13 +993,19 @@ function findDateIndex(data, date, id = '') {
     return res;
 }
 
-function alignLockToPeriod(targetPeriod, anchorDate) {
-    const data = targetPeriod === 'weekly' ? state.weeklyData[state.id] : state.rawData[state.id];
-    if(!data || !data.length) return -1;
-    if(anchorDate) return Math.max(0, findDateIndex(data, anchorDate, state.id));
-    const saved = getPeriodLock(targetPeriod);
-    if(saved >= 0 && saved < data.length) return saved;
-    return data.length - 1;
+function switchChartPeriod(period) {
+    const anchorDate = state.isFrozen ? getActiveData()?.[getPeriodLock()]?.date : null;
+    if (!applyPeriodState(period)) return;
+    const data = getActiveData(); // 与图表相同的序列，包含已准入的盘中数据。
+    const latest = (data?.length || 0) - 1;
+    // 周线以本周最后一个交易日命名，周中的日线归入当周而非上一周。
+    const match = anchorDate && data?.length ? (period === 'weekly'
+        ? data.findIndex(bar => bar.date >= anchorDate)
+        : findDateIndex(data, anchorDate, state.id)) : -1;
+    const lockIdx = match >= 0 ? match : latest;
+    applyHistoryNavigationState({ lockIdx, isFrozen: lockIdx >= 0 && lockIdx < latest });
+    if (state.isFrozen) anchorViewportAt(lockIdx);
+    else resetViewportToLatest(data);
 }
 
 function getSafeIndex(data) {
@@ -1684,16 +1690,17 @@ async function handleUpdateData(forceFull = false) {
     try {
         // 手动更新明确请求历史源，不把底层的旧缓存回退当成更新成功。
         if (syncDataInFlight.has(id)) await syncDataInFlight.get(id);
-        const previous = state.rawData[id];
         const previousConfirmed = state.confirmedStatus?.[id];
-        const fresh = await syncDataWithHistory(id);
+        const received = await syncDataWithHistory(id);
         if (!isDataTaskCurrent(taskToken)) return;
-        if (!fresh?.length) {
+        if (!received?.length) {
             showToast(`${name} 更新失败，已保留原数据，可重新尝试。`, 'warn', 4500);
             return;
         }
+        const previous = state.rawData[id]?.length ? state.rawData[id] : await getCachedData(id);
+        if (!isDataTaskCurrent(taskToken)) return;
         const previousDate = previous?.[previous.length - 1]?.date || '';
-        if (previousDate > fresh[fresh.length - 1].date) {
+        if (previousDate > received[received.length - 1].date) {
             setConfirmedStatus(id, {
                 source: previousConfirmed?.source || 'cache',
                 status: isConfirmedSeriesFreshEnough(previous) ? 'fresh' : 'stale',
@@ -1703,6 +1710,7 @@ async function handleUpdateData(forceFull = false) {
             showToast(`${name} 行情源历史落后于现有数据，已保留至 ${previousDate}，可重新尝试。`, 'warn', 4500);
             return;
         }
+        const fresh = mergeConfirmedHistory(id, previous, received);
         await dbSet(id,fresh,taskToken);
         if (!isDataTaskCurrent(taskToken)) return;
         setHistoryRefreshMeta(id, { lastSuccessAt: Date.now(), lastAttemptAt: Date.now(), lastDate: fresh[fresh.length - 1].date });

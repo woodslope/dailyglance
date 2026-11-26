@@ -537,7 +537,7 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
 
 .custom-modal-msg { margin-bottom: var(--space-6); color: var(--text-main); font-size: var(--text-lg); line-height: 1.6; text-align: left; }
 .custom-modal-btns { display: flex; gap: var(--space-3); justify-content: center; }
-.custom-modal-btn { flex: 1; padding: var(--space-2); border-radius: var(--radius-sm); font-size: var(--text-md); font-weight: 600; cursor: pointer; border: none; transition: all var(--transition-instant); }
+.custom-modal-btn { flex: 1; padding: var(--space-2); border-radius: var(--radius-sm); font-size: var(--text-md); font-weight: 600; cursor: pointer; border: none; transition: background-color var(--transition-instant), filter var(--transition-instant), transform var(--transition-instant); }
 .btn-cancel { background: var(--inner-bg); color: var(--text-main); border: 1px solid var(--border-color); }
 .btn-cancel:hover { background: var(--border-light); }
 .btn-ok { background: var(--blue); color: #fff; }

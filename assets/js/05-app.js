@@ -2864,15 +2864,7 @@ async function init() {
                 b.setAttribute('aria-pressed', String(active));
             });
             cancelCurrentCalculation('period-switch');
-            const prevPeriod = state.period;
-            const prevData = getActiveData();
-            const prevLock = getPeriodLock(prevPeriod);
-            const anchorDate = prevData?.[prevLock]?.date;
-
-            applyPeriodState(p);
-            
-            setLockIdx(alignLockToPeriod(p, anchorDate)); 
-            resetViewportToLatest(getActiveData());
+            switchChartPeriod(p);
             markIndicatorsDirty(); 
             clearStaleTooltips(); 
             draw(); 
