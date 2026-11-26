@@ -187,7 +187,7 @@ async function runBacktest() {
             </div>
             ${tradeListHtml}
             <div class="text-dim backtest-boundary-note">
-                注：收益按实际仓位比例滚动计算，买入持有基准按同区间满仓持有并计入一次入场成本。${summary.initialPosition > 0 ? `期初承接 ${summary.initialPosition}% 仓位，以区间前一根收盘价为基准，已扣除 ${summary.initialPositionCost.toFixed(2)} 元入场成本；该笔跨区间持仓的收益计入区间收益，但不计入完整交易和胜率。` : '区间从空仓开始。'}完整交易盈亏包含建仓、调仓和清仓成本。未完整模拟涨跌停无法成交、盘中滑点、冲击成本和 T+1 约束。主图 B/S 是策略决策标记，不代表实际成交点；中途加减仓仅在交易记录中展示。
+                注：收益按实际仓位比例滚动计算，买入持有基准按同区间满仓持有并计入一次入场成本。${summary.initialPosition > 0 ? `期初承接 ${summary.initialPosition}% 仓位，以区间前一根收盘价为基准，已扣除 ${summary.initialPositionCost.toFixed(2)} 元入场成本；该笔跨区间持仓的收益计入区间收益，但不计入完整交易和胜率。` : '区间从空仓开始。'}完整交易盈亏包含建仓、调仓和清仓成本。未完整模拟涨跌停无法成交、盘中滑点、冲击成本和 T+1 约束。日线主图上的 B、S 和“加/减”标在模型作出决策的当天，对应记录里的“信号”日期。“执行”是回放模拟调仓的日期，不是账户实际成交记录。
             </div>
         `;
         
@@ -246,20 +246,25 @@ async function jsonpSearch(query) {
 
 let suggestTimer = null, suggestActiveIdx = -1, suggestSeq = 0;
 
-function onSearchInput() { 
-    clearTimeout(suggestTimer); 
-    suggestTimer = setTimeout(fetchSuggestions, 200); 
+function onSearchInput() {
+    closeSuggestions();
+    suggestTimer = setTimeout(fetchSuggestions, 200);
 }
 
-function closeSuggestions() { 
-    const el = document.getElementById('stockSuggest'); 
-    if(el) el.style.display = 'none'; 
+function closeSuggestions() {
+    clearTimeout(suggestTimer);
+    ++suggestSeq; // 即使输入值未变，关闭前发出的查询也不能重新展开列表。
+    const el = document.getElementById('stockSuggest');
+    if (el) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+    }
     const inp = document.getElementById('stockSearchInput');
     if (inp) {
         inp.setAttribute?.('aria-expanded', 'false');
         inp.removeAttribute?.('aria-activedescendant');
     }
-    suggestActiveIdx = -1; 
+    suggestActiveIdx = -1;
 }
 
 async function fetchSuggestions() {
@@ -287,6 +292,7 @@ async function fetchSuggestions() {
 }
 
 async function searchAndShowInSuggest(q) {
+    clearTimeout(suggestTimer); // 回车已开始查询，不再由输入防抖重复触发。
     const inp = document.getElementById('stockSearchInput');
     const query = String(q || '').trim();
     const sug = document.getElementById('stockSuggest'); 
@@ -2785,7 +2791,10 @@ function bindResponsiveLayoutChange() {
                 const previousPeriod = state.period;
                 applyCompactMobileDefaults();
                 if (previousPeriod !== state.period) {
-                    resetViewportToLatest(getActiveData());
+                    const daily = getActiveData();
+                    // 窄屏按既有规则回到最新日线；选中日期和视口须一起切换。
+                    applyHistoryNavigationState({ lockIdx: daily.length - 1, isFrozen: false });
+                    resetViewportToLatest(daily);
                     resetIndicatorState();
                 }
                 document.querySelectorAll('#periodTabs .seg-btn, #rangeTabs .seg-btn').forEach(button => {
