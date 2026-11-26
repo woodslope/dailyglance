@@ -839,6 +839,10 @@ button.nav-list-item { width: 100%; appearance: none; background: transparent; c
         gap: var(--space-2);
         width: max-content;
     }
+    .dailyglance-app .index-list-items .nav-list-item:not(.active),
+    .dailyglance-app .watchlist-items .nav-list-item:not(.active) {
+        border-color: var(--border-light);
+    }
     .dailyglance-app .index-list-items .nav-list-item {
         width: 158px;
         min-width: 158px;
