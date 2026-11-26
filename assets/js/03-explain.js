@@ -757,9 +757,12 @@ function getSignalLifecycleTransition(meta, decision, mode = 'stock') {
         const closeText = Number.isFinite(Number(meta?.currentClose)) ? Number(meta.currentClose).toFixed(2) : '--';
         const signalText = hard.map(item => `${getUserSignalText(item.signal)}(+${Number(item.score) || 0})`).join('、');
         if (signalBreakKeepsStructure) {
+            const actionText = previousPosition > position
+                ? `当前从${previousPosition}%降至${position}%，剩余仓位继续观察`
+                : `保留${position}%试探仓观察，不生成S`;
             return {
                 kind: 'local',
-                text: `今日收盘${closeText}跌破${levelText}，${signalText}失效，但${frozenDefenseLabel}${formatPriceLevel(frozenHardDefense)}未破；${scoreDelta}，保留${position}%试探仓观察，不生成S`
+                text: `今日收盘${closeText}跌破${levelText}，${signalText}失效，但${frozenDefenseLabel}${formatPriceLevel(frozenHardDefense)}未破；${scoreDelta}，${actionText}`
             };
         }
         let actionText;
@@ -794,9 +797,13 @@ function getSignalLifecycleTransition(meta, decision, mode = 'stock') {
             ? `结构防守位${formatPriceLevel(structureLevel)}${item?.structureDate ? `（${item.structureDate}确认）` : ''}`
             : '结构防守位';
         const closeText = Number.isFinite(Number(meta?.currentClose)) ? Number(meta.currentClose).toFixed(2) : '--';
-        const actionText = position > 0
-            ? `暂停加仓，当前维持${position}%${position <= 30 ? '试探仓' : '仓位'}观察`
-            : '当前不再按该局部信号新增仓位';
+        const actionText = previousPosition > position
+            ? (position > 0
+                ? `暂停加仓，当前从${previousPosition}%降至${position}%，剩余仓位继续观察`
+                : `当前从${previousPosition}%降至0%，空仓观察`)
+            : (position > 0
+                ? `暂停加仓，当前维持${position}%${position <= 30 ? '试探仓' : '仓位'}观察`
+                : '当前不再按该局部信号新增仓位');
         return {
             kind: 'local',
             text: `今日收盘${closeText}跌破${getUserSignalText(item.signal)}局部防守位${localText}，但仍在${structureText}上方；${actionText}`

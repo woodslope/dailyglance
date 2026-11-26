@@ -85,7 +85,7 @@ function getStockDecisionSummary(meta, decision) {
         userAction = position === 0 ? '离场观察' : '降低仓位';
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'local') {
         stateLabel = '结构未破';
-        userAction = position > 0 ? '轻仓观察' : '暂时不买';
+        userAction = isReduce ? (position > 0 ? '降低仓位' : '离场观察') : (position > 0 ? '轻仓观察' : '暂时不买');
     } else if (!hasCriticalExit && lifecycleTransition.kind === 'soft') {
         stateLabel = '动能转弱';
         userAction = position > 0 ? '轻仓观察' : '暂时不买';
