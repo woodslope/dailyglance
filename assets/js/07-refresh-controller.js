@@ -218,6 +218,7 @@ function startRefreshSchedulers() {
     refreshSchedulerRuntime.startedAt = Date.now();
     const tickLiveClock = () => {
         if (document.hidden) return;
+        if (state.tab === 'external') updateExternalRefreshButton();
         const clock = document.getElementById('liveClock');
         if (!clock) return;
         const d = getBJDate();

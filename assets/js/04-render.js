@@ -26,6 +26,10 @@ function clearCharts(reason = 'empty'){
     const positionLegend = document.getElementById('chartPositionLegend');
     if (positionLegend) positionLegend.hidden = true;
     cancelChartInteraction('clear-charts');
+    for (const id of ['freezeBadge', 'crosshairOverlay', 'crosshairHLine']) {
+        const overlay = document.getElementById(id);
+        if (overlay?.style) overlay.style.display = 'none';
+    }
     CHART_CANVAS_IDS.forEach(id => { const c = Chart.getChart(id); if(c) c.destroy(); });
     state.charts = {};
     document.querySelectorAll('.empty-hint').forEach(el => el.remove());
@@ -39,7 +43,8 @@ function clearCharts(reason = 'empty'){
         if (reason === 'loading') {
             ph.innerHTML = `${chartName} — <span role="status" data-history-loading="${escapeHTML(state.id)}">正在加载确认历史…</span>`;
         } else {
-            ph.innerText = chartName + ' — ' + (reason === 'error' ? '加载失败' : '暂无数据');
+            const hint = { error: '加载失败', calculating: '正在准备图表', insufficient: '历史样本不足' };
+            ph.innerText = chartName + ' — ' + (hint[reason] || '暂无数据');
         }
     });
 }
@@ -454,7 +459,7 @@ function resolveVisibleDataIndex(activeData, renderedIndex) {
 
 function refreshHoverSelection() {
     hoverRAF = null;
-    if (pendingHoverIdx < 0 || pendingHoverIdx === state.lockIdx) return;
+    if (state.isFrozen || pendingHoverIdx < 0 || pendingHoverIdx === state.lockIdx) return;
     setLockIdx(pendingHoverIdx);
     pendingHoverIdx = -1;
     safeUpdateSidebar({ interactive: true });
@@ -669,7 +674,7 @@ function finishChartDragPan(event) {
             && event.clientY >= rect.top && event.clientY <= rect.bottom) {
             const chart = state.charts.main;
             const elements = chart?.getElementsAtEventForMode?.(event,'index',{intersect:false},false) || [];
-            selectChartElements(elements);
+            selectChartElements(elements, true);
         }
     } else if (drag.didMove || (compact && cancelled)) {
         suppressChartHoverSelection();
@@ -739,12 +744,19 @@ function handleChartHover(e, els) {
     selectChartElements(els);
 }
 
-function selectChartElements(els) {
+function selectChartElements(els, pinDate = false) {
+    if (!pinDate && state.isFrozen && state.viewport?.mode !== 'pan') return;
     if (els && els.length) {
         const activeData = getActiveData(); if (!activeData) return;
         const ti = resolveVisibleDataIndex(activeData, els[0].index);
-        if (ti >= 0 && state.lockIdx !== ti) {
-            setLockIdx(ti);
+        if (ti >= 0 && (state.lockIdx !== ti || pinDate)) {
+            if (pinDate) {
+                const end = getVisibleRange(activeData).end;
+                applyHistoryNavigationState({ lockIdx: ti, isFrozen: ti < activeData.length - 1 });
+                // 轻点只选日期，不移动手指下的蜡烛；刷新时保留同一可见窗口。
+                if (state.isFrozen) state.viewport = { mode: 'pan', endIdx: end, anchorIdx: ti };
+                else resetViewportToLatest(activeData);
+            } else setLockIdx(ti);
             // 十字线同步更新，零延迟跟随鼠标
             updateCrosshairOverlay();
             updateFreezeBadge();
@@ -777,6 +789,11 @@ async function requestCurrentCalculationRender(options = {}) {
         PERF.end(trace,{status:'ready'});
         safeUpdateSidebar({interactive:!!options.interactive});
         const visible=getActiveData();updateDataStatusRefreshBadge(visible?.[getSafeIndex(visible)] || null,id,visible);
+        // 当前标的首次绘制可能被同标的的报价/背景重绘接替。实际画布与面板就绪后也要认领，
+        // 否则再次点选会当成换股，清空已读结论并把历史日期重置。
+        if (isCurrent() && state.charts.main?.canvas?.dataset?.scope === `${id}_${period}` && !document.getElementById('selectionPricePreview')) {
+            state.renderedSelectionId = id;
+        }
         if (options.afterRender) options.afterRender();
         return true;
     }
@@ -1324,15 +1341,39 @@ function renderAnalysisPendingHTML(message = '信号正在同步，结论生成�
     `;
 }
 
+// 只用于结论尚不可读的价格预览；报价不进入 K 线或策略。
+function getSelectionPricePreview(id) {
+    const history = state.rawData[id]?.at(-1) || state.historyChecks?.[id]?.sampleLast;
+    const quote = state.liveQuotes?.[id];
+    const useQuote = quote && hasTrustedQuoteTime(quote) && (!history || quote.date > history.date);
+    const bar = useQuote ? quote : history;
+    if (!bar || !isValidPrice(bar.close, id)) return { price: '--', label: '暂无可用报价' };
+    return { price: Number(bar.close).toFixed(getSecurityPricePrecision(id)),
+        label: useQuote ? `${quote._isCachedLive ? '缓存' : '列表'}报价 · ${quote.quoteTime}（非策略依据）` : `确认收盘 · ${bar.date}` };
+}
+
+function updatePendingSelectionPrice(id, historyReady = false) {
+    const box = document.getElementById('selectionPricePreview');
+    if (id !== state.id || box?.dataset?.selectionId !== id) return;
+    if (historyReady) { renderActiveSelectionStatus('calculating'); return; }
+    const { price, label } = getSelectionPricePreview(id);
+    box.querySelector('.price-main').textContent = price;
+    box.querySelector('.price-sub').textContent = label;
+}
+
 function renderActiveSelectionStatus(status = 'loading') {
     const cfg = state.mode === 'index' && typeof getIndexConfig === 'function' ? getIndexConfig(state.id) : null;
     const target = typeof getActiveSecurityTarget === 'function' ? getActiveSecurityTarget() : null;
     const identity = cfg?.name || target?.name || state.stockId || state.id || '当前标的';
     const isError = status === 'unavailable';
-    const stateText = isError ? '数据暂不可用' : '数据加载中';
+    const short = status === 'insufficient';
+    const computing = status === 'calculating';
+    const preview = getSelectionPricePreview(state.id);
+    const stateText = isError ? '数据暂不可用' : short ? '历史样本不足' : computing ? `正在计算${identity}的结论` : '数据加载中';
     const detailText = isError
         ? '没有可用的确认历史 K 线，暂时无法生成行情图和策略结论。'
-        : '正在同步确认历史 K 线。';
+        : short ? `本轮最多取得 ${state.historyChecks[state.id].sampleCount} 根确认日线，至少需要 30 根才能生成策略结论。`
+        : computing ? '行情已取得，策略结论尚未就绪。' : '正在同步确认历史 K 线。';
     const isIndexMode = state.mode === 'index';
     const titleHtml = getConclusionTitleHTML(isIndexMode);
     const priceHtml = `
@@ -1340,9 +1381,9 @@ function renderActiveSelectionStatus(status = 'loading') {
             <div class="header-meta-row">
                 <div class="price-header-identity mono text-dim"><span class="text-main">${escapeHTML(identity)}</span></div>
             </div>
-            <div class="price-hero-compact">
-                <div class="price-main mono text-dim">--</div>
-                <div class="price-sub mono text-dim">${stateText}</div>
+            <div class="price-hero-compact" id="selectionPricePreview" data-selection-id="${escapeHTML(state.id)}">
+                <div class="price-main mono text-dim">${escapeHTML(preview.price)}</div>
+                <div class="price-sub mono text-dim">${escapeHTML(preview.price === '--' ? stateText : preview.label)}</div>
             </div>
         </div>
     `;
@@ -1352,17 +1393,17 @@ function renderActiveSelectionStatus(status = 'loading') {
                 <div class="block-title conclusion-block-title">${titleHtml}</div>
             </div>
             <div class="action-line">
-                <div class="action-name text-dim">${stateText}</div>
+                <div class="action-name text-dim">${escapeHTML(stateText)}</div>
                 <div class="action-cap">
                     <span class="text-dim">${isIndexMode ? '当前风险仓位' : '策略参考仓位'}</span>
                     <strong class="mono text-main">--</strong>
                 </div>
             </div>
-            <div class="action-sub" ${isError ? '' : `data-history-loading="${escapeHTML(state.id)}"`}>${detailText}</div>
+            <div class="action-sub" ${status !== 'loading' ? '' : `data-history-loading="${escapeHTML(state.id)}"`}>${detailText}</div>
             ${isError ? '<button type="button" class="state-retry-action" onclick="handleUpdateData()">重新加载当前数据</button>' : ''}
         </div>
     `;
-    applySidebarHTML({ priceHtml, analysisHtml, isHide: false }, `${state.mode}_${state.id}_selection_${status}`);
+    applySidebarHTML({ priceHtml, analysisHtml, isHide: false }, `${state.mode}_${state.id}_selection_${status}_${preview.price}_${preview.label}_${short ? state.historyChecks[state.id].sampleCount : 0}`);
 
     const refreshBar = document.getElementById('lastRefreshBar');
     if (refreshBar) {

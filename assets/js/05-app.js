@@ -140,9 +140,9 @@ async function runBacktest() {
             const colorClass = t.posTo > t.posFrom ? 'text-bull' : 'text-bear';
             return `
                 <div class="backtest-trade-row mono">
-                    <span class="text-dim backtest-trade-signal">信号 ${t.signalDate.length > 5 ? t.signalDate.substring(5) : t.signalDate}</span>
+                    <span class="text-dim backtest-trade-signal">信号 ${escapeHTML(t.signalDate)}</span>
                     <span class="${colorClass} backtest-trade-action">${t.action.substring(0, 4)}</span>
-                    <span class="text-main backtest-trade-execution">执行 ${t.executionDate.length > 5 ? t.executionDate.substring(5) : t.executionDate}</span>
+                    <span class="text-main backtest-trade-execution">执行 ${escapeHTML(t.executionDate)}</span>
                     <span class="text-dim backtest-trade-position">${t.posFrom}%➔${t.posTo}%</span>
                 </div>
             `;
@@ -225,8 +225,8 @@ function jsonpSearchEastmoney(query) {
         return Array.isArray(list) ? list.filter(item => item && /^\d{6}$/.test(item.Code)).map(item => ({
             Code:item.Code,Name:item.Name || item.SecurityName || item.Code,QuoteID:item.QuoteID,
             Classify:item.Classify,SecurityTypeName:item.SecurityTypeName,SecurityType:item.SecurityType
-        })) : [];
-    }}).then(rows => rows || []);
+        })) : (list === null ? [] : null);
+    }});
 }
 
 function jsonpSearchSina(query) {
@@ -235,13 +235,15 @@ function jsonpSearchSina(query) {
     return requestJsonp({url,id:'jq_'+cb,callback:cb,globals:[cb],timeoutMs:5000,parse:data => {
         const list = data?.result?.items;
         return Array.isArray(list) ? list.filter(Boolean).map(item => ({Code:item.code,Name:item.name}))
-            .filter(item => /^\d{6}$/.test(item.Code)) : [];
-    }}).then(rows => rows || []);
+            .filter(item => /^\d{6}$/.test(item.Code)) : (list === null ? [] : null);
+    }});
 }
 
 async function jsonpSearch(query) {
     const res = await jsonpSearchEastmoney(query);
-    return res.length ? res : await jsonpSearchSina(query);
+    if (res?.length) return res;
+    const fallback = await jsonpSearchSina(query);
+    return fallback?.length ? fallback : (res === null || fallback === null ? null : []);
 }
 
 let suggestTimer = null, suggestActiveIdx = -1, suggestSeq = 0;
@@ -267,57 +269,43 @@ function closeSuggestions() {
     suggestActiveIdx = -1;
 }
 
-async function fetchSuggestions() {
-    const inp = document.getElementById('stockSearchInput');
-    const sug = document.getElementById('stockSuggest'); 
-    if(!inp || !sug) return;
-    
-    const q = inp.value.trim(); 
-    if(!q) { closeSuggestions(); return; }
-    
-    const seq = ++suggestSeq; 
-    let res = searchLocalStocks(q).slice(0, 20); 
-    if(!res.length) res = await jsonpSearch(q);
-    
-    if(seq !== suggestSeq || inp.value.trim() !== q) return;
-    
-    if(!res.length) { 
-        sug.innerHTML = '<div class="stock-suggest-empty">无匹配结果</div>'; 
-        sug.style.display = 'block'; 
-        inp.setAttribute?.('aria-expanded', 'true');
-        suggestActiveIdx = -1; 
-        return; 
-    }
-    renderSuggest(sug, res.slice(0, 20));
+function fetchSuggestions() {
+    return searchAndShowInSuggest(document.getElementById('stockSearchInput')?.value);
 }
 
+let activeSuggestRequest = null;
 async function searchAndShowInSuggest(q) {
-    clearTimeout(suggestTimer); // 回车已开始查询，不再由输入防抖重复触发。
-    const inp = document.getElementById('stockSearchInput');
+    clearTimeout(suggestTimer);
+    const input = document.getElementById('stockSearchInput');
+    const container = document.getElementById('stockSuggest');
     const query = String(q || '').trim();
-    const sug = document.getElementById('stockSuggest'); 
-    if(!sug) return; 
-    
-    sug.innerHTML = '<div class="stock-suggest-empty">搜索中...</div>'; 
-    sug.style.display = 'block';
-    if (inp) inp.setAttribute?.('aria-expanded', 'true');
-    
-    const seq = ++suggestSeq; 
-    let res = await jsonpSearch(query); 
-    if(!res.length) res = searchLocalStocks(query).slice(0, 20);
-    
-    if(seq !== suggestSeq || (inp && inp.value.trim() !== query)) return;
-    
-    if(!res.length) { 
-        sug.innerHTML = '<div class="stock-suggest-empty">无匹配结果</div>'; 
-        if (inp) inp.setAttribute?.('aria-expanded', 'true');
-        suggestActiveIdx = -1; 
-        return; 
-    } 
-    renderSuggest(sug, res.slice(0, 20));
+    if (!input || !container || !query) { closeSuggestions(); return; }
+    if (activeSuggestRequest?.query === query && activeSuggestRequest.seq === suggestSeq) return activeSuggestRequest.promise;
+    const seq = ++suggestSeq;
+    const local = searchLocalStocks(query).slice(0, 20);
+    renderSuggest(container, local, local.length ? '正在补充在线结果…' : '正在搜索…');
+    const promise = jsonpSearch(query);
+    activeSuggestRequest = { query, seq, promise };
+    try {
+        const online = await promise;
+        if (seq !== suggestSeq || input.value.trim() !== query) return;
+        // 保持本地候选在原位，线上补充名称、类型与未命中的标的。
+        const matches = new Map(local.map(item => [item.QuoteID || item.Code, item]));
+        for (const item of (online || []).slice(0, 20)) {
+            const target = normalizeSecurityTarget(item);
+            const key = target.secid || target.code;
+            matches.set(key, { ...matches.get(key), ...item });
+        }
+        const rows = Array.from(matches.values());
+        const note = online === null ? (rows.length ? '在线搜索暂不可用，仅显示本地结果' : '在线搜索暂不可用，请稍后重试')
+            : rows.length ? '' : '无匹配结果';
+        renderSuggest(container, rows, note, suggestActiveIdx);
+    } finally {
+        if (activeSuggestRequest?.seq === seq) activeSuggestRequest = null;
+    }
 }
 
-function renderSuggest(container, res) {
+function renderSuggest(container, res, note = '', activeIndex = -1) {
     const entries = res.map(input => ({ target: normalizeSecurityTarget(input), isSupported: isSupportedWatchlistSecurity(input) }));
     container.innerHTML = entries.map(({ target, isSupported }, index) => {
         if (!isSupported) {
@@ -334,7 +322,7 @@ function renderSuggest(container, res) {
             <span class="ss-code mono">${escapeHTML(target.code)}</span>
         </div>
     `;
-    }).join('');
+    }).join('') + (note ? `<div class="stock-suggest-empty" role="status">${escapeHTML(note)}</div>` : '');
     container.querySelectorAll('.stock-suggest-item').forEach((option, index) => {
         const { target, isSupported } = entries[index];
         option.addEventListener('click', () => {
@@ -348,7 +336,13 @@ function renderSuggest(container, res) {
         inp.setAttribute?.('aria-expanded', 'true');
         inp.removeAttribute?.('aria-activedescendant');
     }
-    suggestActiveIdx = -1;
+    suggestActiveIdx = activeIndex < entries.length ? activeIndex : -1;
+    if (suggestActiveIdx >= 0) {
+        const option = container.querySelectorAll('.stock-suggest-item')[suggestActiveIdx];
+        option.classList.add('active');
+        option.setAttribute('aria-selected', 'true');
+        inp?.setAttribute?.('aria-activedescendant', option.id);
+    }
 }
 
 function showUnsupportedSecurityNotice() {
@@ -1068,6 +1062,10 @@ async function refreshWatchlistSignalSnapshots() {
 }
 
 function resolveWatchlistRowStatus(stock, statusData, lastDate) {
+    const historyCheck = state.historyChecks?.[resolveSecuritySecid(stock)];
+    if (!statusData?.length && historyCheck?.status === 'insufficient') {
+        return { label: '样本不足', detail: `取得 ${historyCheck.sampleCount} 根确认日线，至少需要 30 根才能生成结论。`, toneClass: 'tone-dim' };
+    }
     if (stock._navStatus && stock._navStatus.strategy === state.strategy && stock._navStatus.date === lastDate) {
         return stock._navStatus;
     }
@@ -1421,6 +1419,7 @@ function refreshSidebarRealtime() {
             appliedCount: appliedIds.length,
             status
         });
+        if (appliedIds.includes(state.id) && typeof updatePendingSelectionPrice === 'function') updatePendingSelectionPrice(state.id);
         if (area === 'index-list') refreshIndexListQuotes();
         if (area === 'stock-list') refreshWatchlistQuotes();
         markLeftListRefreshForActiveTab(leftTxn, {
@@ -1582,7 +1581,7 @@ function prepareMarketSelection(selection) {
     const selectionSeq = invalidatePendingSelection();
     const interactionToken = beginChartInteractionBlock();
     const repeated = state.tab === selection.tab && state.id === selection.id && state.renderedSelectionId === selection.id && !!state.charts?.main;
-    applyActiveSelectionState(selection);
+    if (!repeated) applyActiveSelectionState(selection);
     setPrimaryWorkspace(selection.tab);
     setWatchlistEmptyState(false);
     document.getElementById('indexNavList').style.display = selection.tab === 'index' ? 'flex' : 'none';
@@ -1595,6 +1594,9 @@ function prepareMarketSelection(selection) {
         if (!state.rawData[selection.id]?.length) {
             renderActiveSelectionStatus('loading');
             clearCharts('loading');
+        } else {
+            renderActiveSelectionStatus('calculating');
+            clearCharts('calculating');
         }
     }
     hideLoading();
@@ -1612,7 +1614,7 @@ async function _selectIndexImpl(id, options = {}) {
     if (!getIndexConfig(id)) return;
     const perfTrace = PERF.start('selectIndex', { id });
     const { selectionSeq, interactionToken, forceRender } = prepareMarketSelection({ tab: 'index', mode: 'index', id, stockId: null });
-    if (isCompactMobileLayout()) compactLastSelection.index = id;
+    lastWorkspaceSelection.index = id;
     try {
         const beforeNetwork = createSelectionNetworkGate(selectionSeq, options.debounce);
         const promise = cachedFetch(id, { forceRender, beforeNetwork });
@@ -1650,8 +1652,8 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
     void addToWatchlist(target.code, target.name, target).catch(error => console.error('[DailyGlance] watchlist save failed', error));
     const perfTrace = PERF.start('selectStock', { code });
     const { selectionSeq, interactionToken, forceRender } = prepareMarketSelection({ tab: 'stock', mode: 'stock', id: target.secid, stockId: target.code });
+    lastWorkspaceSelection.stock = target.code;
     if (isCompactMobileLayout()) {
-        compactLastSelection.stock = target.code;
         toggleCompactWatchlist(false);
     }
     const isCurrent = () => selectionSeq === globalSelectionSeq && state.mode === 'stock' && state.id === target.secid;
@@ -1664,15 +1666,13 @@ async function _selectStockImpl(code, name, secid = '', type = '', tencentSymbol
         if (!isCurrent()) return;
         // 数据充足性检查以确认日线为准，不把周线条数当成日线条数。
         const data = state.rawData[target.secid];
-        if (!(data?.length >= 30 && isValidPrice(data[data.length - 1].close, target.secid))) {
-            clearCharts('error');
-            renderActiveSelectionStatus('unavailable');
+        if (data?.length && (data.length < 30 || !isValidPrice(data.at(-1).close, target.secid))) {
+            showMissingHistory(target.secid);
         }
     } catch (error) {
         if (!isCurrent()) return;
         if (!state.rawData[target.secid]?.length) {
-            clearCharts('error');
-            renderActiveSelectionStatus('unavailable');
+            showMissingHistory(target.secid);
         }
     } finally {
         if (isCurrent()) {
@@ -1725,7 +1725,7 @@ function markLeftListRefreshForActiveTab(txn = null, patch = {}) {
 }
 
 let mobileNavAutoScrollKey = '';
-const compactLastSelection = { index: null, stock: null };
+const lastWorkspaceSelection = { index: null, stock: null };
 let compactWatchlistOpen = false;
 
 function updateCompactWatchlistPicker(container = document.getElementById('stockNavList')) {
@@ -1768,7 +1768,8 @@ function scrollActiveMobileNavItemIntoView(container) {
 }
 
 function renderActiveLeftListAfterDataApply(txn = null, patch = {}) {
-    const shouldCommitRefresh = patch.commitRefresh === true || !getRefreshSnapshot('leftList');
+    // 当前标的先就绪不等于多行列表完成；单行表才可以用它作首次列表快照。
+    const shouldCommitRefresh = patch.commitRefresh === true || (!getLeftListSnapshot() && getSidebarRealtimeTargetIds().length === 1);
     const refreshTxn = shouldCommitRefresh
         ? (txn && typeof txn === 'object' ? txn : beginRefreshTransaction('leftList', { source: 'active-data' }))
         : null;
@@ -1816,7 +1817,7 @@ function renderIndexList() {
     }).join('');
     
     container.innerHTML = `
-        <div class="index-list-sticky-head">${renderLeftListHeader('市场与板块指数')}</div>
+        <div class="index-list-sticky-head">${renderLeftListHeader('市场与板块指数', { area: 'index-list' })}</div>
         <div class="index-list-items">
             <div>${html}</div>
             <div id="leftMarketContext"></div>
@@ -1956,7 +1957,7 @@ function renderWatchlist() {
     }).join('');
     
     updateWatchlistShell(
-        renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`),
+        renderLeftListHeader(`自选股池 · ${state.watchlist.length}/${SYS_CONFIG.WATCHLIST_LIMIT}`, { area: 'stock-list' }),
         `<div>${lHtml}</div>`
     );
     // 仅向本次新建的行绑定监听器；外部名称和标识只作为闭包数据，不拼进可执行属性。
@@ -2450,7 +2451,7 @@ function renderSectorTrendOverview() {
                 <div class="sector-workspace-state-kicker">行情连接异常</div>
                 <h3>板块行情暂不可用</h3>
                 <p>未取得可用于趋势统计的板块快照，因此不会把缺失数据显示为 0。</p>
-                <button type="button" class="state-retry-action" onclick="handleExternalRefresh()">重新扫描板块</button>
+                <button type="button" id="sectorRetryBtn" class="state-retry-action" onclick="handleExternalRefresh()">重新扫描板块</button>
             </div>`;
         return;
     }
@@ -2576,11 +2577,20 @@ function updateExternalRefreshButton() {
     const refreshBtn = document.getElementById('externalRefreshBtn');
     if (!refreshBtn) return;
     const isLoading = sectorTrendState.status === 'loading' || externalLeadStripState.status === 'loading';
-    refreshBtn.disabled = isLoading;
+    const seconds = Math.ceil(getSectorTrendCooldownRemaining() / 1000);
+    refreshBtn.disabled = isLoading || seconds > 0;
+    const retry = document.getElementById('sectorRetryBtn');
+    if (retry) {
+        retry.disabled = refreshBtn.disabled;
+        const text = seconds > 0 ? `${seconds} 秒后可重试` : '重新扫描板块';
+        if (retry.textContent !== text) retry.textContent = text;
+    }
     const icon = refreshBtn.querySelector('svg');
     const label = refreshBtn.querySelector('span');
     if (icon) icon.classList.toggle('spin', isLoading);
-    if (label) label.textContent = isLoading ? (sectorTrendState.phase === 'supplement' ? '补充中' : '正在扫描') : '重新扫描';
+    const text = isLoading ? (sectorTrendState.phase === 'supplement' ? '补充中' : '正在扫描')
+        : (seconds > 0 ? `${seconds} 秒后可重扫` : '重新扫描');
+    if (label && label.textContent !== text) label.textContent = text;
 }
 
 function getSectorTrendWorkspaceStatus() {
@@ -2714,10 +2724,9 @@ function openExternalWorkspace() {
 
 function openMarketWorkspace(tab) {
     const returnSelection = externalReturnSelection;
-    const compact = isCompactMobileLayout();
-    if (compact && state.tab === state.mode) {
-        if (state.mode === 'index') compactLastSelection.index = state.id;
-        if (state.mode === 'stock') compactLastSelection.stock = state.stockId;
+    if (state.tab === state.mode) {
+        if (state.mode === 'index') lastWorkspaceSelection.index = state.id;
+        if (state.mode === 'stock') lastWorkspaceSelection.stock = state.stockId;
     }
     if (state.tab === 'external' && typeof cancelExternalObservationTasks === 'function') {
         cancelExternalObservationTasks('workspace-leave');
@@ -2726,7 +2735,7 @@ function openMarketWorkspace(tab) {
     state.tab = tab;
     setPrimaryWorkspace(tab);
     if (tab === 'index') {
-        const id = returnSelection?.tab === 'index' ? returnSelection.id : (compact && getIndexConfig(compactLastSelection.index) ? compactLastSelection.index : 'sh');
+        const id = returnSelection?.tab === 'index' ? returnSelection.id : (getIndexConfig(lastWorkspaceSelection.index) ? lastWorkspaceSelection.index : 'sh');
         document.getElementById('indexNavList').style.display = 'flex';
         document.getElementById('stockNavList').style.display = 'none';
         selectIndex(id || 'sh');
@@ -2734,7 +2743,7 @@ function openMarketWorkspace(tab) {
         document.getElementById('indexNavList').style.display = 'none';
         document.getElementById('stockNavList').style.display = 'flex';
         renderWatchlist();
-        const rememberedCode = returnSelection?.tab === 'stock' ? returnSelection.stockId : (compact ? compactLastSelection.stock : null);
+        const rememberedCode = returnSelection?.tab === 'stock' ? returnSelection.stockId : lastWorkspaceSelection.stock;
         const savedTarget = state.watchlist.find(item => item.code === rememberedCode && isSupportedWatchlistSecurity(item));
         const nextTarget = savedTarget || getSupportedWatchlistFallback();
         if (nextTarget) selectStock(nextTarget.code, nextTarget.name, nextTarget.secid, nextTarget.type, nextTarget.tencentSymbol);
@@ -2766,7 +2775,9 @@ async function handleExternalRefresh() {
     ]);
     if(!isDataTaskCurrent(taskToken))return sectorTrendState;
     if (result.status === 'ready') showToast('板块趋势扫描已完成。', 'success', 1800);
-    else if (['partial', 'cached', 'error'].includes(result.status)) showToast('部分板块数据暂未更新，已保留最近结果。', 'warn', 2600);
+    else if (result.status === 'partial') showToast('本轮扫描部分完成，缺失数据已标注。', 'warn', 2600);
+    else if (result.status === 'cached') showToast('本轮扫描失败，显示上次扫描结果。', 'warn', 2600);
+    else if (result.status === 'error') showToast('本轮扫描失败，暂无可用快照。', 'warn', 2600);
     return result;
 }
 

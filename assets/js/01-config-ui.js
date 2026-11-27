@@ -462,8 +462,16 @@ function getRefreshSnapshot(scope) {
     return state.refreshSnapshots?.[scope] || null;
 }
 
-function getLeftListRefreshParts() {
-    const snapshot = getRefreshSnapshot('leftList');
+function currentLeftListArea() {
+    return state.mode === 'stock' ? 'stock-list' : 'index-list';
+}
+
+function getLeftListSnapshot(area = currentLeftListArea()) {
+    return getRefreshSnapshot(area);
+}
+
+function getLeftListRefreshParts(area = currentLeftListArea()) {
+    const snapshot = getLeftListSnapshot(area);
     const meta = snapshot?.meta || {};
     const expected = Number(meta.expectedCount);
     const applied = Number(meta.appliedCount ?? meta.receivedCount);
@@ -473,21 +481,22 @@ function getLeftListRefreshParts() {
     const cache = Number(meta.cachedCount) > 0 ? ` · 缓存沿用${meta.cachedCount}项` : (/cache|memory/.test(meta.source || '') ? ' · 本地缓存' : '');
     const failures = Number(meta.failedCount)>0 ? ` · 更新失败${meta.failedCount}项` : '';
     const paused = getMarketRefreshOwnershipNotice() ? ' · 暂停更新' : '';
-    const loading = state.mode === 'index' && state.indexHydrationPending ? ' · 补数中' : '';
-    const time = `列表刷新于 ${formatLeftListRefreshTime(snapshot?.appliedAt || state.leftListRefreshAt)}`;
+    const loading = area === 'index-list' && state.indexHydrationPending ? ' · 补数中' : '';
+    const time = snapshot ? `列表刷新于 ${formatLeftListRefreshTime(snapshot.appliedAt)}` : '等待本轮报价';
     return { time, status:[coverage, cache, failures, paused, loading].filter(Boolean).join('').replace(/^[ ·]+/, ''), full:`${time}${coverage}${cache}${failures}${paused}${loading}` };
 }
 
-function getLeftListRefreshText() { return getLeftListRefreshParts().full; }
-function getLeftListRefreshHTML() {
-    const parts = getLeftListRefreshParts();
+function getLeftListRefreshText(area) { return getLeftListRefreshParts(area).full; }
+function getLeftListRefreshHTML(area) {
+    const parts = getLeftListRefreshParts(area);
     return `${parts.status ? `<span class="left-list-refresh-status">${escapeHTML(parts.status)}</span>` : ''}<span class="left-list-refresh-clock">${escapeHTML(parts.time)}</span>`;
 }
 
 function renderLeftListHeader(title, options = {}) {
-    const snapshot = getRefreshSnapshot('leftList') || {};
+    const area = options.area || currentLeftListArea();
+    const snapshot = getLeftListSnapshot(area) || {};
     const refreshHtml = options.showRefresh === false ? '' : `
-                <span class="left-list-refresh-time" data-left-list-refresh data-refresh-id="${escapeHTML(snapshot.id || '')}" data-refresh-version="${snapshot.version || 0}" data-refresh-applied-at="${snapshot.appliedAt || 0}" data-refresh-status="${escapeHTML(snapshot.meta?.status || '')}" title="${escapeHTML(getLeftListRefreshText())}">${getLeftListRefreshHTML()}</span>`;
+                <span class="left-list-refresh-time" data-left-list-refresh="${area}" data-refresh-id="${escapeHTML(snapshot.id || '')}" data-refresh-version="${snapshot.version || 0}" data-refresh-applied-at="${snapshot.appliedAt || 0}" data-refresh-status="${escapeHTML(snapshot.meta?.status || '')}" title="${escapeHTML(getLeftListRefreshText(area))}">${getLeftListRefreshHTML(area)}</span>`;
     return `
         <div class="stock-header">
             <div class="title-wrap">
@@ -499,10 +508,11 @@ function renderLeftListHeader(title, options = {}) {
 }
 
 function updateLeftListRefreshLabels() {
-    const snapshot = getRefreshSnapshot('leftList') || {};
     document.querySelectorAll('[data-left-list-refresh]').forEach(el => {
-        el.innerHTML = getLeftListRefreshHTML();
-        el.title = getLeftListRefreshText();
+        const area = el.dataset.leftListRefresh || currentLeftListArea();
+        const snapshot = getLeftListSnapshot(area) || {};
+        el.innerHTML = getLeftListRefreshHTML(area);
+        el.title = getLeftListRefreshText(area);
         el.dataset.refreshId = snapshot.id || '';
         el.dataset.refreshVersion = String(snapshot.version || 0);
         el.dataset.refreshAppliedAt = String(snapshot.appliedAt || 0);
@@ -511,7 +521,9 @@ function updateLeftListRefreshLabels() {
 }
 
 function markLeftListRefreshTime(txn = null, patch = {}) {
-    const snapshot = commitRefreshSnapshot('leftList', txn && typeof txn === 'object' ? txn : null, patch);
+    const area = patch.area || txn?.meta?.area || currentLeftListArea();
+    const snapshot = commitRefreshSnapshot('leftList', txn && typeof txn === 'object' ? txn : null, { ...patch, area });
+    state.refreshSnapshots[area] = snapshot;
     state.leftListRefreshAt = snapshot.appliedAt;
     updateLeftListRefreshLabels();
     return snapshot;

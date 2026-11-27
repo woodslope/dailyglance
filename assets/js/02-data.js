@@ -1087,6 +1087,8 @@ function setRawData(id, data) {
             data[i]._decision = prevData[i]._decision;
         }
     }
+    const frozenSeries = id === state.id && state.isFrozen ? getActiveData() : null;
+    const frozenDate = frozenSeries?.[state.lockIdx]?.date;
     state.rawData[id] = data;
     if (!state.liveDailyData) state.liveDailyData = {};
     delete state.liveDailyData[id];
@@ -1106,6 +1108,16 @@ function setRawData(id, data) {
     }
     if (data?.length && !state.liveBars?.[id] && state.displayStatus?.[id]?.mode !== 'quote-only') {
         setDisplayStatus(id, { mode: 'confirmed', reason: '', quoteDate: '', quoteAt: 0 });
+    }
+    if (frozenDate) {
+        const series = getActiveData();
+        const idx = findDateIndex(series, frozenDate, id);
+        if (idx >= 0 && idx !== state.lockIdx) {
+            const shift = idx - state.lockIdx;
+            setLockIdx(idx);
+            if (state.viewport.mode === 'pan') state.viewport.endIdx += shift;
+            else anchorViewportAt(idx);
+        }
     }
     if (id === state.id) {
         const indicatorScopePrefix = `${state.id}_${state.period}_${state.strategy}_`;
@@ -1432,9 +1444,9 @@ function batchGetRealtimePrices(ids) {
     }).then(results => results || {});
 }
 
-function setHistoryCheckState(id, status) {
+function setHistoryCheckState(id, status, details = {}) {
     if (!state.historyChecks) state.historyChecks = {};
-    state.historyChecks[id] = { status, checkedAt: Date.now() };
+    state.historyChecks[id] = { status, checkedAt: Date.now(), ...details };
     if (id === state.id && typeof updateDataStatusRefreshBadge === 'function') updateDataStatusRefreshBadge();
 }
 
@@ -1494,11 +1506,18 @@ async function performHistorySync(id) {
             { name: 'eastmoney', load: jsonpFetchEastmoneyKline }
         ];
     let latestStale = null;
+    let shortSample = null;
     for (const [index, source] of sources.entries()) {
         updateHistoryLoadingMessage(id, index ? `正在尝试备用来源（${index + 1}/${sources.length}）…` : '正在获取确认历史 K 线…');
         const data = normalizeConfirmedHistoryData(await source.load(id), id);
         if (!isDataTaskCurrent(token)) return null;
-        if (!data || data.length < 30) continue;
+        if (data.length < 30) {
+            if (data.length && (!shortSample || data.length > shortSample.sampleCount ||
+                (data.length === shortSample.sampleCount && data.at(-1).date > shortSample.sampleLast.date))) {
+                shortSample = { sampleCount: data.length, sampleLast: data.at(-1) };
+            }
+            continue;
+        }
         const lastDate = data[data.length - 1].date;
         if (isConfirmedSeriesFreshEnough(data)) {
             setConfirmedStatus(id, { source: source.name, status: 'fresh', lastDate, syncedAt: Date.now() });
@@ -1514,6 +1533,10 @@ async function performHistorySync(id) {
         setConfirmedStatus(id, { source: latestStale.source, status: 'stale', lastDate: latestStale.lastDate, syncedAt: Date.now() });
         setHistoryCheckState(id, 'stale');
         return latestStale.data;
+    }
+    if (shortSample) {
+        setHistoryCheckState(id, 'insufficient', shortSample);
+        return null; // 仅保留展示所需的样本数和末根，不交给计算或持久化。
     }
     setConfirmedStatus(id, { status: 'failed', syncedAt: Date.now() });
     setHistoryCheckState(id, 'failed');
@@ -1628,6 +1651,7 @@ async function performConfirmedDataSync(id) {
     const fresh = await syncDataWithHistory(id);
     if (!isDataTaskCurrent(networkToken)) return fallback({requestStatus:'cancelled'});
     if (!fresh || fresh.length < 30) {
+        if (state.historyChecks?.[id]?.status === 'insufficient') return fallback({requestStatus:'insufficient'});
         setConfirmedStatus(id,{source:'cache',status:'failed',sourceLagging:false,lastDate:cached?.at(-1)?.date || '',syncedAt:Date.now()});
         return fallback({requestStatus:'failed'});
     }
@@ -1663,6 +1687,13 @@ async function syncRealtimeForSeries(id, data, token = createDataTaskToken(true)
     return data;
 }
 
+function showMissingHistory(id) {
+    if (id !== state.id) return;
+    const short = state.historyChecks?.[id]?.status === 'insufficient';
+    clearCharts(short ? 'insufficient' : 'error');
+    renderActiveSelectionStatus(short ? 'insufficient' : 'unavailable');
+}
+
 const lastUpdateClicks = new Map();
 async function handleUpdateData(forceFull = false) {
     const btn = document.getElementById('updateDataBtn');
@@ -1694,7 +1725,11 @@ async function handleUpdateData(forceFull = false) {
         const received = await syncDataWithHistory(id);
         if (!isDataTaskCurrent(taskToken)) return;
         if (!received?.length) {
-            showToast(`${name} 更新失败，已保留原数据，可重新尝试。`, 'warn', 4500);
+            if (isCurrentSelection() && !state.rawData[id]?.length) showMissingHistory(id);
+            const check = state.historyChecks?.[id];
+            const message = check?.status === 'insufficient' ? `仅取得 ${check.sampleCount} 根确认日线，不足 30 根。`
+                : state.rawData[id]?.length ? '更新失败，已保留原数据，可重新尝试。' : '未取得确认历史，可重新尝试。';
+            showToast(`${name} ${message}`, 'warn', 4500);
             return;
         }
         const previous = state.rawData[id]?.length ? state.rawData[id] : await getCachedData(id);
@@ -2188,6 +2223,7 @@ async function performCachedFetch(id, options = {}) {
     const applySelection = async (data, source) => {
         if (!isActiveFetch()) return;
         if (state.rawData[id] !== data) setRawData(id, data);
+        if (typeof updatePendingSelectionPrice === 'function') updatePendingSelectionPrice(id, true);
         tryApplyCachedLiveOverlay(id, state.rawData[id]);
         const quote = getQuoteBar(id);
         if (quote && !quote._isCachedLive && isMarketOpen()) applyRealtimeQuoteForSeries(id, state.rawData[id], quote);
@@ -2237,8 +2273,7 @@ async function performCachedFetch(id, options = {}) {
     PERF.mark(perfTrace, 'confirmed-history', { points: fresh?.length || 0 });
     if (!fresh?.length) {
         if (isActiveFetch()) {
-            clearCharts('error');
-            renderActiveSelectionStatus('unavailable');
+            showMissingHistory(id);
         }
         PERF.end(perfTrace, { status: 'no-fresh-data' });
         return;
